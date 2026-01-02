@@ -1,13 +1,15 @@
 import { useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { DateRangePicker } from '@/components/ui/date-range-picker'
-import { Plus, Settings, X } from 'lucide-react'
+import { Download, Plus, Settings, X } from 'lucide-react'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { useDashboardStore } from '@/stores/dashboardStore'
+import { downloadDashboardExport } from '@/lib/dashboard-export'
 
 export function DashboardToolbar() {
   const isMobile = useIsMobile()
   const {
+    dashboard,
     isEditMode,
     setEditMode,
     timeSelection,
@@ -54,13 +56,24 @@ export function DashboardToolbar() {
             </Button>
           </>
         ) : (
-          <Button
-            variant="outline"
-            onClick={() => setEditMode(true)}
-          >
-            <Settings className="h-4 w-4 mr-1" />
-            Edit
-          </Button>
+          <>
+            {dashboard && (
+              <Button
+                variant="outline"
+                onClick={() => downloadDashboardExport(dashboard)}
+              >
+                <Download className="h-4 w-4 mr-1" />
+                Export
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              onClick={() => setEditMode(true)}
+            >
+              <Settings className="h-4 w-4 mr-1" />
+              Edit
+            </Button>
+          </>
         )
       )}
     </div>

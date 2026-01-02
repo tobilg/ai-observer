@@ -10,6 +10,8 @@ import type {
   TimeSelection,
 } from '@/types/dashboard'
 import { TIMEFRAME_OPTIONS, isAbsoluteTimeSelection } from '@/types/dashboard'
+import type { DashboardExport } from '@/types/dashboard-export'
+import { generateUniqueName, deriveWidgetTitle } from '@/lib/dashboard-export'
 
 // Grid utility functions
 function getOccupiedCells(widgets: DashboardWidget[]): Set<string> {
@@ -153,6 +155,7 @@ interface DashboardState {
   // Dashboard list actions
   loadDashboards: () => Promise<void>
   createNewDashboard: (name: string, description?: string) => Promise<Dashboard>
+  importDashboard: (exportData: DashboardExport) => Promise<Dashboard>
   renameDashboard: (id: string, name: string) => Promise<void>
   updateDashboardDetails: (id: string, name: string, description?: string) => Promise<void>
   deleteDashboardById: (id: string) => Promise<void>
@@ -423,6 +426,40 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     const dashboard = await api.createDashboard({ name, description, isDefault: false })
     // Refresh dashboard list
     await get().loadDashboards()
+    return dashboard
+  },
+
+  importDashboard: async (exportData: DashboardExport) => {
+    const { dashboards } = get()
+    const existingNames = dashboards.map((d) => d.name)
+
+    // Generate unique name if conflict exists
+    const uniqueName = generateUniqueName(exportData.name, existingNames)
+
+    // Create the dashboard
+    const dashboard = await api.createDashboard({
+      name: uniqueName,
+      description: exportData.description,
+      isDefault: false,
+    })
+
+    // Create all widgets with derived titles
+    for (const widget of exportData.widgets) {
+      const title = deriveWidgetTitle(widget)
+      await api.createWidget(dashboard.id, {
+        widgetType: widget.widgetType,
+        title,
+        gridColumn: widget.gridColumn,
+        gridRow: widget.gridRow,
+        colSpan: widget.colSpan,
+        rowSpan: widget.rowSpan,
+        config: widget.config,
+      })
+    }
+
+    // Refresh dashboard list
+    await get().loadDashboards()
+
     return dashboard
   },
 

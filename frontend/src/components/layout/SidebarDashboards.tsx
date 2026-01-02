@@ -26,6 +26,7 @@ import { DashboardDialog } from '@/components/dashboard/DashboardDialog'
 import { DeleteDashboardDialog } from '@/components/dashboard/DeleteDashboardDialog'
 import { toast } from 'sonner'
 import type { Dashboard } from '@/types/dashboard'
+import type { DashboardExport } from '@/types/dashboard-export'
 
 export function SidebarDashboards() {
   const navigate = useNavigate()
@@ -43,6 +44,7 @@ export function SidebarDashboards() {
     dashboardsLoading,
     loadDashboards,
     createNewDashboard,
+    importDashboard,
     renameDashboard,
     deleteDashboardById,
     setAsDefault,
@@ -82,6 +84,17 @@ export function SidebarDashboards() {
     } catch {
       toast.error('Failed to create dashboard')
       throw new Error('Failed to create dashboard')
+    }
+  }
+
+  const handleImport = async (data: DashboardExport) => {
+    try {
+      const dashboard = await importDashboard(data)
+      toast.success(`Dashboard "${dashboard.name}" imported`)
+      handleNavigate(`/dashboard/${dashboard.id}`)
+    } catch {
+      toast.error('Failed to import dashboard')
+      throw new Error('Failed to import dashboard')
     }
   }
 
@@ -219,6 +232,7 @@ export function SidebarDashboards() {
         onOpenChange={setCreateDialogOpen}
         mode="create"
         onSubmit={handleCreate}
+        onImport={handleImport}
       />
 
       <DashboardDialog
