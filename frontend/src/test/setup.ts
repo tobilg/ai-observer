@@ -1,6 +1,20 @@
 import '@testing-library/jest-dom'
 import { vi } from 'vitest'
 
+// Suppress React act() warnings that occur with async state updates
+// These warnings don't indicate actual test failures and are common in tests with async operations
+const originalConsoleError = console.error
+console.error = (...args: unknown[]) => {
+  const message = args[0]
+  if (
+    typeof message === 'string' &&
+    message.includes('not wrapped in act')
+  ) {
+    return // Suppress act() warnings
+  }
+  originalConsoleError.apply(console, args)
+}
+
 // Mock WebSocket
 class MockWebSocket {
   static CONNECTING = 0
@@ -17,13 +31,16 @@ class MockWebSocket {
 
   constructor(url: string) {
     this.url = url
-    // Simulate async connection
-    setTimeout(() => {
-      this.readyState = MockWebSocket.OPEN
-      if (this.onopen) {
-        this.onopen(new Event('open'))
+    // Simulate async connection with queueMicrotask for faster, more predictable timing
+    // This runs after the current task but before the next event loop tick
+    queueMicrotask(() => {
+      if (this.readyState === MockWebSocket.CONNECTING) {
+        this.readyState = MockWebSocket.OPEN
+        if (this.onopen) {
+          this.onopen(new Event('open'))
+        }
       }
-    }, 0)
+    })
   }
 
   send = vi.fn()

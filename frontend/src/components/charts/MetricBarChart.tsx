@@ -8,7 +8,7 @@ import {
   ResponsiveContainer,
   Legend,
 } from 'recharts'
-import type { TooltipProps } from 'recharts'
+import type { Payload } from 'recharts/types/component/DefaultTooltipContent'
 import {
   CHART_COLORS,
   compactTooltipStyle,
@@ -18,7 +18,10 @@ import {
 } from './chartUtils'
 
 // Custom tooltip component that correctly reads values from the payload
-interface CustomTooltipProps extends TooltipProps<number, string> {
+interface CustomTooltipProps {
+  active?: boolean
+  payload?: Payload<number, string>[]
+  label?: string
   tooltipFormatter: (value: number | undefined, name: string | undefined) => [string, string]
   compact?: boolean
 }
@@ -33,7 +36,7 @@ function CustomTooltip({ active, payload, label, tooltipFormatter, compact }: Cu
   return (
     <div style={style.contentStyle}>
       <p style={style.labelStyle}>{label}</p>
-      {payload.map((entry, index) => {
+      {payload.map((entry: Payload<number, string>, index: number) => {
         // Read value directly from payload entry which Recharts populates from data[dataKey]
         const value = entry.value as number | undefined
         const name = entry.dataKey as string
