@@ -40,8 +40,8 @@ input/
 bin/
 
 backend/server
-backend/data/*.duckdb
-backend/data/*.duckdb.wal
+data/*.duckdb
+data/*.duckdb.wal
 
 # Embedded frontend build output
 backend/internal/frontend/dist/
