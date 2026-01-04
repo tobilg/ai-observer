@@ -155,7 +155,11 @@ func (s *DuckDBStore) QueryTraces(ctx context.Context, service, search string, f
 func (s *DuckDBStore) queryNonCodexTraces(ctx context.Context, service, search string, from, to time.Time, limit, offset int) ([]api.TraceOverview, int, error) {
 	const codexService = "codex_cli_rs"
 
-	timeFilter := "Timestamp >= ? AND Timestamp <= ?"
+	// Format times as strings to avoid timezone issues with DuckDB's TIMESTAMP type
+	fromStr := formatTimeForDB(from)
+	toStr := formatTimeForDB(to)
+
+	timeFilter := "Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP"
 	serviceFilter := " AND ServiceName != '" + codexService + "'"
 	if service != "" && service != codexService {
 		serviceFilter = " AND ServiceName = ?"
@@ -167,7 +171,7 @@ func (s *DuckDBStore) queryNonCodexTraces(ctx context.Context, service, search s
 	}
 
 	var args []interface{}
-	args = append(args, from, to)
+	args = append(args, fromStr, toStr)
 	if service != "" && service != codexService {
 		args = append(args, service)
 	}
@@ -213,7 +217,7 @@ func (s *DuckDBStore) queryNonCodexTraces(ctx context.Context, service, search s
 
 	// Count query
 	var countArgs []interface{}
-	countArgs = append(countArgs, from, to)
+	countArgs = append(countArgs, fromStr, toStr)
 	if service != "" && service != codexService {
 		countArgs = append(countArgs, service)
 	}
@@ -234,6 +238,10 @@ func (s *DuckDBStore) queryNonCodexTraces(ctx context.Context, service, search s
 // queryCodexVirtualTraces queries Codex CLI "virtual traces" - first-level spans treated as trace roots
 func (s *DuckDBStore) queryCodexVirtualTraces(ctx context.Context, search string, from, to time.Time, limit, offset int) ([]api.TraceOverview, int, error) {
 	const codexService = "codex_cli_rs"
+
+	// Format times as strings to avoid timezone issues with DuckDB's TIMESTAMP type
+	fromStr := formatTimeForDB(from)
+	toStr := formatTimeForDB(to)
 
 	// First, check if there are any Codex spans at all
 	var codexCount int
@@ -265,7 +273,7 @@ func (s *DuckDBStore) queryCodexVirtualTraces(ctx context.Context, search string
 			COALESCE(t.StatusCode, 'UNSET') as Status
 		FROM otel_traces t
 		WHERE t.ServiceName = '` + codexService + `'
-		  AND t.Timestamp >= ? AND t.Timestamp <= ?
+		  AND t.Timestamp >= ?::TIMESTAMP AND t.Timestamp <= ?::TIMESTAMP
 		  AND NOT EXISTS (
 			SELECT 1 FROM otel_traces p
 			WHERE p.SpanId = t.ParentSpanId AND p.ServiceName = '` + codexService + `'
@@ -276,7 +284,7 @@ func (s *DuckDBStore) queryCodexVirtualTraces(ctx context.Context, search string
 	`
 
 	var args []interface{}
-	args = append(args, from, to)
+	args = append(args, fromStr, toStr)
 	args = append(args, searchArgs...)
 	args = append(args, limit+offset, 0)
 
@@ -319,7 +327,7 @@ func (s *DuckDBStore) queryCodexVirtualTraces(ctx context.Context, search string
 	countQuery := `
 		SELECT COUNT(*) FROM otel_traces t
 		WHERE t.ServiceName = '` + codexService + `'
-		  AND t.Timestamp >= ? AND t.Timestamp <= ?
+		  AND t.Timestamp >= ?::TIMESTAMP AND t.Timestamp <= ?::TIMESTAMP
 		  AND NOT EXISTS (
 			SELECT 1 FROM otel_traces p
 			WHERE p.SpanId = t.ParentSpanId AND p.ServiceName = '` + codexService + `'
@@ -327,7 +335,7 @@ func (s *DuckDBStore) queryCodexVirtualTraces(ctx context.Context, search string
 		` + searchFilter
 
 	var countArgs []interface{}
-	countArgs = append(countArgs, from, to)
+	countArgs = append(countArgs, fromStr, toStr)
 	countArgs = append(countArgs, searchArgs...)
 
 	var count int

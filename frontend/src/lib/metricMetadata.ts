@@ -123,9 +123,52 @@ export const METRIC_CATALOG: MetricMetadata[] = [
     ],
   },
   {
+    name: 'claude_code.cost.usage_user_facing',
+    displayName: 'Cost (User-Facing)',
+    description: 'Cost for user-facing API calls only (excludes tool-routing)',
+    source: 'claude_code',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.usd,
+    isMonotonic: true,
+    breakdowns: [
+      {
+        attributeKey: 'model',
+        displayName: 'Model',
+        showInLegend: true,
+      },
+    ],
+  },
+  {
     name: 'claude_code.token.usage',
     displayName: 'Token Usage',
     description: 'Number of tokens consumed by Claude Code',
+    source: 'claude_code',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.tokens,
+    isMonotonic: true,
+    breakdowns: [
+      {
+        attributeKey: 'type',
+        displayName: 'Token Type',
+        showInLegend: true,
+        knownValues: {
+          input: 'Input',
+          output: 'Output',
+          cacheRead: 'Cache Read',
+          cacheCreation: 'Cache Creation',
+        },
+      },
+      {
+        attributeKey: 'model',
+        displayName: 'Model',
+        showInLegend: true,
+      },
+    ],
+  },
+  {
+    name: 'claude_code.token.usage_user_facing',
+    displayName: 'Token Usage (User-Facing)',
+    description: 'Tokens consumed by user-facing API calls only (excludes tool-routing)',
     source: 'claude_code',
     metricType: 'counter',
     unit: UNIT_FORMATS.tokens,
@@ -1289,10 +1332,11 @@ export function getSeriesLabel(
 
   // Fall back to service name or type
   if (labels.type) {
-    return labels.service ? `${labels.service}: ${labels.type}` : labels.type
+    const serviceName = labels.service ? getServiceDisplayName(labels.service) : ''
+    return serviceName ? `${serviceName}: ${labels.type}` : labels.type
   }
 
-  return labels.service || 'value'
+  return labels.service ? getServiceDisplayName(labels.service) : 'value'
 }
 
 /**

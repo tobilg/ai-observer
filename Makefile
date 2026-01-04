@@ -27,12 +27,13 @@ all: backend
 backend: frontend
 	@echo "Building backend..."
 	cd backend && \
+	go clean -cache && \
 	SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) GOFLAGS="$(GOFLAGS)" \
 	go build -ldflags "$(LDFLAGS)" -o ../bin/$(BINARY_NAME) ./cmd/server
 
 backend-dev:
 	@echo "Starting backend in development mode..."
-	cd backend && go run ./cmd/server
+	cd backend && AI_OBSERVER_DATABASE_PATH=$(CURDIR)/data/ai-observer.duckdb go run ./cmd/server
 
 backend-test:
 	@echo "Running backend tests..."

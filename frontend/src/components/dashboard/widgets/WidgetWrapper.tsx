@@ -53,7 +53,8 @@ export function WidgetWrapper({
   const isMobileLayout = maxColumns < 4
 
   const style = {
-    gridColumn: `span ${effectiveColSpan}`,
+    // On desktop, use explicit column positioning; on mobile, let widgets flow naturally
+    gridColumn: isMobileLayout ? `span ${effectiveColSpan}` : `${widget.gridColumn} / span ${effectiveColSpan}`,
     // Only set explicit row position on desktop; let mobile flow naturally
     gridRow: isMobileLayout ? `span ${widget.rowSpan}` : `${actualGridRow} / span ${actualRowSpan}`,
     transform: transform ? `translate3d(${transform.x}px, ${transform.y}px, 0)` : undefined,

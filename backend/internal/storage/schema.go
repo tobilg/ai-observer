@@ -130,3 +130,18 @@ const indexDashboards = `
 CREATE INDEX IF NOT EXISTS idx_dashboards_is_default ON dashboards(is_default);
 CREATE INDEX IF NOT EXISTS idx_dashboard_widgets_dashboard_id ON dashboard_widgets(dashboard_id);
 `
+
+const schemaImportState = `
+CREATE TABLE IF NOT EXISTS import_state (
+    source          VARCHAR NOT NULL,
+    file_path       VARCHAR NOT NULL,
+    file_hash       VARCHAR NOT NULL,
+    imported_at     TIMESTAMP NOT NULL,
+    record_count    INTEGER NOT NULL,
+    PRIMARY KEY (source, file_path)
+);
+`
+
+const indexImportState = `
+CREATE INDEX IF NOT EXISTS idx_import_state_source ON import_state(source);
+`

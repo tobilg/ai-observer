@@ -165,9 +165,9 @@ describe('TracesPage', () => {
       expect(screen.queryByText(/loading/i)).not.toBeInTheDocument()
     })
 
-    // Find and interact with service select
+    // Find and interact with service select (first select - DateRangePicker is a button)
     const selects = screen.getAllByRole('combobox')
-    const serviceSelect = selects[1] // Second select is service filter
+    const serviceSelect = selects[0]
 
     await user.selectOptions(serviceSelect, 'claude-code')
 

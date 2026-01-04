@@ -3,6 +3,8 @@ package otlp
 import (
 	"testing"
 	"time"
+
+	"github.com/tobilg/ai-observer/internal/pricing"
 )
 
 func TestExtractCodexMetrics_ResponseCompleted(t *testing.T) {
@@ -197,7 +199,7 @@ func TestNormalizeCodexModel(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {
-			result := NormalizeCodexModel(tc.input)
+			result := pricing.NormalizeCodexModel(tc.input)
 			if result != tc.expected {
 				t.Errorf("NormalizeCodexModel(%q) = %q, expected %q", tc.input, result, tc.expected)
 			}

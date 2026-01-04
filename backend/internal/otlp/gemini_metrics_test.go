@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/tobilg/ai-observer/internal/api"
+	"github.com/tobilg/ai-observer/internal/pricing"
 )
 
 func TestCalculateGeminiCostForTokenType_KnownModels(t *testing.T) {
@@ -61,31 +62,31 @@ func TestCalculateGeminiCostForTokenType_AllTokenTypes(t *testing.T) {
 	model := "gemini-2.5-flash"
 
 	// Input should return cost
-	inputCost := CalculateGeminiCostForTokenType(model, GeminiTokenTypeInput, 1000)
+	inputCost := CalculateGeminiCostForTokenType(model, pricing.GeminiTokenTypeInput, 1000)
 	if inputCost == nil {
 		t.Error("Expected cost for input token type")
 	}
 
 	// Output should return cost
-	outputCost := CalculateGeminiCostForTokenType(model, GeminiTokenTypeOutput, 1000)
+	outputCost := CalculateGeminiCostForTokenType(model, pricing.GeminiTokenTypeOutput, 1000)
 	if outputCost == nil {
 		t.Error("Expected cost for output token type")
 	}
 
 	// Cache should return cost
-	cacheCost := CalculateGeminiCostForTokenType(model, GeminiTokenTypeCache, 1000)
+	cacheCost := CalculateGeminiCostForTokenType(model, pricing.GeminiTokenTypeCache, 1000)
 	if cacheCost == nil {
 		t.Error("Expected cost for cache token type")
 	}
 
 	// Thought should return cost (uses output pricing)
-	thoughtCost := CalculateGeminiCostForTokenType(model, GeminiTokenTypeThought, 1000)
+	thoughtCost := CalculateGeminiCostForTokenType(model, pricing.GeminiTokenTypeThought, 1000)
 	if thoughtCost == nil {
 		t.Error("Expected cost for thought token type")
 	}
 
 	// Tool should NOT return cost
-	toolCost := CalculateGeminiCostForTokenType(model, GeminiTokenTypeTool, 1000)
+	toolCost := CalculateGeminiCostForTokenType(model, pricing.GeminiTokenTypeTool, 1000)
 	if toolCost != nil {
 		t.Errorf("Expected nil cost for tool token type, got %f", *toolCost)
 	}
@@ -134,7 +135,7 @@ func TestNormalizeGeminiModel(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {
-			result := NormalizeGeminiModel(tc.input)
+			result := pricing.NormalizeGeminiModel(tc.input)
 			if result != tc.expected {
 				t.Errorf("NormalizeGeminiModel(%q) = %q, expected %q", tc.input, result, tc.expected)
 			}

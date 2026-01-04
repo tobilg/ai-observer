@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
+import { DateRangePicker } from '@/components/ui/date-range-picker'
 import { DataPagination } from '@/components/ui/data-pagination'
 import { WaterfallView } from '@/components/traces/WaterfallView'
 import { api } from '@/lib/api'
@@ -12,15 +13,20 @@ import { formatDuration, formatTimestamp, getStatusColor, cn } from '@/lib/utils
 import { getServiceDisplayName } from '@/lib/metricMetadata'
 import type { TraceOverview, Span } from '@/types/traces'
 import { ChevronRight, ChevronDown, RefreshCw } from 'lucide-react'
-import { TIMEFRAME_OPTIONS } from '@/types/dashboard'
+import {
+  TIMEFRAME_OPTIONS,
+  isAbsoluteTimeSelection,
+  type TimeSelection,
+} from '@/types/dashboard'
 import { useDebounce } from '@/hooks/useDebounce'
 import { usePagination } from '@/hooks/usePagination'
 import { getLocalStorageValue } from '@/hooks/useLocalStorage'
 import { toast } from 'sonner'
 import { useTelemetryStore } from '@/stores/telemetryStore'
+import { calculateInterval, calculateTickInterval } from '@/lib/timeUtils'
 
 // localStorage keys
-const TIMEFRAME_STORAGE_KEY = 'ai-observer-traces-timeframe'
+const TIME_SELECTION_STORAGE_KEY = 'ai-observer-traces-timeselection'
 const PAGE_SIZE_STORAGE_KEY = 'ai-observer-traces-pageSize'
 
 export function TracesPage() {
@@ -33,11 +39,43 @@ export function TracesPage() {
   const [loading, setLoading] = useState(true)
   const [service, setService] = useState(searchParams.get('service') || '')
   const [search, setSearch] = useState(searchParams.get('search') || '')
-  // URL param overrides localStorage (for shareable links)
-  const [timeframeValue, setTimeframeValueState] = useState(
-    searchParams.get('timeframe') || getLocalStorageValue(TIMEFRAME_STORAGE_KEY, '7d')
-  )
   const debouncedSearch = useDebounce(search, 200)
+
+  // Get initial time selection from URL or localStorage
+  const getInitialTimeSelection = (): TimeSelection => {
+    // Check for absolute date range in URL
+    const fromParam = searchParams.get('from')
+    const toParam = searchParams.get('to')
+    if (fromParam && toParam) {
+      const from = new Date(fromParam)
+      const to = new Date(toParam)
+      if (!isNaN(from.getTime()) && !isNaN(to.getTime())) {
+        const intervalSeconds = calculateInterval(from, to)
+        const rangeDays = (to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24)
+        const bucketCount = Math.ceil((rangeDays * 86400) / intervalSeconds)
+        return {
+          type: 'absolute',
+          range: {
+            from,
+            to,
+            intervalSeconds,
+            tickInterval: calculateTickInterval(bucketCount),
+          },
+        }
+      }
+    }
+
+    // Check for relative timeframe in URL or localStorage
+    const storedSelection = getLocalStorageValue<{ type: string; timeframeValue: string } | null>(TIME_SELECTION_STORAGE_KEY, null)
+    const timeframeParam = searchParams.get('timeframe')
+      || storedSelection?.timeframeValue
+      || '7d'
+    const timeframe = TIMEFRAME_OPTIONS.find((t) => t.value === timeframeParam)
+      || TIMEFRAME_OPTIONS.find((t) => t.value === '7d')!
+    return { type: 'relative', timeframe }
+  }
+
+  const [timeSelection, setTimeSelectionState] = useState<TimeSelection>(getInitialTimeSelection)
 
   // Real-time data from WebSocket
   const recentSpans = useTelemetryStore((state) => state.recentSpans)
@@ -49,25 +87,23 @@ export function TracesPage() {
     storageKey: PAGE_SIZE_STORAGE_KEY,
   })
 
-  // Wrapper to persist timeframe changes to localStorage
-  const setTimeframeValue = (value: string) => {
-    setTimeframeValueState(value)
-    try {
-      localStorage.setItem(TIMEFRAME_STORAGE_KEY, JSON.stringify(value))
-    } catch {
-      // Ignore storage errors
-    }
-  }
-
   // Anchor time for stable pagination (reset on filter changes)
   const [anchorTime, setAnchorTime] = useState<Date>(new Date())
 
-  // Calculate time range from selected timeframe
+  // Calculate time range from selected time selection
   const fromTime = useMemo(() => {
-    const timeframe = TIMEFRAME_OPTIONS.find((t) => t.value === timeframeValue) || TIMEFRAME_OPTIONS[10] // Default to 7d
-    const to = new Date()
-    return new Date(to.getTime() - timeframe.durationSeconds * 1000)
-  }, [timeframeValue])
+    if (isAbsoluteTimeSelection(timeSelection)) {
+      return timeSelection.range.from
+    }
+    return new Date(anchorTime.getTime() - timeSelection.timeframe.durationSeconds * 1000)
+  }, [timeSelection, anchorTime])
+
+  const toTime = useMemo(() => {
+    if (isAbsoluteTimeSelection(timeSelection)) {
+      return timeSelection.range.to
+    }
+    return anchorTime
+  }, [timeSelection, anchorTime])
 
   // Count unique new traces since anchor time
   const newTracesCount = useMemo(() => {
@@ -97,7 +133,7 @@ export function TracesPage() {
   useEffect(() => {
     resetToFirstPage()
     setAnchorTime(new Date())
-  }, [service, debouncedSearch, timeframeValue, resetToFirstPage])
+  }, [service, debouncedSearch, timeSelection, resetToFirstPage])
 
   useEffect(() => {
     const abortController = new AbortController()
@@ -109,7 +145,7 @@ export function TracesPage() {
           service: service || undefined,
           search: debouncedSearch || undefined,
           from: fromTime.toISOString(),
-          to: anchorTime.toISOString(),
+          to: toTime.toISOString(),
           limit: pageSize,
           offset,
         }, { signal: abortController.signal })
@@ -130,7 +166,7 @@ export function TracesPage() {
     fetchTraces()
 
     return () => abortController.abort()
-  }, [service, debouncedSearch, fromTime, anchorTime, pageSize, offset])
+  }, [service, debouncedSearch, fromTime, toTime, pageSize, offset])
 
   useEffect(() => {
     const abortController = new AbortController()
@@ -159,14 +195,23 @@ export function TracesPage() {
     return () => abortController.abort()
   }, [expandedTraces, spansMap])
 
-  const updateSearchParams = (updates: { service?: string; search?: string; timeframe?: string }) => {
+  const updateSearchParams = (updates: { service?: string; search?: string; timeSelection?: TimeSelection }) => {
     const params: Record<string, string> = {}
     const newService = updates.service ?? service
     const newSearch = updates.search ?? search
-    const newTimeframe = updates.timeframe ?? timeframeValue
+    const newTimeSelection = updates.timeSelection ?? timeSelection
+
     if (newService) params.service = newService
     if (newSearch) params.search = newSearch
-    params.timeframe = newTimeframe
+
+    // Handle time selection params
+    if (isAbsoluteTimeSelection(newTimeSelection)) {
+      params.from = newTimeSelection.range.from.toISOString()
+      params.to = newTimeSelection.range.to.toISOString()
+    } else {
+      params.timeframe = newTimeSelection.timeframe.value
+    }
+
     setSearchParams(params)
   }
 
@@ -175,9 +220,22 @@ export function TracesPage() {
     updateSearchParams({ service: value })
   }
 
-  const handleTimeframeChange = (value: string) => {
-    setTimeframeValue(value)
-    updateSearchParams({ timeframe: value })
+  const handleTimeSelectionChange = (selection: TimeSelection) => {
+    setTimeSelectionState(selection)
+
+    // Persist relative selections to localStorage
+    if (!isAbsoluteTimeSelection(selection)) {
+      try {
+        localStorage.setItem(
+          TIME_SELECTION_STORAGE_KEY,
+          JSON.stringify({ type: 'relative', timeframeValue: selection.timeframe.value })
+        )
+      } catch {
+        // Ignore storage errors
+      }
+    }
+
+    updateSearchParams({ timeSelection: selection })
   }
 
   const handleRefresh = () => {
@@ -226,17 +284,10 @@ export function TracesPage() {
           <div className="flex gap-4">
             <div className="flex items-center gap-2">
               <label className="text-sm text-muted-foreground whitespace-nowrap">Timeframe</label>
-              <Select
-                value={timeframeValue}
-                onChange={(e) => handleTimeframeChange(e.target.value)}
-                className="w-40"
-              >
-                {TIMEFRAME_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </Select>
+              <DateRangePicker
+                value={timeSelection}
+                onChange={handleTimeSelectionChange}
+              />
             </div>
             <div className="w-48">
               <Select

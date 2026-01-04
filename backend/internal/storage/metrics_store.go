@@ -84,6 +84,10 @@ func (s *DuckDBStore) QueryMetrics(ctx context.Context, service, metricName, met
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	// Format times as strings to avoid timezone issues with DuckDB's TIMESTAMP type
+	fromStr := formatTimeForDB(from)
+	toStr := formatTimeForDB(to)
+
 	query := `
 		SELECT
 			Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
@@ -91,9 +95,9 @@ func (s *DuckDBStore) QueryMetrics(ctx context.Context, service, metricName, met
 			Value, AggregationTemporality, IsMonotonic, Count, Sum,
 			Min, Max
 		FROM otel_metrics
-		WHERE Timestamp >= ? AND Timestamp <= ?
+		WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
 	`
-	args := []interface{}{from, to}
+	args := []interface{}{fromStr, toStr}
 
 	if service != "" {
 		query += " AND ServiceName = ?"
@@ -111,8 +115,8 @@ func (s *DuckDBStore) QueryMetrics(ctx context.Context, service, metricName, met
 	}
 
 	// Get total count
-	countQuery := "SELECT COUNT(*) FROM otel_metrics WHERE Timestamp >= ? AND Timestamp <= ?"
-	countArgs := []interface{}{from, to}
+	countQuery := "SELECT COUNT(*) FROM otel_metrics WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP"
+	countArgs := []interface{}{fromStr, toStr}
 	if service != "" {
 		countQuery += " AND ServiceName = ?"
 		countArgs = append(countArgs, service)
@@ -289,6 +293,10 @@ func (s *DuckDBStore) QueryMetricSeries(ctx context.Context, metricName, service
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	// Format times as strings to avoid timezone issues with DuckDB's TIMESTAMP type
+	fromStr := formatTimeForDB(from)
+	toStr := formatTimeForDB(to)
+
 	// First, determine the metric type, aggregation temporality, and monotonicity
 	typeQuery := `
 		SELECT MetricType, IsMonotonic, AggregationTemporality
@@ -358,7 +366,7 @@ func (s *DuckDBStore) QueryMetricSeries(ctx context.Context, metricName, service
 	}
 
 	var query string
-	args := []interface{}{from, to, metricName}
+	args := []interface{}{fromStr, toStr, metricName}
 
 	if aggregate {
 		// Scalar aggregation - no time bucketing
@@ -369,7 +377,7 @@ func (s *DuckDBStore) QueryMetricSeries(ctx context.Context, metricName, service
 				COALESCE(Attributes->>'type', Attributes->>'gen_ai.token.type', 'default') as attr_type,
 				%s as agg_value
 			FROM otel_metrics
-			WHERE Timestamp >= ? AND Timestamp <= ?
+			WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
 				AND MetricName = ?
 				AND (Value IS NOT NULL OR Sum IS NOT NULL)
 		`, aggFunction)
@@ -407,7 +415,7 @@ func (s *DuckDBStore) QueryMetricSeries(ctx context.Context, metricName, service
 					ServiceName,
 					COALESCE(Attributes->>'type', Attributes->>'gen_ai.token.type', 'default') as attr_type
 				FROM otel_metrics
-				WHERE Timestamp >= ? AND Timestamp <= ?
+				WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
 					AND MetricName = ?
 					AND (Value IS NOT NULL OR Sum IS NOT NULL)
 					%[3]s
@@ -419,7 +427,7 @@ func (s *DuckDBStore) QueryMetricSeries(ctx context.Context, metricName, service
 					COALESCE(Attributes->>'type', Attributes->>'gen_ai.token.type', 'default') as attr_type,
 					%[2]s as agg_value
 				FROM otel_metrics
-				WHERE Timestamp >= ? AND Timestamp <= ?
+				WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
 					AND MetricName = ?
 					AND (Value IS NOT NULL OR Sum IS NOT NULL)
 					%[3]s
@@ -440,9 +448,9 @@ func (s *DuckDBStore) QueryMetricSeries(ctx context.Context, metricName, service
 
 		// Update args: buckets CTE needs from, to; series_labels needs from, to, metricName, [service]; data needs from, to, metricName, [service]
 		if service != "" {
-			args = []interface{}{from, to, from, to, metricName, service, from, to, metricName, service}
+			args = []interface{}{fromStr, toStr, fromStr, toStr, metricName, service, fromStr, toStr, metricName, service}
 		} else {
-			args = []interface{}{from, to, from, to, metricName, from, to, metricName}
+			args = []interface{}{fromStr, toStr, fromStr, toStr, metricName, fromStr, toStr, metricName}
 		}
 	}
 
@@ -646,6 +654,10 @@ func (s *DuckDBStore) queryMetricSeriesInternal(ctx context.Context, metricName,
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	// Format times as strings to avoid timezone issues with DuckDB's TIMESTAMP type
+	fromStr := formatTimeForDB(from)
+	toStr := formatTimeForDB(to)
+
 	// OTLP AggregationTemporality: 0=UNSPECIFIED, 1=DELTA, 2=CUMULATIVE
 	isCumulative := typeInfo.aggregationTemporality.Valid && typeInfo.aggregationTemporality.Int32 == 2
 
@@ -689,7 +701,7 @@ func (s *DuckDBStore) queryMetricSeriesInternal(ctx context.Context, metricName,
 	}
 
 	var query string
-	args := []interface{}{from, to, metricName}
+	args := []interface{}{fromStr, toStr, metricName}
 
 	if aggregate {
 		// Check multiple attribute keys for type breakdown (type, gen_ai.token.type)
@@ -699,7 +711,7 @@ func (s *DuckDBStore) queryMetricSeriesInternal(ctx context.Context, metricName,
 				COALESCE(Attributes->>'type', Attributes->>'gen_ai.token.type', 'default') as attr_type,
 				%s as agg_value
 			FROM otel_metrics
-			WHERE Timestamp >= ? AND Timestamp <= ?
+			WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
 				AND MetricName = ?
 				AND (Value IS NOT NULL OR Sum IS NOT NULL)
 		`, aggFunction)
@@ -737,7 +749,7 @@ func (s *DuckDBStore) queryMetricSeriesInternal(ctx context.Context, metricName,
 					ServiceName,
 					COALESCE(Attributes->>'type', Attributes->>'gen_ai.token.type', 'default') as attr_type
 				FROM otel_metrics
-				WHERE Timestamp >= ? AND Timestamp <= ?
+				WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
 					AND MetricName = ?
 					AND (Value IS NOT NULL OR Sum IS NOT NULL)
 					%[3]s
@@ -749,7 +761,7 @@ func (s *DuckDBStore) queryMetricSeriesInternal(ctx context.Context, metricName,
 					COALESCE(Attributes->>'type', Attributes->>'gen_ai.token.type', 'default') as attr_type,
 					%[2]s as agg_value
 				FROM otel_metrics
-				WHERE Timestamp >= ? AND Timestamp <= ?
+				WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
 					AND MetricName = ?
 					AND (Value IS NOT NULL OR Sum IS NOT NULL)
 					%[3]s
@@ -770,9 +782,9 @@ func (s *DuckDBStore) queryMetricSeriesInternal(ctx context.Context, metricName,
 
 		// Update args: buckets CTE needs from, to; series_labels needs from, to, metricName, [service]; data needs from, to, metricName, [service]
 		if service != "" {
-			args = []interface{}{from, to, from, to, metricName, service, from, to, metricName, service}
+			args = []interface{}{fromStr, toStr, fromStr, toStr, metricName, service, fromStr, toStr, metricName, service}
 		} else {
-			args = []interface{}{from, to, from, to, metricName, from, to, metricName}
+			args = []interface{}{fromStr, toStr, fromStr, toStr, metricName, fromStr, toStr, metricName}
 		}
 	}
 

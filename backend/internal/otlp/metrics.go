@@ -59,6 +59,11 @@ func ConvertMetrics(req *colmetricspb.ExportMetricsServiceRequest) MetricConvers
 		}
 	}
 
+	// Derive user-facing metrics for Claude Code token usage
+	// (filters to only include API calls that have cache activity)
+	userFacingMetrics := DeriveClaudeUserFacingMetrics(metrics)
+	derivedMetrics = append(derivedMetrics, userFacingMetrics...)
+
 	return MetricConversionResult{Metrics: metrics, DerivedMetrics: derivedMetrics}
 }
 

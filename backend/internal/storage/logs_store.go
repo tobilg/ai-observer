@@ -66,6 +66,10 @@ func (s *DuckDBStore) QueryLogs(ctx context.Context, service, severity, traceID,
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	// Format times as strings to avoid timezone issues with DuckDB's TIMESTAMP type
+	fromStr := formatTimeForDB(from)
+	toStr := formatTimeForDB(to)
+
 	query := `
 		SELECT
 			Timestamp, TraceId, SpanId, TraceFlags, SeverityText,
@@ -73,9 +77,9 @@ func (s *DuckDBStore) QueryLogs(ctx context.Context, service, severity, traceID,
 			ResourceAttributes, ScopeSchemaUrl, ScopeName, ScopeVersion,
 			ScopeAttributes, LogAttributes
 		FROM otel_logs
-		WHERE Timestamp >= ? AND Timestamp <= ?
+		WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
 	`
-	args := []interface{}{from, to}
+	args := []interface{}{fromStr, toStr}
 
 	if service != "" {
 		query += " AND ServiceName = ?"
@@ -99,8 +103,8 @@ func (s *DuckDBStore) QueryLogs(ctx context.Context, service, severity, traceID,
 	}
 
 	// Get total count
-	countQuery := "SELECT COUNT(*) FROM otel_logs WHERE Timestamp >= ? AND Timestamp <= ?"
-	countArgs := []interface{}{from, to}
+	countQuery := "SELECT COUNT(*) FROM otel_logs WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP"
+	countArgs := []interface{}{fromStr, toStr}
 	if service != "" {
 		countQuery += " AND ServiceName = ?"
 		countArgs = append(countArgs, service)

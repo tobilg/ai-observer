@@ -45,3 +45,5 @@ data/*.duckdb.wal
 
 # Embedded frontend build output
 backend/internal/frontend/dist/
+
+.DS_Store

@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Select } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { DateRangePicker } from '@/components/ui/date-range-picker'
 import { Layers, BarChart3 } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { TimeSeries } from '@/types/metrics'
@@ -19,12 +20,18 @@ import {
   type SourceTool,
 } from '@/lib/metricMetadata'
 import { toast } from 'sonner'
-import { TIMEFRAME_OPTIONS } from '@/types/dashboard'
+import {
+  TIMEFRAME_OPTIONS,
+  isAbsoluteTimeSelection,
+  getTimeSelectionLabel,
+  type TimeSelection,
+} from '@/types/dashboard'
 import { formatIntervalSeconds } from '@/lib/utils'
 import { getLocalStorageValue } from '@/hooks/useLocalStorage'
+import { calculateInterval, calculateTickInterval } from '@/lib/timeUtils'
 
 const DEFAULT_TIMEFRAME = '15m'
-const TIMEFRAME_STORAGE_KEY = 'ai-observer-metrics-timeframe'
+const TIME_SELECTION_STORAGE_KEY = 'ai-observer-metrics-timeselection'
 
 export function MetricsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -37,28 +44,97 @@ export function MetricsPage() {
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date())
   const [stacked, setStacked] = useState(true)
 
-  // Get timeframe from URL (for shareable links), then localStorage, then default
-  const timeframeParam = searchParams.get('timeframe')
-    || getLocalStorageValue(TIMEFRAME_STORAGE_KEY, DEFAULT_TIMEFRAME)
-  const selectedTimeframe = TIMEFRAME_OPTIONS.find(t => t.value === timeframeParam)
-    || TIMEFRAME_OPTIONS.find(t => t.value === DEFAULT_TIMEFRAME)!
-
-  const handleTimeframeChange = (value: string) => {
-    // Persist to localStorage
-    try {
-      localStorage.setItem(TIMEFRAME_STORAGE_KEY, JSON.stringify(value))
-    } catch {
-      // Ignore storage errors
+  // Get time selection from URL (for shareable links), then localStorage, then default
+  const getInitialTimeSelection = (): TimeSelection => {
+    // Check for absolute date range in URL
+    const fromParam = searchParams.get('from')
+    const toParam = searchParams.get('to')
+    if (fromParam && toParam) {
+      const from = new Date(fromParam)
+      const to = new Date(toParam)
+      if (!isNaN(from.getTime()) && !isNaN(to.getTime())) {
+        const intervalSeconds = calculateInterval(from, to)
+        const rangeDays = (to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24)
+        const bucketCount = Math.ceil((rangeDays * 86400) / intervalSeconds)
+        return {
+          type: 'absolute',
+          range: {
+            from,
+            to,
+            intervalSeconds,
+            tickInterval: calculateTickInterval(bucketCount),
+          },
+        }
+      }
     }
+
+    // Check for relative timeframe in URL or localStorage
+    const storedSelection = getLocalStorageValue<{ type: string; timeframeValue: string } | null>(TIME_SELECTION_STORAGE_KEY, null)
+    const timeframeParam = searchParams.get('timeframe')
+      || storedSelection?.timeframeValue
+      || DEFAULT_TIMEFRAME
+    const timeframe = TIMEFRAME_OPTIONS.find((t) => t.value === timeframeParam)
+      || TIMEFRAME_OPTIONS.find((t) => t.value === DEFAULT_TIMEFRAME)!
+    return { type: 'relative', timeframe }
+  }
+
+  const [timeSelection, setTimeSelectionState] = useState<TimeSelection>(getInitialTimeSelection)
+
+  const isAbsoluteRange = isAbsoluteTimeSelection(timeSelection)
+
+  const handleTimeSelectionChange = (selection: TimeSelection) => {
+    setTimeSelectionState(selection)
+
     // Update URL params
     const newParams = new URLSearchParams(searchParams)
-    if (value === DEFAULT_TIMEFRAME) {
+
+    if (isAbsoluteTimeSelection(selection)) {
+      // Absolute range: set from/to, remove timeframe
+      newParams.set('from', selection.range.from.toISOString())
+      newParams.set('to', selection.range.to.toISOString())
       newParams.delete('timeframe')
     } else {
-      newParams.set('timeframe', value)
+      // Relative range: set timeframe, remove from/to
+      newParams.delete('from')
+      newParams.delete('to')
+      if (selection.timeframe.value === DEFAULT_TIMEFRAME) {
+        newParams.delete('timeframe')
+      } else {
+        newParams.set('timeframe', selection.timeframe.value)
+      }
+      // Persist to localStorage
+      try {
+        localStorage.setItem(
+          TIME_SELECTION_STORAGE_KEY,
+          JSON.stringify({ type: 'relative', timeframeValue: selection.timeframe.value })
+        )
+      } catch {
+        // Ignore storage errors
+      }
     }
+
     setSearchParams(newParams)
   }
+
+  // Derive time range values from selection
+  const { fromTime, toTime, intervalSeconds, tickInterval } = useMemo(() => {
+    if (isAbsoluteTimeSelection(timeSelection)) {
+      return {
+        fromTime: timeSelection.range.from,
+        toTime: timeSelection.range.to,
+        intervalSeconds: timeSelection.range.intervalSeconds,
+        tickInterval: timeSelection.range.tickInterval,
+      }
+    }
+    const now = new Date()
+    const from = new Date(now.getTime() - timeSelection.timeframe.durationSeconds * 1000)
+    return {
+      fromTime: from,
+      toTime: now,
+      intervalSeconds: timeSelection.timeframe.intervalSeconds,
+      tickInterval: timeSelection.timeframe.tickInterval,
+    }
+  }, [timeSelection])
 
   // Real-time metrics from WebSocket
   const recentMetrics = useTelemetryStore((state) => state.recentMetrics)
@@ -125,18 +201,27 @@ export function MetricsPage() {
     }
   }, [selectedService, selectedMetric, getSourceFromService])
 
-  // Auto-refresh at the X-axis tick interval rate
-  // Recharts interval=N skips N ticks, so actual spacing is (N+1) data points
+  // Auto-refresh at the X-axis tick interval rate (disabled for absolute ranges)
   useEffect(() => {
-    const refreshMs = selectedTimeframe.intervalSeconds * 1000 * (selectedTimeframe.tickInterval + 1)
+    // Skip auto-refresh for absolute date ranges (static historical data)
+    if (isAbsoluteRange) {
+      return
+    }
+
+    const refreshMs = intervalSeconds * 1000 * (tickInterval + 1)
     const interval = setInterval(() => {
       setLastUpdate(new Date())
     }, refreshMs)
     return () => clearInterval(interval)
-  }, [selectedTimeframe.intervalSeconds, selectedTimeframe.tickInterval])
+  }, [intervalSeconds, tickInterval, isAbsoluteRange])
 
-  // Also refresh when new metrics arrive via WebSocket (debounced)
+  // Also refresh when new metrics arrive via WebSocket (disabled for absolute ranges)
   useEffect(() => {
+    // Skip WebSocket refresh for absolute date ranges
+    if (isAbsoluteRange) {
+      return
+    }
+
     if (recentMetrics.length > prevMetricsCountRef.current) {
       const timer = setTimeout(() => {
         setLastUpdate(new Date())
@@ -144,7 +229,7 @@ export function MetricsPage() {
       prevMetricsCountRef.current = recentMetrics.length
       return () => clearTimeout(timer)
     }
-  }, [recentMetrics.length])
+  }, [recentMetrics.length, isAbsoluteRange])
 
   useEffect(() => {
     if (!selectedMetric) {
@@ -161,15 +246,29 @@ export function MetricsPage() {
         setLoading(true)
       }
       try {
-        const now = new Date()
-        const from = new Date(now.getTime() - selectedTimeframe.durationSeconds * 1000)
+        // Use computed time range (fromTime/toTime for absolute, fresh calculation for relative)
+        let fetchFrom: Date
+        let fetchTo: Date
+
+        if (isAbsoluteRange) {
+          fetchFrom = fromTime
+          fetchTo = toTime
+        } else {
+          // Compute fresh time range for relative ranges
+          const now = new Date()
+          const durationSeconds = isAbsoluteTimeSelection(timeSelection)
+            ? (toTime.getTime() - fromTime.getTime()) / 1000
+            : timeSelection.timeframe.durationSeconds
+          fetchFrom = new Date(now.getTime() - durationSeconds * 1000)
+          fetchTo = now
+        }
 
         const data = await api.getMetricSeries({
           name: selectedMetric,
           service: selectedService || undefined,
-          from: from.toISOString(),
-          to: now.toISOString(),
-          intervalSeconds: selectedTimeframe.intervalSeconds,
+          from: fetchFrom.toISOString(),
+          to: fetchTo.toISOString(),
+          intervalSeconds,
         }, { signal: abortController.signal })
         setSeries(data.series ?? [])
       } catch (err) {
@@ -187,7 +286,7 @@ export function MetricsPage() {
     fetchSeries()
 
     return () => abortController.abort()
-  }, [selectedMetric, selectedService, lastUpdate, selectedTimeframe])
+  }, [selectedMetric, selectedService, lastUpdate, timeSelection, fromTime, toTime, intervalSeconds, isAbsoluteRange])
 
   // Get metadata for selected metric
   const metadata = useMemo(
@@ -269,6 +368,35 @@ export function MetricsPage() {
     return [formattedValue, displayLabel]
   }, [metadata, series, getSeriesKey, getDisplayLabel])
 
+  // Calculate duration in seconds for formatting
+  const durationSeconds = useMemo(() => {
+    return (toTime.getTime() - fromTime.getTime()) / 1000
+  }, [fromTime, toTime])
+
+  // Format timestamp for X-axis based on duration and interval
+  const formatTickLabel = useCallback((timestamp: number): string => {
+    const date = new Date(timestamp)
+    const DAY_SECONDS = 24 * 60 * 60
+
+    // For sub-daily intervals, always include time to distinguish bars
+    const hasSubDailyInterval = intervalSeconds < DAY_SECONDS
+
+    if (durationSeconds < DAY_SECONDS) {
+      // Less than 24h: time only
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    } else if (durationSeconds <= 7 * DAY_SECONDS || hasSubDailyInterval) {
+      // 24h to 7 days OR any range with sub-daily intervals: date + time + year
+      return (
+        date.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) +
+        ' ' +
+        date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      )
+    } else {
+      // More than 7 days with daily+ intervals: date + year only
+      return date.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
+    }
+  }, [durationSeconds, intervalSeconds])
+
   // Generate chart data directly from backend data (backend fills missing buckets)
   const sortedData = useMemo(() => {
     if (series.length === 0) return []
@@ -302,7 +430,7 @@ export function MetricsPage() {
     return sortedTimestamps.map((timestamp) => {
       const point: Record<string, number | string> = {
         timestamp,
-        time: new Date(timestamp).toLocaleTimeString(),
+        time: formatTickLabel(timestamp),
       }
       for (const key of seriesKeys) {
         const value = dataMap.get(key)?.get(timestamp)
@@ -310,7 +438,7 @@ export function MetricsPage() {
       }
       return point
     })
-  }, [series, getSeriesKey])
+  }, [series, getSeriesKey, formatTickLabel])
 
   // Create deterministic color map based on sorted series keys (memoized)
   const colorMap = useMemo(() => {
@@ -330,8 +458,8 @@ export function MetricsPage() {
     }))
   }, [series, getSeriesKey, getDisplayLabel])
 
-  // Use timeframe-specific tick interval for X-axis labels
-  const xAxisTickInterval = selectedTimeframe.tickInterval
+  // Use time selection-specific tick interval for X-axis labels
+  const xAxisTickInterval = tickInterval
 
   return (
     <div className="space-y-6">
@@ -399,16 +527,10 @@ export function MetricsPage() {
             </div>
             <div className="flex-1">
               <label className="text-sm font-medium mb-2 block">Timeframe</label>
-              <Select
-                value={selectedTimeframe.value}
-                onChange={(e) => handleTimeframeChange(e.target.value)}
-              >
-                {TIMEFRAME_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </Select>
+              <DateRangePicker
+                value={timeSelection}
+                onChange={handleTimeSelectionChange}
+              />
             </div>
           </div>
         </CardContent>
@@ -428,11 +550,11 @@ export function MetricsPage() {
                 )}
               </div>
               <CardDescription>
-                {metadata?.description || `${selectedTimeframe.label}, ${formatIntervalSeconds(selectedTimeframe.intervalSeconds)} intervals`}
+                {metadata?.description || `${getTimeSelectionLabel(timeSelection)}, ${formatIntervalSeconds(intervalSeconds)} intervals`}
               </CardDescription>
               {metadata && (
                 <p className="text-xs text-muted-foreground mt-1">
-                  {selectedTimeframe.label}, {formatIntervalSeconds(selectedTimeframe.intervalSeconds)} intervals
+                  {getTimeSelectionLabel(timeSelection)}, {formatIntervalSeconds(intervalSeconds)} intervals
                 </p>
               )}
             </div>

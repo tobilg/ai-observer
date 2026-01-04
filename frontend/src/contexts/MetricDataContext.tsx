@@ -10,7 +10,7 @@ import {
 } from 'react'
 import { api } from '@/lib/api'
 import { useDashboardStore } from '@/stores/dashboardStore'
-import { WIDGET_TYPES } from '@/types/dashboard'
+import { WIDGET_TYPES, isAbsoluteTimeSelection } from '@/types/dashboard'
 import type { TimeSeries } from '@/types/metrics'
 import { useTelemetryStore } from '@/stores/telemetryStore'
 
@@ -40,7 +40,7 @@ interface MetricDataProviderProps {
 }
 
 export function MetricDataProvider({ children }: MetricDataProviderProps) {
-  const { widgets, timeframe } = useDashboardStore()
+  const { widgets, timeSelection, fromTime, toTime, intervalSeconds, isAbsoluteRange } = useDashboardStore()
   const metricsUpdateCount = useTelemetryStore((state) => state.metricsUpdateCount)
   const prevMetricsCountRef = useRef(0)
 
@@ -69,17 +69,31 @@ export function MetricDataProvider({ children }: MetricDataProviderProps) {
     }))
   }, [metricWidgets])
 
-  // Auto-refresh based on timeframe
+  // Auto-refresh based on timeframe (disabled for absolute ranges)
   useEffect(() => {
-    const refreshMs = Math.min((timeframe.durationSeconds * 1000) / 10, 60000)
+    // Skip auto-refresh for absolute date ranges (static historical data)
+    if (isAbsoluteRange) {
+      return
+    }
+
+    const durationSeconds = isAbsoluteTimeSelection(timeSelection)
+      ? (toTime.getTime() - fromTime.getTime()) / 1000
+      : timeSelection.timeframe.durationSeconds
+
+    const refreshMs = Math.min((durationSeconds * 1000) / 10, 60000)
     const interval = setInterval(() => {
       setRefreshTrigger((prev) => prev + 1)
     }, refreshMs)
     return () => clearInterval(interval)
-  }, [timeframe.durationSeconds])
+  }, [timeSelection, fromTime, toTime, isAbsoluteRange])
 
-  // Refresh when new metrics arrive via WebSocket (debounced)
+  // Refresh when new metrics arrive via WebSocket (disabled for absolute ranges)
   useEffect(() => {
+    // Skip WebSocket refresh for absolute date ranges
+    if (isAbsoluteRange) {
+      return
+    }
+
     if (metricsUpdateCount > prevMetricsCountRef.current) {
       const timer = setTimeout(() => {
         setRefreshTrigger((prev) => prev + 1)
@@ -87,9 +101,9 @@ export function MetricDataProvider({ children }: MetricDataProviderProps) {
       prevMetricsCountRef.current = metricsUpdateCount
       return () => clearTimeout(timer)
     }
-  }, [metricsUpdateCount])
+  }, [metricsUpdateCount, isAbsoluteRange])
 
-  // Fetch batch data when queries or timeframe change
+  // Fetch batch data when queries or time selection change
   useEffect(() => {
     if (queries.length === 0) {
       setResults(new Map())
@@ -101,16 +115,30 @@ export function MetricDataProvider({ children }: MetricDataProviderProps) {
     const fetchData = async () => {
       setLoading(true)
 
-      // Compute fresh time range on each fetch (not stale fromTime/toTime)
-      const now = new Date()
-      const freshFrom = new Date(now.getTime() - timeframe.durationSeconds * 1000)
+      // Compute time range based on selection type
+      let fetchFrom: Date
+      let fetchTo: Date
+
+      if (isAbsoluteRange) {
+        // Use fixed dates for absolute ranges
+        fetchFrom = fromTime
+        fetchTo = toTime
+      } else {
+        // Compute fresh time range for relative ranges
+        const now = new Date()
+        const durationSeconds = isAbsoluteTimeSelection(timeSelection)
+          ? (toTime.getTime() - fromTime.getTime()) / 1000
+          : timeSelection.timeframe.durationSeconds
+        fetchFrom = new Date(now.getTime() - durationSeconds * 1000)
+        fetchTo = now
+      }
 
       try {
         const response = await api.getBatchMetricSeries(
           {
-            from: freshFrom.toISOString(),
-            to: now.toISOString(),
-            intervalSeconds: timeframe.intervalSeconds,
+            from: fetchFrom.toISOString(),
+            to: fetchTo.toISOString(),
+            intervalSeconds,
             queries,
           },
           { signal: controller.signal }
@@ -148,7 +176,7 @@ export function MetricDataProvider({ children }: MetricDataProviderProps) {
     fetchData()
 
     return () => controller.abort()
-  }, [queries, timeframe.durationSeconds, timeframe.intervalSeconds, refreshTrigger])
+  }, [queries, timeSelection, fromTime, toTime, intervalSeconds, isAbsoluteRange, refreshTrigger])
 
   const getMetricData = useCallback(
     (widgetId: string): MetricData => {

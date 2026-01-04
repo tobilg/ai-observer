@@ -1,0 +1,61 @@
+{
+  "provider": "google",
+  "lastUpdated": "2026-01-02T00:00:00Z",
+  "models": {
+    "gemini-3-pro-preview": {
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 12,
+      "cacheReadCostPerMTok": 0.2
+    },
+    "gemini-3-flash-preview": {
+      "inputCostPerMTok": 0.5,
+      "outputCostPerMTok": 3,
+      "cacheReadCostPerMTok": 0.05
+    },
+    "gemini-2.5-pro": {
+      "aliases": ["gemini-2.5-pro-latest"],
+      "inputCostPerMTok": 1.25,
+      "outputCostPerMTok": 10,
+      "cacheReadCostPerMTok": 0.125
+    },
+    "gemini-2.5-flash": {
+      "aliases": ["gemini-2.5-flash-latest"],
+      "inputCostPerMTok": 0.3,
+      "outputCostPerMTok": 2.5,
+      "cacheReadCostPerMTok": 0.03
+    },
+    "gemini-2.5-flash-preview-09-2025": {
+      "inputCostPerMTok": 0.3,
+      "outputCostPerMTok": 2.5,
+      "cacheReadCostPerMTok": 0.03
+    },
+    "gemini-2.5-flash-lite": {
+      "aliases": ["gemini-2.5-flash-lite-latest"],
+      "inputCostPerMTok": 0.1,
+      "outputCostPerMTok": 0.4,
+      "cacheReadCostPerMTok": 0.01
+    },
+    "gemini-2.5-flash-lite-preview-09-2025": {
+      "inputCostPerMTok": 0.1,
+      "outputCostPerMTok": 0.4,
+      "cacheReadCostPerMTok": 0.01
+    },
+    "gemini-2.5-computer-use-preview-10-2025": {
+      "inputCostPerMTok": 1.25,
+      "outputCostPerMTok": 10,
+      "cacheReadCostPerMTok": 0
+    },
+    "gemini-2.0-flash": {
+      "aliases": ["gemini-2.0-flash-latest"],
+      "inputCostPerMTok": 0.1,
+      "outputCostPerMTok": 0.4,
+      "cacheReadCostPerMTok": 0.025
+    },
+    "gemini-2.0-flash-lite": {
+      "aliases": ["gemini-2.0-flash-lite-latest"],
+      "inputCostPerMTok": 0.075,
+      "outputCostPerMTok": 0.3,
+      "cacheReadCostPerMTok": 0
+    }
+  }
+}

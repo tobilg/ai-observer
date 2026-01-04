@@ -20,10 +20,18 @@ AI coding assistants are becoming essential development tools, but understanding
 - **Multi-tool support** — Works with Claude Code, Gemini CLI, and OpenAI Codex CLI
 - **Real-time dashboard** — Live updates via WebSocket as telemetry arrives
 - **Customizable widgets** — Drag-and-drop dashboard builder with multiple widget types
+- **Historical import** — Import past sessions from local JSONL/JSON files with cost calculation
+- **Cost tracking** — Embedded pricing data for 67+ models across Claude, Codex, and Gemini
 - **Fast analytics** — DuckDB-powered storage for instant queries on large datasets
 - **Single binary** — One ~54MB executable with embedded frontend—no external dependencies
 - **Multi-arch Docker** — Ready-to-run ~97MB images for `linux/amd64` and `linux/arm64`
 - **OTLP-native** — Standard OpenTelemetry Protocol ingestion (HTTP/JSON and HTTP/Protobuf)
+
+## Documentation
+
+- [Import Command](docs/import.md) — Import historical session data from local AI tool files
+- [Export Command](docs/export.md) — Export telemetry data to Parquet files for archiving and sharing
+- [Pricing System](docs/pricing.md) — Cost calculation for Claude, Codex, and Gemini models
 
 ## Screenshots
 
@@ -118,23 +126,168 @@ CORS and WebSocket origins allow `AI_OBSERVER_FRONTEND_URL` plus `http://localho
 ### CLI Options
 
 ```bash
-ai-observer [options]
+ai-observer [command] [options]
 ```
 
+**Commands:**
+| Command | Description |
+|---------|-------------|
+| `import` | Import local sessions from AI tool files |
+| `export` | Export telemetry data to Parquet files |
+| `delete` | Delete telemetry data from database |
+| `setup` | Show setup instructions for AI tools |
+| `serve` | Start the OTLP server (default if no command) |
+
+**Global Options:**
 | Option | Description |
 |--------|-------------|
 | `-h`, `--help` | Show help message and exit |
 | `-v`, `--version` | Show version information and exit |
-| `-s`, `--setup TOOL` | Show setup instructions for TOOL (claude, gemini, codex) |
 
 **Examples:**
 
 ```bash
+# Start the server (default, no command needed)
+ai-observer
+
 # Show version
 ai-observer --version
 
 # Show setup instructions for Claude Code
-ai-observer --setup claude
+ai-observer setup claude-code
+
+# Import data from all AI tools
+ai-observer import all
+
+# Export data to Parquet files
+ai-observer export all --output ./export
+
+# Delete data in a date range
+ai-observer delete all --from 2025-01-01 --to 2025-01-31
+```
+
+### Import Command
+
+Import historical session data from local AI coding tool files into AI Observer.
+
+```bash
+ai-observer import [claude-code|codex|gemini|all] [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--from DATE` | Only import sessions from DATE (YYYY-MM-DD) |
+| `--to DATE` | Only import sessions up to DATE (YYYY-MM-DD) |
+| `--force` | Re-import already imported files |
+| `--dry-run` | Show what would be imported without making changes |
+| `--skip-confirm` | Skip confirmation prompt |
+| `--purge` | Delete existing data in time range before importing |
+| `--pricing-mode MODE` | Cost calculation mode for Claude: `auto` (default), `calculate`, `display` |
+| `--verbose` | Show detailed progress |
+
+**File locations:**
+
+| Tool | Default Location |
+|------|------------------|
+| Claude Code | `~/.claude/projects/**/*.jsonl` |
+| Codex CLI | `~/.codex/sessions/*.jsonl` |
+| Gemini CLI | `~/.gemini/tmp/**/session-*.json` |
+
+Override with environment variables: `AI_OBSERVER_CLAUDE_PATH`, `AI_OBSERVER_CODEX_PATH`, `AI_OBSERVER_GEMINI_PATH`
+
+**Examples:**
+
+```bash
+# Import from all tools
+ai-observer import all
+
+# Import Claude data from specific date range
+ai-observer import claude-code --from 2025-01-01 --to 2025-12-31
+
+# Dry run to see what would be imported
+ai-observer import all --dry-run
+
+# Force re-import and recalculate costs
+ai-observer import claude-code --force --pricing-mode calculate
+```
+
+See [docs/import.md](docs/import.md) for detailed documentation and [docs/pricing.md](docs/pricing.md) for pricing calculation details.
+
+### Export Command
+
+Export telemetry data to portable Parquet files with an optional DuckDB views database.
+
+```bash
+ai-observer export [claude-code|codex|gemini|all] --output <directory> [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--output DIR` | Output directory (required) |
+| `--from DATE` | Start date filter (YYYY-MM-DD) |
+| `--to DATE` | End date filter (YYYY-MM-DD) |
+| `--from-files` | Read from raw JSON/JSONL files instead of database |
+| `--zip` | Create single ZIP archive of exported files |
+| `--dry-run` | Preview what would be exported |
+| `--verbose` | Show detailed progress |
+| `--yes` | Skip confirmation prompt |
+
+**Output files:**
+- `traces.parquet` — All trace/span data
+- `logs.parquet` — All log records
+- `metrics.parquet` — All metric data points
+- `ai-observer-export-{SOURCE}-{RANGE}.duckdb` — Views database with relative paths
+
+**Examples:**
+
+```bash
+# Export all data from database
+ai-observer export all --output ./export
+
+# Export Claude data with date filter
+ai-observer export claude-code --output ./export --from 2025-01-01 --to 2025-01-15
+
+# Export to ZIP archive
+ai-observer export all --output ./export --zip
+
+# Export directly from raw files (without prior import)
+ai-observer export claude-code --output ./export --from-files
+
+# Dry run to preview export
+ai-observer export all --output ./export --dry-run
+```
+
+See [docs/export.md](docs/export.md) for detailed documentation.
+
+### Delete Command
+
+Delete telemetry data from the database by time range.
+
+```bash
+ai-observer delete [logs|metrics|traces|all] --from DATE --to DATE [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--from DATE` | Start date (YYYY-MM-DD, required) |
+| `--to DATE` | End date (YYYY-MM-DD, required) |
+| `--service NAME` | Only delete data for specific service |
+| `--yes` | Skip confirmation prompt |
+
+**Examples:**
+
+```bash
+# Delete all data in a date range
+ai-observer delete all --from 2025-01-01 --to 2025-01-31
+
+# Delete only logs in a date range
+ai-observer delete logs --from 2025-01-01 --to 2025-01-31
+
+# Delete only Claude Code data
+ai-observer delete all --from 2025-01-01 --to 2025-01-31 --service claude-code
+
+# Skip confirmation prompt
+ai-observer delete all --from 2025-01-01 --to 2025-01-31 --yes
 ```
 
 ### AI Tool Setup
@@ -532,6 +685,69 @@ This means long CLI sessions produce traces with thousands of spans spanning hou
 
 </details>
 
+## Understanding Token Metrics: OTLP vs Local Files
+
+When comparing token usage from AI Observer's OTLP ingestion with tools like [ccusage](https://github.com/ryoppippi/ccusage) that parse local session files, you may notice significant differences in reported values. This is expected behavior due to different counting semantics.
+
+### Example Comparison
+
+Here's a real comparison from a single day of Claude Code usage:
+
+| Token Type | ccusage | OTLP | OTLP/ccusage |
+|------------|---------|------|--------------|
+| **Input** | 84,103 | 681,669 | **8.1x** |
+| **Output** | 5,073 | 445,143 | **87.8x** |
+| **Cache Create** | 3,856,624 | 4,854,456 | 1.26x |
+| **Cache Read** | 59,803,276 | 62,460,204 | 1.04x |
+| **Total** | 63,749,076 | 68,441,472 | 1.07x |
+| **Cost** | $48.35 | $65.94 | 1.36x |
+
+### Why This Happens
+
+The discrepancy is most pronounced for **input** and **output** tokens:
+
+1. **Claude Code OTLP metrics** appear to report tokens differently than the API response's `usage` object that gets written to JSONL files.
+
+2. **Local JSONL files** store the exact `usage.input_tokens` and `usage.output_tokens` values from Claude's API response, which ccusage reads directly.
+
+3. **Cache tokens** (creation and read) are much closer between the two sources, suggesting these are counted consistently.
+
+### Token Type Comparison
+
+| Token Type | OTLP vs Local File Ratio | Notes |
+|------------|-------------------------|-------|
+| **Input** | ~8x higher in OTLP | Largest discrepancy |
+| **Output** | ~80-90x higher in OTLP | Significant discrepancy |
+| **Cache Creation** | ~1.2-1.3x (similar) | Minor difference |
+| **Cache Read** | ~1.0x (nearly identical) | Consistent counting |
+
+### Which Data Source Should I Use?
+
+| Use Case | Recommended Source |
+|----------|-------------------|
+| **Billing verification** | Local files / ccusage (matches API billing) |
+| **Understanding API load** | OTLP metrics (shows actual tokens transmitted) |
+| **Cost tracking** | Either (both calculate costs correctly) |
+| **Historical analysis** | Import command (`ai-observer import`) for ccusage-compatible data |
+
+### Reconciling the Data
+
+If you need ccusage-compatible metrics in AI Observer:
+
+```bash
+# Import from local files instead of relying on OTLP
+ai-observer import claude-code --from 2025-01-01 --to 2025-12-31
+```
+
+Imported data uses the same token counting as ccusage and will show matching values.
+
+### Technical Details
+
+- OTLP metrics arrive with `aggregationTemporality: 1` (DELTA), meaning each data point is a per-request value
+- The `type` attribute distinguishes token types: `input`, `output`, `cacheCreation`, `cacheRead`
+- Imported metrics include an `import_source: local_jsonl` attribute to distinguish them from OTLP data
+- OTLP metrics have no `import_source` attribute (or it's null)
+
 ## Development
 
 ### Developer quickstart
@@ -568,8 +784,12 @@ ai-observer/
 │   ├── cmd/server/       # Main entry point
 │   ├── internal/
 │   │   ├── api/          # API types and helpers
+│   │   ├── deleter/      # Data deletion logic
+│   │   ├── exporter/     # Parquet export and views database
 │   │   ├── handlers/     # HTTP handlers
+│   │   ├── importer/     # Historical data import (Claude, Codex, Gemini)
 │   │   ├── otlp/         # OTLP decoders (proto/JSON)
+│   │   ├── pricing/      # Embedded pricing data and cost calculation
 │   │   ├── server/       # Server setup and routing
 │   │   ├── storage/      # DuckDB storage layer
 │   │   └── websocket/    # Real-time updates
@@ -581,6 +801,7 @@ ai-observer/
 │   │   ├── stores/       # Zustand stores
 │   │   └── lib/          # Utilities
 │   └── ...
+├── docs/                 # Documentation
 └── Makefile
 ```
 

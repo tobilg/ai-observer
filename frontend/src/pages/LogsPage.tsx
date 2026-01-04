@@ -1,9 +1,11 @@
 import { useEffect, useState, useMemo } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
+import { DateRangePicker } from '@/components/ui/date-range-picker'
 import { DataPagination } from '@/components/ui/data-pagination'
 import { api } from '@/lib/api'
 import { formatTimestamp, getSeverityColor, cn } from '@/lib/utils'
@@ -14,40 +16,67 @@ import { useTelemetryStore } from '@/stores/telemetryStore'
 import { useDebounce } from '@/hooks/useDebounce'
 import { usePagination } from '@/hooks/usePagination'
 import { getLocalStorageValue } from '@/hooks/useLocalStorage'
-import { TIMEFRAME_OPTIONS } from '@/types/dashboard'
+import {
+  TIMEFRAME_OPTIONS,
+  isAbsoluteTimeSelection,
+  type TimeSelection,
+} from '@/types/dashboard'
 import { toast } from 'sonner'
+import { calculateInterval, calculateTickInterval } from '@/lib/timeUtils'
 
 const SEVERITY_OPTIONS = ['', 'TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL']
 
 // localStorage keys
-const TIMEFRAME_STORAGE_KEY = 'ai-observer-logs-timeframe'
+const TIME_SELECTION_STORAGE_KEY = 'ai-observer-logs-timeselection'
 const PAGE_SIZE_STORAGE_KEY = 'ai-observer-logs-pageSize'
 
 export function LogsPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [logs, setLogs] = useState<LogRecord[]>([])
   const [total, setTotal] = useState(0)
   const [services, setServices] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
-  const [service, setService] = useState('')
-  const [severity, setSeverity] = useState('')
-  const [search, setSearch] = useState('')
+  const [service, setService] = useState(searchParams.get('service') || '')
+  const [severity, setSeverity] = useState(searchParams.get('severity') || '')
+  const [search, setSearch] = useState(searchParams.get('search') || '')
   const debouncedSearch = useDebounce(search, 200)
   const [expandedLog, setExpandedLog] = useState<number | null>(null)
 
-  // Timeframe state with localStorage persistence (empty string = no filter / all time)
-  const [timeframeValue, setTimeframeValueState] = useState(
-    getLocalStorageValue(TIMEFRAME_STORAGE_KEY, '')
-  )
-
-  // Wrapper to persist timeframe changes to localStorage
-  const setTimeframeValue = (value: string) => {
-    setTimeframeValueState(value)
-    try {
-      localStorage.setItem(TIMEFRAME_STORAGE_KEY, JSON.stringify(value))
-    } catch {
-      // Ignore storage errors
+  // Get initial time selection from URL or localStorage
+  const getInitialTimeSelection = (): TimeSelection => {
+    // Check for absolute date range in URL
+    const fromParam = searchParams.get('from')
+    const toParam = searchParams.get('to')
+    if (fromParam && toParam) {
+      const from = new Date(fromParam)
+      const to = new Date(toParam)
+      if (!isNaN(from.getTime()) && !isNaN(to.getTime())) {
+        const intervalSeconds = calculateInterval(from, to)
+        const rangeDays = (to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24)
+        const bucketCount = Math.ceil((rangeDays * 86400) / intervalSeconds)
+        return {
+          type: 'absolute',
+          range: {
+            from,
+            to,
+            intervalSeconds,
+            tickInterval: calculateTickInterval(bucketCount),
+          },
+        }
+      }
     }
+
+    // Check for relative timeframe in URL or localStorage
+    const storedSelection = getLocalStorageValue<{ type: string; timeframeValue: string } | null>(TIME_SELECTION_STORAGE_KEY, null)
+    const timeframeParam = searchParams.get('timeframe')
+      || storedSelection?.timeframeValue
+      || '7d'
+    const timeframe = TIMEFRAME_OPTIONS.find((t) => t.value === timeframeParam)
+      || TIMEFRAME_OPTIONS.find((t) => t.value === '7d')!
+    return { type: 'relative', timeframe }
   }
+
+  const [timeSelection, setTimeSelectionState] = useState<TimeSelection>(getInitialTimeSelection)
 
   // Pagination state with localStorage persistence
   const { page, pageSize, offset, setPage, setPageSize, resetToFirstPage } = usePagination({
@@ -58,13 +87,20 @@ export function LogsPage() {
   // Anchor time for stable pagination
   const [anchorTime, setAnchorTime] = useState<Date>(new Date())
 
-  // Calculate from time based on timeframe selection
+  // Calculate from/to time based on time selection
   const fromTime = useMemo(() => {
-    if (!timeframeValue) return undefined // No filter when empty
-    const timeframe = TIMEFRAME_OPTIONS.find((t) => t.value === timeframeValue)
-    if (!timeframe) return undefined
-    return new Date(anchorTime.getTime() - timeframe.durationSeconds * 1000)
-  }, [timeframeValue, anchorTime])
+    if (isAbsoluteTimeSelection(timeSelection)) {
+      return timeSelection.range.from
+    }
+    return new Date(anchorTime.getTime() - timeSelection.timeframe.durationSeconds * 1000)
+  }, [timeSelection, anchorTime])
+
+  const toTime = useMemo(() => {
+    if (isAbsoluteTimeSelection(timeSelection)) {
+      return timeSelection.range.to
+    }
+    return anchorTime
+  }, [timeSelection, anchorTime])
 
   // Real-time logs from WebSocket (kept separate, not merged)
   const recentLogs = useTelemetryStore((state) => state.recentLogs)
@@ -92,7 +128,7 @@ export function LogsPage() {
   useEffect(() => {
     resetToFirstPage()
     setAnchorTime(new Date())
-  }, [service, severity, debouncedSearch, timeframeValue, resetToFirstPage])
+  }, [service, severity, debouncedSearch, timeSelection, resetToFirstPage])
 
   useEffect(() => {
     const abortController = new AbortController()
@@ -105,7 +141,7 @@ export function LogsPage() {
           severity: severity || undefined,
           search: debouncedSearch || undefined,
           from: fromTime?.toISOString(),
-          to: anchorTime.toISOString(),
+          to: toTime.toISOString(),
           limit: pageSize,
           offset,
         }, { signal: abortController.signal })
@@ -126,7 +162,35 @@ export function LogsPage() {
     fetchLogs()
 
     return () => abortController.abort()
-  }, [service, severity, debouncedSearch, anchorTime, fromTime, pageSize, offset])
+  }, [service, severity, debouncedSearch, fromTime, toTime, pageSize, offset])
+
+  const handleTimeSelectionChange = (selection: TimeSelection) => {
+    setTimeSelectionState(selection)
+
+    // Update URL params
+    const params: Record<string, string> = {}
+    if (service) params.service = service
+    if (severity) params.severity = severity
+    if (search) params.search = search
+
+    if (isAbsoluteTimeSelection(selection)) {
+      params.from = selection.range.from.toISOString()
+      params.to = selection.range.to.toISOString()
+    } else {
+      params.timeframe = selection.timeframe.value
+      // Persist to localStorage
+      try {
+        localStorage.setItem(
+          TIME_SELECTION_STORAGE_KEY,
+          JSON.stringify({ type: 'relative', timeframeValue: selection.timeframe.value })
+        )
+      } catch {
+        // Ignore storage errors
+      }
+    }
+
+    setSearchParams(params)
+  }
 
   const handleRefresh = () => {
     setAnchorTime(new Date())
@@ -149,18 +213,10 @@ export function LogsPage() {
           <div className="flex gap-4">
             <div className="flex items-center gap-2">
               <label className="text-sm text-muted-foreground whitespace-nowrap">Timeframe</label>
-              <Select
-                value={timeframeValue}
-                onChange={(e) => setTimeframeValue(e.target.value)}
-                className="w-40"
-              >
-                <option value="">All Time</option>
-                {TIMEFRAME_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </Select>
+              <DateRangePicker
+                value={timeSelection}
+                onChange={handleTimeSelectionChange}
+              />
             </div>
             <div className="w-48">
               <Select value={service} onChange={(e) => setService(e.target.value)}>

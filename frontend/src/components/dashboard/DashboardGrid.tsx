@@ -63,7 +63,7 @@ export function DashboardGrid({ stats, recentTraces }: DashboardGridProps) {
   const {
     widgets,
     isEditMode,
-    timeframe,
+    timeSelection,
     fromTime,
     toTime,
     removeWidget,
@@ -353,7 +353,7 @@ export function DashboardGrid({ stats, recentTraces }: DashboardGridProps) {
                 widget={widget}
                 stats={stats}
                 recentTraces={recentTraces}
-                timeframe={timeframe}
+                timeSelection={timeSelection}
                 fromTime={fromTime}
                 toTime={toTime}
               />

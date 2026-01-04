@@ -6,10 +6,10 @@ import type {
   DashboardWidget,
   CreateWidgetRequest,
   WidgetPosition,
-  TimeframeOption,
   EmptyCell,
+  TimeSelection,
 } from '@/types/dashboard'
-import { TIMEFRAME_OPTIONS } from '@/types/dashboard'
+import { TIMEFRAME_OPTIONS, isAbsoluteTimeSelection } from '@/types/dashboard'
 
 // Grid utility functions
 function getOccupiedCells(widgets: DashboardWidget[]): Set<string> {
@@ -131,9 +131,11 @@ interface DashboardState {
   isEditMode: boolean
 
   // Time range
-  timeframe: TimeframeOption
+  timeSelection: TimeSelection
   fromTime: Date
   toTime: Date
+  intervalSeconds: number
+  isAbsoluteRange: boolean
 
   // Add widget panel
   isAddPanelOpen: boolean
@@ -144,7 +146,7 @@ interface DashboardState {
   loadDashboard: (id: string) => Promise<void>
   createDefaultDashboard: () => Promise<void>
   setEditMode: (enabled: boolean) => Promise<void>
-  setTimeframe: (timeframe: TimeframeOption) => void
+  setTimeSelection: (selection: TimeSelection) => void
   setAddPanelOpen: (open: boolean) => void
   setTargetPosition: (pos: { gridRow: number; gridColumn: number } | null) => void
 
@@ -165,33 +167,44 @@ interface DashboardState {
   insertRowAt: (beforeRow: number) => Promise<void>
 }
 
-// localStorage key for dashboard timeframe
-const TIMEFRAME_STORAGE_KEY = 'ai-observer-dashboard-timeframe'
+// localStorage key for dashboard time selection
+const TIME_SELECTION_STORAGE_KEY = 'ai-observer-dashboard-timeselection'
 
-// Calculate initial time range
-const getTimeRange = (timeframe: TimeframeOption) => {
+// Calculate time range from selection
+const getTimeRangeFromSelection = (selection: TimeSelection) => {
+  if (isAbsoluteTimeSelection(selection)) {
+    return {
+      from: selection.range.from,
+      to: selection.range.to,
+      intervalSeconds: selection.range.intervalSeconds,
+    }
+  }
   const to = new Date()
-  const from = new Date(to.getTime() - timeframe.durationSeconds * 1000)
-  return { from, to }
+  const from = new Date(to.getTime() - selection.timeframe.durationSeconds * 1000)
+  return { from, to, intervalSeconds: selection.timeframe.intervalSeconds }
 }
 
-// Load initial timeframe from localStorage or use default
-const getInitialTimeframe = (): TimeframeOption => {
+// Load initial time selection from localStorage or use default
+const getInitialTimeSelection = (): TimeSelection => {
   try {
-    const stored = localStorage.getItem(TIMEFRAME_STORAGE_KEY)
+    const stored = localStorage.getItem(TIME_SELECTION_STORAGE_KEY)
     if (stored) {
       const parsed = JSON.parse(stored)
-      const found = TIMEFRAME_OPTIONS.find((t) => t.value === parsed)
-      if (found) return found
+      if (parsed.type === 'relative') {
+        const found = TIMEFRAME_OPTIONS.find((t) => t.value === parsed.timeframeValue)
+        if (found) return { type: 'relative', timeframe: found }
+      }
+      // We don't restore absolute selections from localStorage as they're static historical views
     }
   } catch {
     // Ignore errors, use default
   }
-  return TIMEFRAME_OPTIONS.find((t) => t.value === '1h') || TIMEFRAME_OPTIONS[4]
+  const defaultTimeframe = TIMEFRAME_OPTIONS.find((t) => t.value === '1h') || TIMEFRAME_OPTIONS[4]
+  return { type: 'relative', timeframe: defaultTimeframe }
 }
 
-const initialTimeframe = getInitialTimeframe()
-const initialTimeRange = getTimeRange(initialTimeframe)
+const initialTimeSelection = getInitialTimeSelection()
+const initialTimeRange = getTimeRangeFromSelection(initialTimeSelection)
 
 export const useDashboardStore = create<DashboardState>((set, get) => ({
   dashboard: null,
@@ -202,9 +215,11 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   dashboardsLoading: false,
   dashboardsError: null,
   isEditMode: false,
-  timeframe: initialTimeframe,
+  timeSelection: initialTimeSelection,
   fromTime: initialTimeRange.from,
   toTime: initialTimeRange.to,
+  intervalSeconds: initialTimeRange.intervalSeconds,
+  isAbsoluteRange: isAbsoluteTimeSelection(initialTimeSelection),
   isAddPanelOpen: false,
   targetPosition: null,
 
@@ -357,15 +372,29 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     }
   },
 
-  setTimeframe: (timeframe: TimeframeOption) => {
-    const { from, to } = getTimeRange(timeframe)
-    // Persist to localStorage
+  setTimeSelection: (selection: TimeSelection) => {
+    const { from, to, intervalSeconds } = getTimeRangeFromSelection(selection)
+    const isAbsoluteRange = isAbsoluteTimeSelection(selection)
+
+    // Persist to localStorage (only relative selections)
     try {
-      localStorage.setItem(TIMEFRAME_STORAGE_KEY, JSON.stringify(timeframe.value))
+      if (!isAbsoluteRange) {
+        localStorage.setItem(
+          TIME_SELECTION_STORAGE_KEY,
+          JSON.stringify({ type: 'relative', timeframeValue: selection.timeframe.value })
+        )
+      }
     } catch {
       // Ignore storage errors
     }
-    set({ timeframe, fromTime: from, toTime: to })
+
+    set({
+      timeSelection: selection,
+      fromTime: from,
+      toTime: to,
+      intervalSeconds,
+      isAbsoluteRange,
+    })
   },
 
   setAddPanelOpen: (open: boolean) => {

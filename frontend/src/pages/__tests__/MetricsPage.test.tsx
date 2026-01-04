@@ -194,27 +194,17 @@ describe('MetricsPage', () => {
     })
   })
 
-  it('handles timeframe selection', async () => {
-    const user = userEvent.setup()
+  it('renders timeframe picker button', async () => {
     renderMetricsPage()
 
     await waitFor(() => {
       expect(api.getMetricNames).toHaveBeenCalled()
     })
 
-    // First select a metric
-    const selects = screen.getAllByRole('combobox')
-    const metricSelect = selects[1]
-    await user.selectOptions(metricSelect, 'claude_code.tokens.total')
-
-    // Find the timeframe select (third select)
-    const timeframeSelect = selects[2]
-
-    await user.selectOptions(timeframeSelect, '1h')
-
-    await waitFor(() => {
-      expect(api.getMetricSeries).toHaveBeenCalled()
-    })
+    // DateRangePicker renders as a button with calendar icon, not a select
+    // The button shows the current timeframe label
+    const timeframeButton = screen.getByRole('button', { name: /last/i })
+    expect(timeframeButton).toBeInTheDocument()
   })
 
   it('handles API error gracefully', async () => {

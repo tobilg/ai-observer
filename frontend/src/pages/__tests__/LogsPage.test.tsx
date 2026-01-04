@@ -148,9 +148,9 @@ describe('LogsPage', () => {
       expect(screen.queryByText(/loading/i)).not.toBeInTheDocument()
     })
 
-    // Find the service select (second select after timeframe)
+    // Find the service select (first select - DateRangePicker is a button, not a select)
     const selects = screen.getAllByRole('combobox')
-    const serviceSelect = selects[1]
+    const serviceSelect = selects[0]
 
     await user.selectOptions(serviceSelect, 'claude-code')
 
@@ -170,9 +170,9 @@ describe('LogsPage', () => {
       expect(screen.queryByText(/loading/i)).not.toBeInTheDocument()
     })
 
-    // Find the severity select (third select after timeframe and service)
+    // Find the severity select (second select after service - DateRangePicker is a button)
     const selects = screen.getAllByRole('combobox')
-    const severitySelect = selects[2]
+    const severitySelect = selects[1]
 
     await user.selectOptions(severitySelect, 'ERROR')
 

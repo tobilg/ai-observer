@@ -1,18 +1,17 @@
 import { useEffect } from 'react'
 import { Button } from '@/components/ui/button'
-import { Select } from '@/components/ui/select'
+import { DateRangePicker } from '@/components/ui/date-range-picker'
 import { Plus, Settings, X } from 'lucide-react'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { useDashboardStore } from '@/stores/dashboardStore'
-import { TIMEFRAME_OPTIONS } from '@/types/dashboard'
 
 export function DashboardToolbar() {
   const isMobile = useIsMobile()
   const {
     isEditMode,
     setEditMode,
-    timeframe,
-    setTimeframe,
+    timeSelection,
+    setTimeSelection,
     setAddPanelOpen,
   } = useDashboardStore()
 
@@ -23,29 +22,15 @@ export function DashboardToolbar() {
     }
   }, [isMobile, isEditMode, setEditMode])
 
-  const handleTimeframeChange = (value: string) => {
-    const newTimeframe = TIMEFRAME_OPTIONS.find((t) => t.value === value)
-    if (newTimeframe) {
-      setTimeframe(newTimeframe)
-    }
-  }
-
   return (
     <div className="flex items-center gap-3">
-      {/* Timeframe Selector */}
+      {/* Date Range Picker */}
       <div className="flex items-center gap-2">
         <label className="text-sm text-muted-foreground whitespace-nowrap hidden sm:inline">Timeframe</label>
-        <Select
-          value={timeframe.value}
-          onChange={(e) => handleTimeframeChange(e.target.value)}
-          className="w-32 sm:w-40"
-        >
-          {TIMEFRAME_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </Select>
+        <DateRangePicker
+          value={timeSelection}
+          onChange={setTimeSelection}
+        />
       </div>
 
       {/* Edit Mode Actions - hidden on mobile */}

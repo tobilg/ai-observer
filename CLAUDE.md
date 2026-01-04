@@ -116,7 +116,8 @@ All tables indexed on `Timestamp`, `ServiceName`, and relevant query fields.
 ## External Reference Projects
 
 The `external-projects/` directory contains local checkouts of the AI coding tools that send telemetry to AI Observer:
-- `external-projects/claude-code/` - Claude Code CLI source
+- `external-projects/claude-code/` - Claude Code CLI examples
+- `external-projects/claude-code-npm/` - Claude Code CLI source (minimized) from the npm package
 - `external-projects/gemini-cli/` - Gemini CLI source
 - `external-projects/codex/` - OpenAI Codex CLI source
 - `external-projects/CodexBar` - SwiftUI application showing cost and usage metrics from different providers
@@ -143,3 +144,155 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 # [otel]
 # exporter = { otlp-http = { endpoint = "http://localhost:4318/v1/logs", protocol = "binary" } }
 ```
+
+## CLI Options
+
+The `ai-observer` binary uses subcommands:
+
+```bash
+ai-observer [command] [options]
+```
+
+**Commands:**
+| Command | Description |
+|---------|-------------|
+| (none) | Start the OTLP server (default) |
+| `serve` | Explicitly start the OTLP server |
+| `import` | Import local sessions from AI tool files |
+| `export` | Export telemetry data to Parquet files |
+| `delete` | Delete telemetry data from database |
+| `setup` | Show setup instructions for AI tools |
+
+**Global Options:**
+| Option | Description |
+|--------|-------------|
+| `-h`, `--help` | Show help message and exit |
+| `-v`, `--version` | Show version information and exit |
+
+**Examples:**
+```bash
+ai-observer                              # Start server (default)
+ai-observer import claude-code           # Import Claude Code sessions
+ai-observer export all --output ./data   # Export to Parquet files
+ai-observer delete all --from 2025-01-01 --to 2025-01-31
+ai-observer setup claude-code            # Show Claude Code setup instructions
+```
+
+## API Endpoints Reference
+
+### Query API (Port 8080)
+
+**Traces:**
+| Endpoint | Method | Query Parameters |
+|----------|--------|------------------|
+| `/api/traces` | GET | `service`, `search`, `from`, `to`, `limit`, `offset` |
+| `/api/traces/recent` | GET | - |
+| `/api/traces/{traceId}` | GET | - |
+| `/api/traces/{traceId}/spans` | GET | - |
+
+**Metrics:**
+| Endpoint | Method | Query Parameters |
+|----------|--------|------------------|
+| `/api/metrics` | GET | `service`, `from`, `to` |
+| `/api/metrics/names` | GET | - |
+| `/api/metrics/series` | GET | `name` (required), `service`, `from`, `to`, `interval`, `aggregate` |
+| `/api/metrics/batch-series` | POST | Body: array of queries with `id`, `name`, optional `service`, `aggregate`, `interval` |
+
+**Logs:**
+| Endpoint | Method | Query Parameters |
+|----------|--------|------------------|
+| `/api/logs` | GET | `service`, `severity`, `traceId`, `search`, `from`, `to`, `limit`, `offset` |
+| `/api/logs/levels` | GET | `from`, `to` |
+
+**Dashboards:**
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/dashboards` | GET/POST | List all / Create new |
+| `/api/dashboards/default` | GET | Get default dashboard with widgets |
+| `/api/dashboards/{id}` | GET/PUT/DELETE | CRUD by ID |
+| `/api/dashboards/{id}/default` | PUT | Set as default |
+| `/api/dashboards/{id}/widgets` | POST | Add widget |
+| `/api/dashboards/{id}/widgets/positions` | PUT | Update widget positions |
+| `/api/dashboards/{id}/widgets/{widgetId}` | PUT/DELETE | Update/delete widget |
+
+**Other:**
+- `GET /api/services` - List all services sending telemetry
+- `GET /api/stats` - Aggregate statistics
+- `GET /ws` - WebSocket for real-time updates
+- `GET /health` - Health check
+
+**Note:** `from`/`to` default to last 24 hours if omitted.
+
+## Telemetry Reference
+
+### Claude Code
+
+**Metrics** (all counters):
+- `claude_code.session.count` - Sessions started
+- `claude_code.token.usage` - Tokens by type (input/output/cache)
+- `claude_code.cost.usage` - Cost in USD
+- `claude_code.lines_of_code.count` - Lines added/removed
+- `claude_code.pull_request.count`, `claude_code.commit.count` - Git activity
+- `claude_code.code_edit_tool.decision` - Tool permission decisions
+- `claude_code.active_time.total` - Active time in seconds
+
+**Events** (logs): `user_prompt`, `api_request`, `api_error`, `tool_result`, `tool_decision`
+
+### Gemini CLI
+
+**Metrics** (mix of counters and histograms):
+- Cumulative counters (require delta computation): `session.count`, `token.usage`, `api.request.count`, `file.operation.count`
+- Histograms: `api.request.latency`, `tool.call.latency`, `agent.duration`, `startup.duration`
+- Also emits `gen_ai.client.token.usage` and `gen_ai.client.operation.duration` (OTel semantic conventions)
+
+**Logs**: `config`, `user_prompt`, `api_request`, `api_response`, `api_error`, `tool_call`, `file_operation`, `agent.start/finish`, `conversation_finished`
+
+**Note:** AI Observer computes `.delta` metrics from cumulative counters for per-interval display.
+
+### OpenAI Codex CLI
+
+**Derived Metrics** (computed from logs):
+- `codex_cli_rs.token.usage` - Tokens by type
+- `codex_cli_rs.cost.usage` - Cost in USD
+
+**Events** (logs): `conversation_starts`, `api_request`, `user_prompt`, `tool_decision`, `tool_result`
+
+**Traces**: Uses single trace per session with all spans nested. AI Observer treats first-level child spans as virtual traces for usability.
+
+**Note:** `codex.sse_event` logs are filtered out to reduce noise.
+
+## Docker vs Binary Paths
+
+| Setting | Binary Default | Docker Default |
+|---------|---------------|----------------|
+| Database path | `./data/ai-observer.duckdb` | `/app/data/ai-observer.duckdb` |
+| Data directory | `./data/` | `/app/data/` |
+
+Override with `AI_OBSERVER_DATABASE_PATH` environment variable.
+
+## CI/CD
+
+GitHub Actions triggers:
+
+| Trigger | Actions |
+|---------|---------|
+| Push/PR | Run tests (Go + frontend) |
+| Push to main | Build binaries (linux/amd64, darwin/arm64, windows/amd64) |
+| Tag `v*` | Create GitHub Release with archives |
+| Tag `v*` | Push multi-arch Docker images to Docker Hub |
+| Release published | Update Homebrew formula in [ai-observer-homebrew](https://github.com/tobilg/ai-observer-homebrew) tap |
+
+**Creating a release:**
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+## Generating Test Telemetry
+
+To generate real telemetry data for testing:
+
+1. Start AI Observer: `make backend-dev`
+2. Configure an AI tool (see AI Coding Tool Integration above)
+3. Run the AI tool and interact with it - telemetry flows automatically
+4. View data at `http://localhost:5173` (with `make frontend-dev`) or `http://localhost:8080` (production build)

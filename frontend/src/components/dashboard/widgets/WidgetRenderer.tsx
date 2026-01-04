@@ -1,4 +1,4 @@
-import type { DashboardWidget, TimeframeOption } from '@/types/dashboard'
+import type { DashboardWidget, TimeSelection } from '@/types/dashboard'
 import { WIDGET_TYPES } from '@/types/dashboard'
 import type { StatsResponse } from '@/lib/api'
 import type { TraceOverview } from '@/types/traces'
@@ -12,7 +12,7 @@ interface WidgetRendererProps {
   widget: DashboardWidget
   stats: StatsResponse | null
   recentTraces: TraceOverview[]
-  timeframe: TimeframeOption
+  timeSelection: TimeSelection
   fromTime: Date
   toTime: Date
 }
@@ -21,7 +21,7 @@ export function WidgetRenderer({
   widget,
   stats,
   recentTraces,
-  timeframe,
+  timeSelection,
   fromTime,
   toTime,
 }: WidgetRendererProps) {
@@ -69,7 +69,7 @@ export function WidgetRenderer({
           widgetId={widget.id}
           title={widget.title}
           config={widget.config}
-          timeframe={timeframe}
+          timeSelection={timeSelection}
           fromTime={fromTime}
           toTime={toTime}
         />

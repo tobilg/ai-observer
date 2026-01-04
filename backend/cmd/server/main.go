@@ -2,13 +2,13 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/tobilg/ai-observer/internal/config"
 	"github.com/tobilg/ai-observer/internal/logger"
@@ -17,50 +17,72 @@ import (
 )
 
 func main() {
-	// Define flags
-	var showVersion bool
-	var setupTool string
+	// No arguments: start server (default behavior)
+	if len(os.Args) < 2 {
+		runServer()
+		return
+	}
 
-	flag.BoolVar(&showVersion, "v", false, "Show version information")
-	flag.BoolVar(&showVersion, "version", false, "Show version information")
-	flag.StringVar(&setupTool, "s", "", "Show setup instructions for TOOL (claude, gemini, codex)")
-	flag.StringVar(&setupTool, "setup", "", "Show setup instructions for TOOL (claude, gemini, codex)")
+	// Dispatch to subcommand
+	switch os.Args[1] {
+	case "import":
+		cmdImport(os.Args[2:])
+	case "export":
+		cmdExport(os.Args[2:])
+	case "delete":
+		cmdDelete(os.Args[2:])
+	case "setup":
+		cmdSetup(os.Args[2:])
+	case "serve":
+		runServer()
+	case "-v", "--version", "version":
+		printVersion()
+	case "-h", "--help", "help":
+		printHelp()
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", os.Args[1])
+		printHelp()
+		os.Exit(1)
+	}
+}
 
-	// Custom usage function
-	flag.Usage = func() {
-		fmt.Println(`AI Observer - OpenTelemetry-compatible observability backend for AI coding tools
+func printVersion() {
+	fmt.Printf("AI Observer %s\n", version.Version)
+	fmt.Printf("Git Commit: %s\n", version.GitCommit)
+	fmt.Printf("Build Date: %s\n", version.BuildDate)
+}
 
-Usage: ai-observer [options]
+func printHelp() {
+	fmt.Print(`AI Observer - OpenTelemetry-compatible observability backend for AI coding tools
+
+Usage: ai-observer [command] [options]
+
+Commands:
+  import    Import local sessions from AI tool files
+  export    Export telemetry data to Parquet files
+  delete    Delete telemetry data from database
+  setup     Show setup instructions for AI tools
+  serve     Start the OTLP server (default if no command)
 
 Options:
-  -h, --help           Show this help message
-  -v, --version        Show version information
-  -s, --setup TOOL     Show setup instructions for TOOL (claude, gemini, codex)
+  -h, --help       Show this help message
+  -v, --version    Show version information
+
+Use "ai-observer [command] --help" for command-specific options.
 
 Environment Variables:
   AI_OBSERVER_API_PORT       API server port (default: 8080)
   AI_OBSERVER_OTLP_PORT      OTLP ingestion port (default: 4318)
   AI_OBSERVER_DATABASE_PATH  DuckDB database path (default: ./data/ai-observer.duckdb)
   AI_OBSERVER_FRONTEND_URL   Frontend URL for CORS (default: http://localhost:5173)
-  AI_OBSERVER_LOG_LEVEL      Log level: DEBUG, INFO, WARN, ERROR (default: INFO)`)
-	}
+  AI_OBSERVER_LOG_LEVEL      Log level: DEBUG, INFO, WARN, ERROR (default: INFO)
+  AI_OBSERVER_CLAUDE_PATH    Custom Claude Code config directory
+  AI_OBSERVER_CODEX_PATH     Custom Codex CLI home directory
+  AI_OBSERVER_GEMINI_PATH    Custom Gemini CLI home directory
+`)
+}
 
-	flag.Parse()
-
-	// Handle version flag
-	if showVersion {
-		fmt.Printf("AI Observer %s\n", version.Version)
-		fmt.Printf("Git Commit: %s\n", version.GitCommit)
-		fmt.Printf("Build Date: %s\n", version.BuildDate)
-		os.Exit(0)
-	}
-
-	// Handle setup flag
-	if setupTool != "" {
-		printSetupInstructions(setupTool)
-		os.Exit(0)
-	}
-
+func runServer() {
 	// Initialize structured logging (text format for development readability)
 	logLevel := parseLogLevel(os.Getenv("AI_OBSERVER_LOG_LEVEL"))
 	logger.InitializeText(logLevel)
@@ -74,17 +96,18 @@ Environment Variables:
 		os.Exit(1)
 	}
 
-	// Graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
+	// Graceful shutdown on SIGINT/SIGTERM
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 		log.Info("Received shutdown signal")
-		cancel()
-		if err := srv.Shutdown(ctx); err != nil {
+
+		// Use a context with timeout for graceful shutdown
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+
+		if err := srv.Shutdown(shutdownCtx); err != nil {
 			log.Error("Error during shutdown", "error", err)
 		}
 		os.Exit(0)
@@ -112,71 +135,5 @@ func parseLogLevel(level string) slog.Level {
 		return slog.LevelError
 	default:
 		return slog.LevelInfo
-	}
-}
-
-func printSetupInstructions(tool string) {
-	switch tool {
-	case "claude":
-		fmt.Print(`Claude Code Setup
-=================
-
-Add to ~/.bashrc or ~/.zshrc:
-
-# 1. Enable telemetry
-export CLAUDE_CODE_ENABLE_TELEMETRY=1
-
-# 2. Choose exporters (both are optional - configure only what you need)
-export OTEL_METRICS_EXPORTER=otlp       # Options: otlp, prometheus, console
-export OTEL_LOGS_EXPORTER=otlp          # Options: otlp, console
-
-# 3. Configure OTLP endpoint (for OTLP exporter)
-export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-
-# 4. For faster visibilty: reduce export intervals
-export OTEL_METRIC_EXPORT_INTERVAL=10000  # 10 seconds (default: 60000ms)
-export OTEL_LOGS_EXPORT_INTERVAL=5000     # 5 seconds (default: 5000ms)
-
-# 5. Log prompts
-export OTEL_LOG_USER_PROMPTS=1
-`)
-	case "gemini":
-		fmt.Print(`Gemini CLI Setup
-================
-
-1. Add to ~/.gemini/settings.json:
-
-{
-  "telemetry": {
-    "enabled": true,
-    "target": "local",
-    "otlpProtocol": "http",
-    "otlpEndpoint": "http://localhost:4318",
-    "logPrompts": true,
-    "useCollector": true
-  }
-}
-
-2. Add to ~/.bashrc or ~/.zshrc:
-
-# Mitigate Gemini CLI bug
-export OTEL_METRIC_EXPORT_TIMEOUT=10000
-export OTEL_LOGS_EXPORT_TIMEOUT=5000
-`)
-	case "codex":
-		fmt.Print(`OpenAI Codex CLI Setup
-======================
-
-Add to ~/.codex/config.toml:
-
-[otel]
-exporter = { otlp-http = { endpoint = "http://localhost:4318/v1/logs", protocol = "binary" } }
-trace_exporter = { otlp-http = { endpoint = "http://localhost:4318/v1/traces", protocol = "binary" } }
-log_user_prompt = true
-`)
-	default:
-		fmt.Printf("Unknown tool: %s\n\nSupported tools: claude, gemini, codex\n", tool)
-		os.Exit(1)
 	}
 }

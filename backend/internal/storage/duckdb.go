@@ -59,6 +59,12 @@ func (s *DuckDBStore) DB() *sql.DB {
 	return s.db
 }
 
+// formatTimeForDB formats a time.Time for DuckDB TIMESTAMP comparison.
+// DuckDB TIMESTAMP is timezone-naive, so we format as UTC without timezone suffix.
+func formatTimeForDB(t time.Time) string {
+	return t.UTC().Format("2006-01-02 15:04:05.999999")
+}
+
 func (s *DuckDBStore) initSchema(ctx context.Context) error {
 	schemas := []string{
 		schemaTraces,
@@ -66,10 +72,12 @@ func (s *DuckDBStore) initSchema(ctx context.Context) error {
 		schemaMetrics,
 		schemaDashboards,
 		schemaDashboardWidgets,
+		schemaImportState,
 		indexTraces,
 		indexLogs,
 		indexMetrics,
 		indexDashboards,
+		indexImportState,
 	}
 
 	for _, schema := range schemas {

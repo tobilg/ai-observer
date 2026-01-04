@@ -196,7 +196,7 @@ export const TIMEFRAME_OPTIONS: TimeframeOption[] = [
   { label: 'Last 1 minute', value: '1m', durationSeconds: 60, intervalSeconds: 1, tickInterval: 4 },
   { label: 'Last 5 minutes', value: '5m', durationSeconds: 300, intervalSeconds: 5, tickInterval: 3 },
   { label: 'Last 15 minutes', value: '15m', durationSeconds: 900, intervalSeconds: 15, tickInterval: 3 },
-  { label: 'Last 30 minutes', value: '30m', durationSeconds: 1800, intervalSeconds: 30, tickInterval: 2 },
+  { label: 'Last 30 minutes', value: '30m', durationSeconds: 1800, intervalSeconds: 30, tickInterval: 6 },
   { label: 'Last 1 hour', value: '1h', durationSeconds: 3600, intervalSeconds: 60, tickInterval: 4 },
   { label: 'Last 3 hours', value: '3h', durationSeconds: 10800, intervalSeconds: 300, tickInterval: 3 },
   { label: 'Last 6 hours', value: '6h', durationSeconds: 21600, intervalSeconds: 600, tickInterval: 3 },
@@ -206,4 +206,37 @@ export const TIMEFRAME_OPTIONS: TimeframeOption[] = [
   { label: 'Last 7 days', value: '7d', durationSeconds: 604800, intervalSeconds: 21600, tickInterval: 3 },
   { label: 'Last 14 days', value: '14d', durationSeconds: 1209600, intervalSeconds: 43200, tickInterval: 3 },
   { label: 'Last 30 days', value: '30d', durationSeconds: 2592000, intervalSeconds: 86400, tickInterval: 3 },
+  { label: 'Last 45 days', value: '45d', durationSeconds: 3888000, intervalSeconds: 86400, tickInterval: 3 },
+  { label: 'Last 60 days', value: '60d', durationSeconds: 5184000, intervalSeconds: 172800, tickInterval: 3 },
+  { label: 'Last 90 days', value: '90d', durationSeconds: 7776000, intervalSeconds: 259200, tickInterval: 3 },
+  { label: 'Last 180 days', value: '180d', durationSeconds: 15552000, intervalSeconds: 604800, tickInterval: 3 },
+  { label: 'Last 1 year', value: '1y', durationSeconds: 31536000, intervalSeconds: 1209600, tickInterval: 3 },
 ]
+
+// Custom date range type for absolute time selections
+export interface CustomDateRange {
+  from: Date
+  to: Date
+  intervalSeconds: number
+  tickInterval: number
+}
+
+// Union type for any time selection
+export type TimeSelection =
+  | { type: 'relative'; timeframe: TimeframeOption }
+  | { type: 'absolute'; range: CustomDateRange }
+
+// Helper to check if a time selection is absolute
+export function isAbsoluteTimeSelection(selection: TimeSelection): selection is { type: 'absolute'; range: CustomDateRange } {
+  return selection.type === 'absolute'
+}
+
+// Helper to get display label for a time selection
+export function getTimeSelectionLabel(selection: TimeSelection): string {
+  if (selection.type === 'relative') {
+    return selection.timeframe.label
+  }
+  const { from, to } = selection.range
+  const formatDate = (d: Date) => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+  return `${formatDate(from)} - ${formatDate(to)}`
+}
