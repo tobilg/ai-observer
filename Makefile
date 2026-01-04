@@ -1,4 +1,4 @@
-.PHONY: all backend frontend backend-dev backend-test backend-lint backend-coverage frontend-dev frontend-test frontend-lint frontend-coverage dev clean test lint coverage setup help
+.PHONY: all backend frontend backend-dev backend-test backend-lint backend-coverage frontend-dev frontend-test frontend-lint frontend-coverage dev clean test lint coverage setup help release-notes
 
 # Version information
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -96,6 +96,10 @@ setup:
 	cd backend && go mod download
 	cd frontend && pnpm install
 
+# Release notes generation
+release-notes:
+	@./scripts/generate-release-notes.sh $(TAG)
+
 # Help
 help:
 	@echo "Available targets:"
@@ -112,4 +116,5 @@ help:
 	@echo "  lint              - Run linters"
 	@echo "  clean             - Remove build artifacts"
 	@echo "  setup             - Install dependencies"
+	@echo "  release-notes     - Generate release notes with Claude (TAG=vX.X.X)"
 	@echo "  help              - Show this help message"
