@@ -76,6 +76,7 @@ The backend runs **two HTTP servers** simultaneously:
 - `AI_OBSERVER_OTLP_PORT` - OTLP ingestion port (default: 4318)
 - `AI_OBSERVER_DATABASE_PATH` - DuckDB file path (default: ./data/ai-observer.duckdb)
 - `AI_OBSERVER_FRONTEND_URL` - CORS allowed origin (default: http://localhost:5173)
+- `AI_OBSERVER_LOG_LEVEL` - Log level: DEBUG, INFO, WARN, ERROR (default: INFO)
 
 ### Frontend (React + TypeScript)
 
@@ -235,6 +236,10 @@ ai-observer setup claude-code            # Show Claude Code setup instructions
 - `claude_code.pull_request.count`, `claude_code.commit.count` - Git activity
 - `claude_code.code_edit_tool.decision` - Tool permission decisions
 - `claude_code.active_time.total` - Active time in seconds
+
+**Derived Metrics** (computed by AI Observer):
+- `claude_code.token.usage_user_facing` - Tokens from user-facing API calls only (excludes tool-routing)
+- `claude_code.cost.usage_user_facing` - Cost from user-facing API calls only (excludes tool-routing)
 
 **Events** (logs): `user_prompt`, `api_request`, `api_error`, `tool_result`, `tool_decision`
 

@@ -120,6 +120,7 @@ make all     # Build single binary with embedded frontend
 | `AI_OBSERVER_OTLP_PORT` | `4318` | OTLP ingestion port |
 | `AI_OBSERVER_DATABASE_PATH` | `./data/ai-observer.duckdb` (binary) or `/app/data/ai-observer.duckdb` (Docker) | DuckDB database file path |
 | `AI_OBSERVER_FRONTEND_URL` | `http://localhost:5173` | Allowed CORS origin (dev mode) |
+| `AI_OBSERVER_LOG_LEVEL` | `INFO` | Log level: `DEBUG`, `INFO`, `WARN`, `ERROR` |
 
 CORS and WebSocket origins allow `AI_OBSERVER_FRONTEND_URL` plus `http://localhost:5173` and `http://localhost:8080`; set `AI_OBSERVER_FRONTEND_URL` when serving a custom UI origin.
 
@@ -551,6 +552,17 @@ Each AI coding tool exports different telemetry signals. Here's what you can obs
 | `claude_code.active_time.total` | Active Time | Counter | Active time in seconds |
 
 **Common attributes**: `session.id`, `organization.id`, `user.account_uuid`, `terminal.type`, `model`
+
+### Derived Metrics
+
+AI Observer computes user-facing metrics that filter out tool-routing API calls (which have no cache tokens). These metrics match the token counts shown by tools like [ccusage](https://github.com/ryoppippi/ccusage):
+
+| Metric | Display Name | Description |
+|--------|--------------|-------------|
+| `claude_code.token.usage_user_facing` | Token Usage (User-Facing) | Tokens from user-facing API calls only (excludes tool-routing) |
+| `claude_code.cost.usage_user_facing` | Cost (User-Facing) | Cost from user-facing API calls only (excludes tool-routing) |
+
+> **Note**: Claude Code makes internal API calls for tool routing that don't involve user interaction. These calls have no cache tokens. The user-facing metrics exclude these calls to provide counts that match what users see in their billing and usage reports.
 
 ### Events (Logs)
 
