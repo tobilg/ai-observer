@@ -3,6 +3,7 @@
   "lastUpdated": "2026-01-02T00:00:00Z",
   "models": {
     "gpt-5": {
+      "aliases": ["gpt-5.4"],
       "inputCostPerMTok": 1.25,
       "outputCostPerMTok": 10,
       "cacheReadCostPerMTok": 0.125
@@ -18,6 +19,7 @@
       "cacheReadCostPerMTok": 0.175
     },
     "gpt-5-mini": {
+      "aliases": ["gpt-5.4-mini"],
       "inputCostPerMTok": 0.25,
       "outputCostPerMTok": 2,
       "cacheReadCostPerMTok": 0.025

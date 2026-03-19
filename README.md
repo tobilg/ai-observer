@@ -32,6 +32,7 @@ AI coding assistants are becoming essential development tools, but understanding
 - [Import Command](docs/import.md) — Import historical session data from local AI tool files
 - [Export Command](docs/export.md) — Export telemetry data to Parquet files for archiving and sharing
 - [Pricing System](docs/pricing.md) — Cost calculation for Claude, Codex, and Gemini models
+- [Local Codex Cost Guide](docs/codex-local-cost-guide.md) — Start AI Observer locally and import Codex cost data
 
 ## Screenshots
 

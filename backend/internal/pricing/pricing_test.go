@@ -202,6 +202,19 @@ func TestNormalizeCodexModel(t *testing.T) {
 	}
 }
 
+func TestCodexAliasLookup(t *testing.T) {
+	tests := []string{"gpt-5.4", "gpt-5.4-mini"}
+	for _, alias := range tests {
+		pricing := GetCodexPricing(alias)
+		if pricing == nil {
+			t.Fatalf("Codex alias %s not resolved", alias)
+		}
+		if pricing.InputCostPerToken <= 0 {
+			t.Fatalf("Codex alias %s has invalid input cost: %v", alias, pricing.InputCostPerToken)
+		}
+	}
+}
+
 func TestNormalizeClaudeModel(t *testing.T) {
 	tests := []struct {
 		input    string
