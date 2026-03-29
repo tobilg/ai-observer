@@ -1,6 +1,6 @@
 {
   "provider": "openai",
-  "lastUpdated": "2026-01-02T00:00:00Z",
+  "lastUpdated": "2026-03-29T00:00:00Z",
   "models": {
     "gpt-5": {
       "inputCostPerMTok": 1.25,
@@ -16,6 +16,26 @@
       "inputCostPerMTok": 1.75,
       "outputCostPerMTok": 14,
       "cacheReadCostPerMTok": 0.175
+    },
+    "gpt-5.4": {
+      "inputCostPerMTok": 2.5,
+      "outputCostPerMTok": 15,
+      "cacheReadCostPerMTok": 0.25
+    },
+    "gpt-5.4-mini": {
+      "inputCostPerMTok": 0.75,
+      "outputCostPerMTok": 4.5,
+      "cacheReadCostPerMTok": 0.075
+    },
+    "gpt-5.4-nano": {
+      "inputCostPerMTok": 0.2,
+      "outputCostPerMTok": 1.25,
+      "cacheReadCostPerMTok": 0.02
+    },
+    "gpt-5.4-pro": {
+      "inputCostPerMTok": 30,
+      "outputCostPerMTok": 180,
+      "cacheReadCostPerMTok": 0
     },
     "gpt-5-mini": {
       "inputCostPerMTok": 0.25,
@@ -55,6 +75,12 @@
       "outputCostPerMTok": 14,
       "cacheReadCostPerMTok": 0.175
     },
+    "gpt-5.3-chat-latest": {
+      "aliases": ["gpt-5.3-chat"],
+      "inputCostPerMTok": 1.75,
+      "outputCostPerMTok": 14,
+      "cacheReadCostPerMTok": 0.175
+    },
     "gpt-5-codex": {
       "inputCostPerMTok": 1.25,
       "outputCostPerMTok": 10,
@@ -74,6 +100,11 @@
       "inputCostPerMTok": 0.25,
       "outputCostPerMTok": 2,
       "cacheReadCostPerMTok": 0.025
+    },
+    "gpt-5.3-codex": {
+      "inputCostPerMTok": 1.75,
+      "outputCostPerMTok": 14,
+      "cacheReadCostPerMTok": 0.175
     },
     "gpt-5-search-api": {
       "inputCostPerMTok": 1.25,

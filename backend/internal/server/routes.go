@@ -16,9 +16,6 @@ func (s *Server) setupRoutes(h *handlers.Handlers) error {
 	})
 	s.otlpRouter.Get("/health", h.Health)
 
-	// Handle POST / for clients that don't append signal paths (e.g., Gemini CLI)
-	s.otlpRouter.Post("/", h.HandleRoot)
-
 	// Query API for frontend (port 8080)
 	s.apiRouter.Route("/api", func(r chi.Router) {
 		// Traces

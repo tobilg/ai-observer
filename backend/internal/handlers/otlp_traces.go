@@ -1,8 +1,6 @@
 package handlers
 
 import (
-	"bytes"
-	"io"
 	"net/http"
 
 	"github.com/tobilg/ai-observer/internal/api"
@@ -21,35 +19,6 @@ func New(store *storage.DuckDBStore, hub *websocket.Hub) *Handlers {
 	return &Handlers{
 		store: store,
 		hub:   hub,
-	}
-}
-
-// HandleRoot handles POST / by detecting signal type from body (workaround for Gemini CLI bug)
-func (h *Handlers) HandleRoot(w http.ResponseWriter, r *http.Request) {
-	log := logger.Logger()
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		log.Error("Failed to read body", "error", err)
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	// Detect signal type from JSON body
-	r.Body = io.NopCloser(bytes.NewReader(body)) // Reset body for handler
-
-	switch {
-	case bytes.Contains(body, []byte(`"resourceSpans"`)):
-		log.Debug("Routing POST / to traces handler")
-		h.HandleTraces(w, r)
-	case bytes.Contains(body, []byte(`"resourceMetrics"`)):
-		log.Debug("Routing POST / to metrics handler")
-		h.HandleMetrics(w, r)
-	case bytes.Contains(body, []byte(`"resourceLogs"`)):
-		log.Debug("Routing POST / to logs handler")
-		h.HandleLogs(w, r)
-	default:
-		log.Warn("Unknown signal type in POST /", "body_preview", string(body[:min(200, len(body))]))
-		w.WriteHeader(http.StatusBadRequest)
 	}
 }
 

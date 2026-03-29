@@ -1,7 +1,17 @@
 {
   "provider": "google",
-  "lastUpdated": "2026-01-02T00:00:00Z",
+  "lastUpdated": "2026-03-29T00:00:00Z",
   "models": {
+    "gemini-3.1-pro-preview": {
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 12,
+      "cacheReadCostPerMTok": 0.2
+    },
+    "gemini-3.1-flash-lite-preview": {
+      "inputCostPerMTok": 0.25,
+      "outputCostPerMTok": 1.5,
+      "cacheReadCostPerMTok": 0
+    },
     "gemini-3-pro-preview": {
       "inputCostPerMTok": 2,
       "outputCostPerMTok": 12,

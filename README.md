@@ -323,6 +323,7 @@ Claude Code will then automatically send metrics and events to AI Observer.
 
 <details>
 <summary><strong>Gemini CLI</strong></summary>
+We assume you have at least Gemini CLI in version `v0.34.0` because all version before had a bug regarding OTLP publishing.
 
 Add to `~/.gemini/settings.json`:
 
@@ -345,8 +346,6 @@ Add to `~/.gemini/settings.json`:
 export OTEL_METRIC_EXPORT_TIMEOUT=10000
 export OTEL_LOGS_EXPORT_TIMEOUT=5000
 ```
-
-> **Note**: Gemini CLI sends OTLP data to `POST /` instead of standard paths. AI Observer auto-detects the signal type and routes accordingly.
 
 </details>
 
@@ -421,7 +420,6 @@ Standard OpenTelemetry Protocol endpoints for receiving telemetry data.
 | `POST` | `/v1/traces` | Ingest trace spans (protobuf or JSON) |
 | `POST` | `/v1/metrics` | Ingest metrics (protobuf or JSON) |
 | `POST` | `/v1/logs` | Ingest logs (protobuf or JSON) |
-| `POST` | `/` | Auto-detect signal type (Gemini CLI compatibility) |
 | `GET` | `/health` | Health check |
 
 ### Query API (Port 8080)

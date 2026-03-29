@@ -52,7 +52,6 @@ The backend runs **two HTTP servers** simultaneously:
    - `POST /v1/traces` - Trace data (protobuf or JSON)
    - `POST /v1/metrics` - Metrics data
    - `POST /v1/logs` - Log data
-   - `POST /` - Auto-detects signal type (Gemini CLI sends to root path instead of `/v1/*`)
    - Supports HTTP/1.1 + h2c (HTTP/2 cleartext), gzip-compressed payloads
    - Auto-detects JSON vs Protobuf format regardless of Content-Type header
 
