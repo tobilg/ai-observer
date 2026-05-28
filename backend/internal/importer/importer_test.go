@@ -1031,6 +1031,103 @@ func TestClaudeParserSessionCommitActiveTime(t *testing.T) {
 	}
 }
 
+// TestClaudeParserMultiEdit tests that MultiEdit tool calls produce lines_of_code metrics
+func TestClaudeParserMultiEdit(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "claude-multiedit-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	multiEditInput := `{"file_path":"/home/user/proj/app.go","edits":[{"old_string":"line1\nline2","new_string":"line1\nline2\nline3"},{"old_string":"foo","new_string":""}]}`
+	lines := []string{
+		`{"type":"user","timestamp":"2025-01-02T10:00:00.000Z","sessionId":"s3","cwd":"/home/user/proj","message":{"role":"user","content":[{"type":"text","text":"edit"}]}}`,
+		`{"type":"assistant","timestamp":"2025-01-02T10:01:00.000Z","sessionId":"s3","requestId":"r1","message":{"id":"m1","model":"claude-sonnet-4-20250514","role":"assistant","usage":{"input_tokens":50,"output_tokens":20},"content":[{"type":"tool_use","name":"MultiEdit","input":` + multiEditInput + `}]}}`,
+	}
+
+	testFile := filepath.Join(tmpDir, "s3.jsonl")
+	if err := os.WriteFile(testFile, []byte(joinLines(lines)), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	os.Setenv("AI_OBSERVER_CLAUDE_PATH", tmpDir)
+	defer os.Unsetenv("AI_OBSERVER_CLAUDE_PATH")
+
+	parser := NewClaudeParser()
+	result, err := parser.ParseFile(context.Background(), testFile)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+
+	var added, removed float64
+	for _, m := range result.Metrics {
+		if m.MetricName != claudeLinesOfCodeMetric {
+			continue
+		}
+		switch m.Attributes["type"] {
+		case "added":
+			added += *m.Value
+		case "removed":
+			removed += *m.Value
+		}
+		if m.Attributes["file_type"] != ".go" {
+			t.Errorf("expected file_type=.go, got %q", m.Attributes["file_type"])
+		}
+	}
+	// edit[0]: old=2 lines removed, new=3 lines added
+	// edit[1]: old=1 line removed, new=0 lines added (empty new_string)
+	if removed != 3 {
+		t.Errorf("expected 3 lines removed, got %v", removed)
+	}
+	if added != 3 {
+		t.Errorf("expected 3 lines added, got %v", added)
+	}
+}
+
+// TestClaudeParserSessionMetric tests that exactly one session metric is emitted per file
+// and that duplicate pr-link entries produce only one PR metric
+func TestClaudeParserSessionMetric(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "claude-session-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	lines := []string{
+		`{"type":"user","timestamp":"2025-01-02T10:00:00.000Z","sessionId":"s4","gitBranch":"main","cwd":"/home/user/proj","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}`,
+		// same PR linked twice — only one PR metric should be emitted
+		`{"type":"pr-link","sessionId":"s4","prNumber":99,"prUrl":"https://github.com/org/repo/pull/99","prRepository":"org/repo","timestamp":"2025-01-02T10:00:05.000Z"}`,
+		`{"type":"pr-link","sessionId":"s4","prNumber":99,"prUrl":"https://github.com/org/repo/pull/99","prRepository":"org/repo","timestamp":"2025-01-02T10:00:10.000Z"}`,
+		`{"type":"assistant","timestamp":"2025-01-02T10:01:00.000Z","sessionId":"s4","requestId":"r1","message":{"id":"m1","model":"claude-sonnet-4-20250514","role":"assistant","usage":{"input_tokens":100,"output_tokens":50},"content":[]}}`,
+	}
+
+	testFile := filepath.Join(tmpDir, "s4.jsonl")
+	if err := os.WriteFile(testFile, []byte(joinLines(lines)), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	os.Setenv("AI_OBSERVER_CLAUDE_PATH", tmpDir)
+	defer os.Unsetenv("AI_OBSERVER_CLAUDE_PATH")
+
+	parser := NewClaudeParser()
+	result, err := parser.ParseFile(context.Background(), testFile)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+
+	counts := map[string]int{}
+	for _, m := range result.Metrics {
+		counts[m.MetricName]++
+	}
+
+	if counts[claudeSessionMetric] != 1 {
+		t.Errorf("expected 1 session metric, got %d", counts[claudeSessionMetric])
+	}
+	if counts[claudePullRequestMetric] != 1 {
+		t.Errorf("expected 1 PR metric for duplicate pr-link entries, got %d", counts[claudePullRequestMetric])
+	}
+}
+
 // TestCollectSessionMeta tests the session metadata collection first pass
 func TestCollectSessionMeta(t *testing.T) {
 	parser := NewClaudeParser()
