@@ -105,7 +105,7 @@ func (p *ClaudeParser) FindSessionFiles(ctx context.Context) ([]string, error) {
 
 // ClaudeJSONLEntry represents a single line in Claude Code JSONL files
 type ClaudeJSONLEntry struct {
-	Type      string         `json:"type,omitempty"` // Root type: "assistant", "user", "queue-operation", etc.
+	Type      string         `json:"type,omitempty"` // Root type: "assistant", "user", "pr-link", etc.
 	Timestamp string         `json:"timestamp"`
 	SessionID string         `json:"sessionId,omitempty"`
 	Version   string         `json:"version,omitempty"`
@@ -113,6 +113,13 @@ type ClaudeJSONLEntry struct {
 	RequestID string         `json:"requestId,omitempty"`
 	CostUSD   *float64       `json:"costUSD,omitempty"`
 	Message   *ClaudeMessage `json:"message,omitempty"`
+	GitBranch string         `json:"gitBranch,omitempty"`
+	// PR link fields (present when type == "pr-link")
+	PRNumber     int    `json:"prNumber,omitempty"`
+	PRUrl        string `json:"prUrl,omitempty"`
+	PRRepository string `json:"prRepository,omitempty"`
+	// Worktree-state fields (present when type == "worktree-state")
+	WorktreeSession *claudeWorktreeSession `json:"worktreeSession,omitempty"`
 }
 
 type ClaudeMessage struct {
@@ -140,6 +147,81 @@ type ClaudeUsage struct {
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 }
 
+// claudeWorktreeSession holds fields from a "worktree-state" entry's worktreeSession object.
+type claudeWorktreeSession struct {
+	OriginalCwd string `json:"originalCwd,omitempty"`
+}
+
+// claudeSessionMeta holds session-level metadata collected in a first pass
+type claudeSessionMeta struct {
+	GitBranch      string
+	Cwd            string
+	OriginalCwd    string   // from worktree-state.worktreeSession.originalCwd
+	CandidateRepos []string // owner/repo references from pr-link entries (most-frequent first)
+	PRNumber       int
+	PRUrl          string
+	PRRepository   string
+	PRTimestamp    time.Time
+}
+
+// collectSessionMeta does a first pass over raw JSONL lines to collect session-level metadata
+func (p *ClaudeParser) collectSessionMeta(lines []string) claudeSessionMeta {
+	meta := claudeSessionMeta{}
+	seenPRs := make(map[int]bool)
+	seenRepos := make(map[string]bool)
+
+	for _, line := range lines {
+		var entry ClaudeJSONLEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry.GitBranch != "" && meta.GitBranch == "" {
+			meta.GitBranch = entry.GitBranch
+		}
+		if entry.Cwd != "" && meta.Cwd == "" {
+			meta.Cwd = entry.Cwd
+		}
+		if entry.Type == "worktree-state" && entry.WorktreeSession != nil {
+			if oc := entry.WorktreeSession.OriginalCwd; oc != "" && meta.OriginalCwd == "" {
+				meta.OriginalCwd = oc
+			}
+		}
+		if entry.Type == "pr-link" && entry.PRNumber != 0 && !seenPRs[entry.PRNumber] {
+			seenPRs[entry.PRNumber] = true
+			// Collect all pr-link repositories as candidates for resolution.
+			if r := entry.PRRepository; r != "" && !seenRepos[r] {
+				seenRepos[r] = true
+				meta.CandidateRepos = append(meta.CandidateRepos, r)
+			}
+			// Use the first PR linked in the session for structured PR metadata.
+			if meta.PRNumber == 0 {
+				meta.PRNumber = entry.PRNumber
+				meta.PRUrl = entry.PRUrl
+				meta.PRRepository = entry.PRRepository
+				if ts, err := time.Parse(time.RFC3339Nano, entry.Timestamp); err == nil {
+					meta.PRTimestamp = ts
+				} else if ts, err := time.Parse(time.RFC3339, entry.Timestamp); err == nil {
+					meta.PRTimestamp = ts
+				}
+			}
+		}
+	}
+	return meta
+}
+
+// extractRepository returns the best repository identifier for a session.
+//
+// Priority:
+//  1. PRRepository from a structured pr-link entry (authoritative - this is
+//     exactly where the linked PR lives, not just a text-mined reference).
+//  2. resolveSessionRepository: on-disk git remote -> matching candidate -> cwd name.
+func extractRepository(meta claudeSessionMeta) string {
+	if meta.PRRepository != "" {
+		return meta.PRRepository
+	}
+	return resolveSessionRepository(meta.CandidateRepos, "", meta.OriginalCwd, meta.Cwd)
+}
+
 // ParseFile parses a Claude Code JSONL file
 func (p *ClaudeParser) ParseFile(ctx context.Context, path string) (*ImportResult, error) {
 	file, err := os.Open(path)
@@ -161,24 +243,35 @@ func (p *ClaudeParser) ParseFile(ctx context.Context, path string) (*ImportResul
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
 
-	lineNum := 0
-	messageIndex := 0                     // Track message order for transcripts
-	seenRequests := make(map[string]bool) // For deduplication of metrics
-
+	// Collect all non-empty lines
+	var lines []string
 	for scanner.Scan() {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
+		if line := scanner.Text(); strings.TrimSpace(line) != "" {
+			lines = append(lines, line)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading file: %w", err)
+	}
 
-		lineNum++
-		line := scanner.Text()
-		if strings.TrimSpace(line) == "" {
-			continue
+	// First pass: collect session-level metadata (gitBranch, PR info, cwd)
+	meta := p.collectSessionMeta(lines)
+	repository := extractRepository(meta)
+
+	messageIndex := 0
+	seenRequests := make(map[string]bool) // For deduplication of metrics
+
+	// Second pass: process records
+	for _, line := range lines {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
 		}
 
 		var entry ClaudeJSONLEntry
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			// Skip malformed lines
 			continue
 		}
 
@@ -219,7 +312,7 @@ func (p *ClaudeParser) ParseFile(ctx context.Context, path string) (*ImportResul
 		}
 
 		// Create transcript log records from message content
-		transcriptLogs := p.CreateTranscriptLogs(entry, ts, sessionID, &messageIndex)
+		transcriptLogs := p.createTranscriptLogs(entry, ts, sessionID, meta, &messageIndex)
 		result.Logs = append(result.Logs, transcriptLogs...)
 
 		// For assistant entries with usage data, also create metrics
@@ -233,7 +326,7 @@ func (p *ClaudeParser) ParseFile(ctx context.Context, path string) (*ImportResul
 				seenRequests[dedupKey] = true
 			}
 
-			// Create api_request log record (existing behavior)
+			// Create api_request log record
 			logRecord := api.LogRecord{
 				Timestamp:      ts,
 				ServiceName:    SourceClaude.ServiceName(),
@@ -253,27 +346,32 @@ func (p *ClaudeParser) ParseFile(ctx context.Context, path string) (*ImportResul
 			if entry.RequestID != "" {
 				logRecord.LogAttributes["request_id"] = entry.RequestID
 			}
+			if meta.GitBranch != "" {
+				logRecord.LogAttributes["git_branch"] = meta.GitBranch
+			}
+			if repository != "" {
+				logRecord.LogAttributes["repository"] = repository
+			}
 			result.Logs = append(result.Logs, logRecord)
 
-			// Create metrics
+			// Token usage metrics
 			usage := entry.Message.Usage
 			model := entry.Message.Model
 
-			// Token usage metrics (creates both regular and user-facing variants)
 			if usage.InputTokens > 0 {
-				result.Metrics = append(result.Metrics, CreateTokenMetrics(ts, model, "input", float64(usage.InputTokens))...)
+				result.Metrics = append(result.Metrics, createTokenMetrics(ts, model, "input", float64(usage.InputTokens), meta, repository)...)
 			}
 			if usage.OutputTokens > 0 {
-				result.Metrics = append(result.Metrics, CreateTokenMetrics(ts, model, "output", float64(usage.OutputTokens))...)
+				result.Metrics = append(result.Metrics, createTokenMetrics(ts, model, "output", float64(usage.OutputTokens), meta, repository)...)
 			}
 			if usage.CacheCreationInputTokens > 0 {
-				result.Metrics = append(result.Metrics, CreateTokenMetrics(ts, model, "cacheCreation", float64(usage.CacheCreationInputTokens))...)
+				result.Metrics = append(result.Metrics, createTokenMetrics(ts, model, "cacheCreation", float64(usage.CacheCreationInputTokens), meta, repository)...)
 			}
 			if usage.CacheReadInputTokens > 0 {
-				result.Metrics = append(result.Metrics, CreateTokenMetrics(ts, model, "cacheRead", float64(usage.CacheReadInputTokens))...)
+				result.Metrics = append(result.Metrics, createTokenMetrics(ts, model, "cacheRead", float64(usage.CacheReadInputTokens), meta, repository)...)
 			}
 
-			// Cost metrics using pricing mode (creates both regular and user-facing variants)
+			// Cost metrics
 			tokenUsage := pricing.ClaudeTokenUsage{
 				InputTokens:              int64(usage.InputTokens),
 				OutputTokens:             int64(usage.OutputTokens),
@@ -282,22 +380,24 @@ func (p *ClaudeParser) ParseFile(ctx context.Context, path string) (*ImportResul
 			}
 			cost := pricing.GetClaudeCostWithMode(p.pricingMode, model, tokenUsage, entry.CostUSD)
 			if cost > 0 {
-				result.Metrics = append(result.Metrics, CreateCostMetrics(ts, model, cost)...)
+				result.Metrics = append(result.Metrics, createCostMetrics(ts, model, cost, meta, repository)...)
 			}
 		}
 
 		result.RecordCount++
 	}
 
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("reading file: %w", err)
-	}
-
 	return result, nil
 }
 
-// CreateTranscriptLogs creates transcript log records from message content
+// CreateTranscriptLogs creates transcript log records from message content.
+// This exported variant is used by the file watcher for incremental processing.
 func (p *ClaudeParser) CreateTranscriptLogs(entry ClaudeJSONLEntry, ts time.Time, sessionID string, messageIndex *int) []api.LogRecord {
+	return p.createTranscriptLogs(entry, ts, sessionID, claudeSessionMeta{}, messageIndex)
+}
+
+// createTranscriptLogs creates transcript log records with session metadata for repository attribution.
+func (p *ClaudeParser) createTranscriptLogs(entry ClaudeJSONLEntry, ts time.Time, sessionID string, meta claudeSessionMeta, messageIndex *int) []api.LogRecord {
 	var logs []api.LogRecord
 
 	if entry.Message == nil || len(entry.Message.Content) == 0 {
@@ -309,13 +409,12 @@ func (p *ClaudeParser) CreateTranscriptLogs(entry ClaudeJSONLEntry, ts time.Time
 
 	for _, content := range entry.Message.Content {
 		var body string
-		var role string
 		attrs := map[string]string{
-			"event.name":     "transcript.message",
-			"session.id":     sessionID,
-			"message.index":  strconv.Itoa(*messageIndex),
-			"message.role":   baseRole,
-			"import_source":  "local_jsonl",
+			"event.name":    "transcript.message",
+			"session.id":    sessionID,
+			"message.index": strconv.Itoa(*messageIndex),
+			"message.role":  baseRole,
+			"import_source": "local_jsonl",
 		}
 
 		if entry.Message.Model != "" {
@@ -324,14 +423,23 @@ func (p *ClaudeParser) CreateTranscriptLogs(entry ClaudeJSONLEntry, ts time.Time
 		if entry.Message.ID != "" {
 			attrs["message.id"] = entry.Message.ID
 		}
+		if meta.GitBranch != "" {
+			attrs["git_branch"] = meta.GitBranch
+		}
+		if repo := extractRepository(meta); repo != "" {
+			attrs["repository"] = repo
+		}
+		if meta.PRNumber != 0 {
+			attrs["pr_number"] = strconv.Itoa(meta.PRNumber)
+			attrs["pr_repository"] = meta.PRRepository
+			attrs["pr_url"] = meta.PRUrl
+		}
 
 		switch content.Type {
 		case "text":
 			body = content.Text
-			role = baseRole
 		case "tool_use":
-			role = "tool_use"
-			attrs["message.role"] = role
+			attrs["message.role"] = "tool_use"
 			attrs["tool.name"] = content.Name
 			if content.Input != nil {
 				if inputBytes, err := json.Marshal(content.Input); err == nil {
@@ -340,8 +448,7 @@ func (p *ClaudeParser) CreateTranscriptLogs(entry ClaudeJSONLEntry, ts time.Time
 			}
 			body = fmt.Sprintf("Tool call: %s", content.Name)
 		case "tool_result":
-			role = "tool_result"
-			attrs["message.role"] = role
+			attrs["message.role"] = "tool_result"
 			if content.ToolUseID != "" {
 				attrs["tool.use_id"] = content.ToolUseID
 			}
@@ -383,53 +490,85 @@ const (
 	ClaudeUserFacingCostMetric       = "claude_code.cost.usage_user_facing"
 )
 
-// CreateTokenMetric creates a token usage metric with the specified name
+// sessionAttrs builds the common session-level attributes (git_branch, repository)
+func sessionAttrs(meta claudeSessionMeta, repository string) map[string]string {
+	attrs := make(map[string]string)
+	if meta.GitBranch != "" {
+		attrs["git_branch"] = meta.GitBranch
+	}
+	if repository != "" {
+		attrs["repository"] = repository
+	}
+	return attrs
+}
+
+// CreateTokenMetric creates a token usage metric with the specified name.
+// This exported variant is used by the file watcher.
 func CreateTokenMetric(ts time.Time, metricName, model, tokenType string, value float64) api.MetricDataPoint {
+	return createTokenMetric(ts, metricName, model, tokenType, value, claudeSessionMeta{}, "")
+}
+
+// createTokenMetric creates a token usage metric with the specified name
+func createTokenMetric(ts time.Time, metricName, model, tokenType string, value float64, meta claudeSessionMeta, repository string) api.MetricDataPoint {
+	attrs := sessionAttrs(meta, repository)
+	attrs["type"] = tokenType
+	attrs["model"] = model
+	attrs["import_source"] = "local_jsonl"
 	return api.MetricDataPoint{
 		Timestamp:   ts,
 		ServiceName: SourceClaude.ServiceName(),
 		MetricName:  metricName,
 		MetricType:  "sum",
 		Value:       &value,
-		Attributes: map[string]string{
-			"type":          tokenType,
-			"model":         model,
-			"import_source": "local_jsonl",
-		},
+		Attributes:  attrs,
 	}
 }
 
 // CreateTokenMetrics creates both regular and user-facing token usage metrics.
-// JSONL data is already user-facing (only assistant messages with cache tokens),
-// so both metrics have identical values for consistency with OTLP-derived metrics.
+// This exported variant is used by the file watcher (no repository attribution).
 func CreateTokenMetrics(ts time.Time, model, tokenType string, value float64) []api.MetricDataPoint {
+	return createTokenMetrics(ts, model, tokenType, value, claudeSessionMeta{}, "")
+}
+
+// createTokenMetrics creates both regular and user-facing token usage metrics.
+func createTokenMetrics(ts time.Time, model, tokenType string, value float64, meta claudeSessionMeta, repository string) []api.MetricDataPoint {
 	return []api.MetricDataPoint{
-		CreateTokenMetric(ts, ClaudeTokenUsageMetric, model, tokenType, value),
-		CreateTokenMetric(ts, ClaudeUserFacingTokenUsageMetric, model, tokenType, value),
+		createTokenMetric(ts, ClaudeTokenUsageMetric, model, tokenType, value, meta, repository),
+		createTokenMetric(ts, ClaudeUserFacingTokenUsageMetric, model, tokenType, value, meta, repository),
 	}
 }
 
-// CreateCostMetric creates a cost metric with the specified name
+// CreateCostMetric creates a cost metric with the specified name.
+// This exported variant is used by the file watcher.
 func CreateCostMetric(ts time.Time, metricName, model string, value float64) api.MetricDataPoint {
+	return createCostMetric(ts, metricName, model, value, claudeSessionMeta{}, "")
+}
+
+// createCostMetric creates a cost metric with the specified name
+func createCostMetric(ts time.Time, metricName, model string, value float64, meta claudeSessionMeta, repository string) api.MetricDataPoint {
+	attrs := sessionAttrs(meta, repository)
+	attrs["model"] = model
+	attrs["import_source"] = "local_jsonl"
 	return api.MetricDataPoint{
 		Timestamp:   ts,
 		ServiceName: SourceClaude.ServiceName(),
 		MetricName:  metricName,
 		MetricType:  "sum",
 		Value:       &value,
-		Attributes: map[string]string{
-			"model":         model,
-			"import_source": "local_jsonl",
-		},
+		Attributes:  attrs,
 	}
 }
 
 // CreateCostMetrics creates both regular and user-facing cost metrics.
-// JSONL data is already user-facing (only assistant messages with cache tokens),
-// so both metrics have identical values for consistency with OTLP-derived metrics.
+// This exported variant is used by the file watcher (no repository attribution).
 func CreateCostMetrics(ts time.Time, model string, value float64) []api.MetricDataPoint {
+	return createCostMetrics(ts, model, value, claudeSessionMeta{}, "")
+}
+
+// createCostMetrics creates both regular and user-facing cost metrics.
+func createCostMetrics(ts time.Time, model string, value float64, meta claudeSessionMeta, repository string) []api.MetricDataPoint {
 	return []api.MetricDataPoint{
-		CreateCostMetric(ts, ClaudeCostMetric, model, value),
-		CreateCostMetric(ts, ClaudeUserFacingCostMetric, model, value),
+		createCostMetric(ts, ClaudeCostMetric, model, value, meta, repository),
+		createCostMetric(ts, ClaudeUserFacingCostMetric, model, value, meta, repository),
 	}
 }
