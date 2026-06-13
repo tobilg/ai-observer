@@ -24,19 +24,19 @@ func TestClaudeParser(t *testing.T) {
 
 	// Create a test JSONL file
 	testFile := filepath.Join(tmpDir, "test-session.jsonl")
-	entries := []claudeJSONLEntry{
+	entries := []ClaudeJSONLEntry{
 		{
 			Type:      "assistant", // Root type field
 			Timestamp: "2025-01-02T10:00:00.000Z",
 			SessionID: "test-session-123",
 			RequestID: "req-001",
 			CostUSD:   floatPtr(0.05),
-			Message: &claudeMessage{
+			Message: &ClaudeMessage{
 				ID:    "msg-001",
 				Model: "claude-sonnet-4-20250514",
 				Role:  "assistant",
 				Type:  "message", // message.type is "message", not "assistant"
-				Usage: &claudeUsage{
+				Usage: &ClaudeUsage{
 					InputTokens:              1000,
 					OutputTokens:             500,
 					CacheCreationInputTokens: 100,
@@ -50,12 +50,12 @@ func TestClaudeParser(t *testing.T) {
 			SessionID: "test-session-123",
 			RequestID: "req-002",
 			CostUSD:   floatPtr(0.03),
-			Message: &claudeMessage{
+			Message: &ClaudeMessage{
 				ID:    "msg-002",
 				Model: "claude-sonnet-4-20250514",
 				Role:  "assistant",
 				Type:  "message",
-				Usage: &claudeUsage{
+				Usage: &ClaudeUsage{
 					InputTokens:  800,
 					OutputTokens: 300,
 				},
@@ -221,12 +221,12 @@ func TestGeminiParser(t *testing.T) {
 
 	// Create test JSON file
 	testFile := filepath.Join(chatDir, "session-test123.json")
-	session := geminiSession{
+	session := GeminiSession{
 		SessionID:   "session-test123",
 		ProjectHash: "abc123",
 		StartTime:   "2025-01-02T10:00:00.000Z",
 		LastUpdated: "2025-01-02T10:05:00.000Z",
-		Messages: []geminiMessage{
+		Messages: []GeminiMessage{
 			{
 				ID:        "msg-001",
 				Timestamp: "2025-01-02T10:00:00.000Z",
@@ -237,7 +237,7 @@ func TestGeminiParser(t *testing.T) {
 				Timestamp: "2025-01-02T10:01:00.000Z",
 				Type:      "gemini",
 				Model:     "gemini-2.0-flash",
-				Tokens: &geminiTokens{
+				Tokens: &GeminiTokens{
 					Input:    500,
 					Output:   200,
 					Cached:   50,
@@ -251,7 +251,7 @@ func TestGeminiParser(t *testing.T) {
 				Timestamp: "2025-01-02T10:02:00.000Z",
 				Type:      "gemini",
 				Model:     "gemini-2.0-flash",
-				Tokens: &geminiTokens{
+				Tokens: &GeminiTokens{
 					Input:  300,
 					Output: 150,
 					Total:  450,
@@ -672,17 +672,17 @@ func TestImportDryRun(t *testing.T) {
 
 	// Create a test JSONL file
 	testFile := filepath.Join(tmpDir, "test-session.jsonl")
-	entries := []claudeJSONLEntry{
+	entries := []ClaudeJSONLEntry{
 		{
 			Type:      "assistant",
 			Timestamp: "2025-01-02T10:00:00.000Z",
 			SessionID: "test-session-123",
-			Message: &claudeMessage{
+			Message: &ClaudeMessage{
 				ID:    "msg-001",
 				Model: "claude-sonnet-4-20250514",
 				Role:  "assistant",
 				Type:  "message",
-				Usage: &claudeUsage{
+				Usage: &ClaudeUsage{
 					InputTokens:  1000,
 					OutputTokens: 500,
 				},
@@ -740,18 +740,18 @@ func TestImportWithSkipConfirm(t *testing.T) {
 
 	// Create a test JSONL file
 	testFile := filepath.Join(tmpDir, "test-session.jsonl")
-	entries := []claudeJSONLEntry{
+	entries := []ClaudeJSONLEntry{
 		{
 			Type:      "assistant",
 			Timestamp: "2025-01-02T10:00:00.000Z",
 			SessionID: "test-session-123",
 			CostUSD:   floatPtr(0.05),
-			Message: &claudeMessage{
+			Message: &ClaudeMessage{
 				ID:    "msg-001",
 				Model: "claude-sonnet-4-20250514",
 				Role:  "assistant",
 				Type:  "message",
-				Usage: &claudeUsage{
+				Usage: &ClaudeUsage{
 					InputTokens:  1000,
 					OutputTokens: 500,
 				},

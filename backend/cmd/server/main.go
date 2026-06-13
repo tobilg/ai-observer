@@ -33,6 +33,8 @@ func main() {
 		cmdDelete(os.Args[2:])
 	case "setup":
 		cmdSetup(os.Args[2:])
+	case "watch":
+		cmdWatch(os.Args[2:])
 	case "serve":
 		runServer()
 	case "-v", "--version", "version":
@@ -62,6 +64,7 @@ Commands:
   export    Export telemetry data to Parquet files
   delete    Delete telemetry data from database
   setup     Show setup instructions for AI tools
+  watch     Watch local session files and import incrementally
   serve     Start the OTLP server (default if no command)
 
 Options:

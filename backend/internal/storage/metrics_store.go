@@ -12,7 +12,6 @@ import (
 	"github.com/tobilg/ai-observer/internal/logger"
 )
 
-
 func (s *DuckDBStore) InsertMetrics(ctx context.Context, metrics []api.MetricDataPoint) error {
 	if len(metrics) == 0 {
 		return nil
@@ -26,6 +25,18 @@ func (s *DuckDBStore) InsertMetrics(ctx context.Context, metrics []api.MetricDat
 		return fmt.Errorf("beginning transaction: %w", err)
 	}
 	defer tx.Rollback()
+
+	if err := insertMetricsTx(ctx, tx, metrics); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func insertMetricsTx(ctx context.Context, tx *sql.Tx, metrics []api.MetricDataPoint) error {
+	if len(metrics) == 0 {
+		return nil
+	}
 
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO otel_metrics (
@@ -77,7 +88,7 @@ func (s *DuckDBStore) InsertMetrics(ctx context.Context, metrics []api.MetricDat
 		}
 	}
 
-	return tx.Commit()
+	return nil
 }
 
 func (s *DuckDBStore) QueryMetrics(ctx context.Context, service, metricName, metricType string, from, to time.Time, limit, offset int) (*api.MetricsResponse, error) {

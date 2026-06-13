@@ -3,6 +3,23 @@ import { renderHook, act, waitFor } from '@testing-library/react'
 import { useWebSocket, webSocketManager } from './useWebSocket'
 import { useTelemetryStore } from '@/stores/telemetryStore'
 
+interface MockSocket extends WebSocket {
+  simulateMessage(data: unknown): void
+  simulateError(): void
+}
+
+type WebSocketManagerWithMock = typeof webSocketManager & {
+  ws: MockSocket | null
+}
+
+function getMockWebSocket(): MockSocket {
+  const ws = (webSocketManager as WebSocketManagerWithMock).ws
+  if (!ws) {
+    throw new Error('Expected mock WebSocket instance')
+  }
+  return ws
+}
+
 describe('useWebSocket', () => {
   beforeEach(() => {
     // Reset store
@@ -58,7 +75,7 @@ describe('useWebSocket', () => {
       })
 
       // Get the mock WebSocket instance
-      const mockWs = (webSocketManager as any).ws
+      const mockWs = getMockWebSocket()
 
       // Simulate receiving a traces message
       act(() => {
@@ -88,7 +105,7 @@ describe('useWebSocket', () => {
         expect(webSocketManager.isConnected).toBe(true)
       })
 
-      const mockWs = (webSocketManager as any).ws
+      const mockWs = getMockWebSocket()
 
       act(() => {
         mockWs.simulateMessage({
@@ -116,7 +133,7 @@ describe('useWebSocket', () => {
         expect(webSocketManager.isConnected).toBe(true)
       })
 
-      const mockWs = (webSocketManager as any).ws
+      const mockWs = getMockWebSocket()
 
       act(() => {
         mockWs.simulateMessage({
@@ -163,11 +180,11 @@ describe('webSocketManager', () => {
         expect(webSocketManager.isConnected).toBe(true)
       })
 
-      const ws1 = (webSocketManager as any).ws
+      const ws1 = getMockWebSocket()
 
       webSocketManager.connect('/ws')
 
-      expect((webSocketManager as any).ws).toBe(ws1)
+      expect(getMockWebSocket()).toBe(ws1)
     })
 
     it('disconnects and reconnects for different URL', async () => {
@@ -177,7 +194,7 @@ describe('webSocketManager', () => {
         expect(webSocketManager.isConnected).toBe(true)
       })
 
-      const ws1 = (webSocketManager as any).ws
+      const ws1 = getMockWebSocket()
 
       webSocketManager.connect('/ws2')
 
@@ -268,7 +285,7 @@ describe('webSocketManager', () => {
         expect(webSocketManager.isConnected).toBe(true)
       })
 
-      const mockWs = (webSocketManager as any).ws
+      const mockWs = getMockWebSocket()
       const testMessage = {
         type: 'traces',
         timestamp: new Date().toISOString(),
@@ -291,7 +308,7 @@ describe('webSocketManager', () => {
         expect(webSocketManager.isConnected).toBe(true)
       })
 
-      const mockWs = (webSocketManager as any).ws
+      const mockWs = getMockWebSocket()
 
       // Trigger onmessage with invalid JSON
       if (mockWs.onmessage) {
@@ -313,7 +330,7 @@ describe('webSocketManager', () => {
         expect(webSocketManager.isConnected).toBe(true)
       })
 
-      const mockWs = (webSocketManager as any).ws
+      const mockWs = getMockWebSocket()
 
       // Simulate error
       mockWs.simulateError()

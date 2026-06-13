@@ -82,7 +82,7 @@ func TestParseLogLevel(t *testing.T) {
 		{"WARNING", "WARN"},
 		{"ERROR", "ERROR"},
 		{"error", "ERROR"},
-		{"", "INFO"},       // default
+		{"", "INFO"},        // default
 		{"invalid", "INFO"}, // default
 	}
 
@@ -284,6 +284,57 @@ func TestRunSetup(t *testing.T) {
 		err := runSetup([]string{"-help"})
 		if err == nil {
 			t.Error("expected error for help flag")
+		}
+	})
+}
+
+func TestParseWatchArgs(t *testing.T) {
+	t.Run("default all", func(t *testing.T) {
+		args, err := parseWatchArgs([]string{})
+		if err != nil {
+			t.Fatalf("parseWatchArgs failed: %v", err)
+		}
+		if args.ToolArg != "all" {
+			t.Fatalf("ToolArg = %q, want all", args.ToolArg)
+		}
+		if len(args.Tools) != 0 {
+			t.Fatalf("Tools = %v, want empty slice for all", args.Tools)
+		}
+		if args.Backfill {
+			t.Fatal("Backfill = true, want false")
+		}
+	})
+
+	t.Run("single tool with backfill", func(t *testing.T) {
+		args, err := parseWatchArgs([]string{"codex", "--backfill"})
+		if err != nil {
+			t.Fatalf("parseWatchArgs failed: %v", err)
+		}
+		if args.ToolArg != "codex" {
+			t.Fatalf("ToolArg = %q, want codex", args.ToolArg)
+		}
+		if len(args.Tools) != 1 || args.Tools[0] != "codex" {
+			t.Fatalf("Tools = %v, want [codex]", args.Tools)
+		}
+		if !args.Backfill {
+			t.Fatal("Backfill = false, want true")
+		}
+	})
+
+	t.Run("invalid tool", func(t *testing.T) {
+		_, err := parseWatchArgs([]string{"unknown"})
+		if err == nil {
+			t.Fatal("expected invalid tool error")
+		}
+		if !strings.Contains(err.Error(), "invalid tool") {
+			t.Fatalf("error = %q, want invalid tool", err.Error())
+		}
+	})
+
+	t.Run("help", func(t *testing.T) {
+		_, err := parseWatchArgs([]string{"--help"})
+		if err == nil {
+			t.Fatal("expected help error")
 		}
 	})
 }

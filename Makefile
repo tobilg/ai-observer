@@ -35,6 +35,10 @@ backend-dev:
 	@echo "Starting backend in development mode..."
 	cd backend && AI_OBSERVER_DATABASE_PATH=$(CURDIR)/data/ai-observer.duckdb go run ./cmd/server
 
+backend-dev-watch:
+	@echo "Starting backend in development mode..."
+	cd backend && AI_OBSERVER_DATABASE_PATH=$(CURDIR)/data/ai-observer.duckdb go run ./cmd/server watch
+
 backend-test:
 	@echo "Running backend tests..."
 	cd backend && go test -v ./...

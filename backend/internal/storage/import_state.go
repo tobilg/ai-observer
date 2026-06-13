@@ -7,13 +7,20 @@ import (
 	"time"
 )
 
+type execContexter interface {
+	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
+}
+
 // ImportState represents the import state for a single file
 type ImportState struct {
-	Source      string
-	FilePath    string
-	FileHash    string
-	ImportedAt  time.Time
-	RecordCount int
+	Source       string
+	FilePath     string
+	FileHash     string
+	ImportedAt   time.Time
+	RecordCount  int
+	ByteOffset   int64
+	MessageCount int
+	ParserState  string
 }
 
 // GetImportState retrieves the import state for a specific file
@@ -22,19 +29,24 @@ func (s *DuckDBStore) GetImportState(ctx context.Context, source, filePath strin
 	defer s.mu.RUnlock()
 
 	query := `
-		SELECT source, file_path, file_hash, imported_at, record_count
+		SELECT source, file_path, file_hash, imported_at, record_count, byte_offset, message_count, parser_state
 		FROM import_state
 		WHERE source = ? AND file_path = ?
 	`
 
 	var state ImportState
+	var parserState sql.NullString
 	err := s.db.QueryRowContext(ctx, query, source, filePath).Scan(
 		&state.Source,
 		&state.FilePath,
 		&state.FileHash,
 		&state.ImportedAt,
 		&state.RecordCount,
+		&state.ByteOffset,
+		&state.MessageCount,
+		&parserState,
 	)
+	state.ParserState = parserState.String
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -53,8 +65,8 @@ func (s *DuckDBStore) SetImportState(ctx context.Context, state *ImportState) er
 
 	// Use INSERT OR REPLACE for upsert behavior
 	query := `
-		INSERT OR REPLACE INTO import_state (source, file_path, file_hash, imported_at, record_count)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT OR REPLACE INTO import_state (source, file_path, file_hash, imported_at, record_count, byte_offset, message_count, parser_state)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	_, err := s.db.ExecContext(ctx, query,
@@ -63,6 +75,9 @@ func (s *DuckDBStore) SetImportState(ctx context.Context, state *ImportState) er
 		state.FileHash,
 		state.ImportedAt,
 		state.RecordCount,
+		state.ByteOffset,
+		state.MessageCount,
+		state.ParserState,
 	)
 	if err != nil {
 		return fmt.Errorf("setting import state: %w", err)
@@ -91,7 +106,7 @@ func (s *DuckDBStore) ListImportedFiles(ctx context.Context, source string) ([]I
 	defer s.mu.RUnlock()
 
 	query := `
-		SELECT source, file_path, file_hash, imported_at, record_count
+		SELECT source, file_path, file_hash, imported_at, record_count, byte_offset, message_count, parser_state
 		FROM import_state
 		WHERE source = ?
 		ORDER BY imported_at DESC
@@ -106,15 +121,20 @@ func (s *DuckDBStore) ListImportedFiles(ctx context.Context, source string) ([]I
 	var states []ImportState
 	for rows.Next() {
 		var state ImportState
+		var parserState sql.NullString
 		if err := rows.Scan(
 			&state.Source,
 			&state.FilePath,
 			&state.FileHash,
 			&state.ImportedAt,
 			&state.RecordCount,
+			&state.ByteOffset,
+			&state.MessageCount,
+			&parserState,
 		); err != nil {
 			return nil, fmt.Errorf("scanning import state: %w", err)
 		}
+		state.ParserState = parserState.String
 		states = append(states, state)
 	}
 
@@ -134,6 +154,47 @@ func (s *DuckDBStore) ClearImportState(ctx context.Context, source string) error
 	_, err := s.db.ExecContext(ctx, query, source)
 	if err != nil {
 		return fmt.Errorf("clearing import state: %w", err)
+	}
+
+	return nil
+}
+
+// SetWatchFields updates the watch-specific fields for a file, creating the row if needed
+func (s *DuckDBStore) SetWatchFields(ctx context.Context, source, filePath string, byteOffset int64, messageCount int, parserState string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return setWatchFields(ctx, s.db, source, filePath, byteOffset, messageCount, parserState)
+}
+
+func setWatchFields(ctx context.Context, execer execContexter, source, filePath string, byteOffset int64, messageCount int, parserState string) error {
+	// Try to update existing row first
+	updateQuery := `
+		UPDATE import_state
+		SET byte_offset = ?, message_count = ?, parser_state = ?, imported_at = ?
+		WHERE source = ? AND file_path = ?
+	`
+	now := time.Now()
+	result, err := execer.ExecContext(ctx, updateQuery, byteOffset, messageCount, parserState, now, source, filePath)
+	if err != nil {
+		return fmt.Errorf("updating watch fields: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("checking rows affected: %w", err)
+	}
+
+	// If no existing row, insert a new one
+	if rowsAffected == 0 {
+		insertQuery := `
+			INSERT INTO import_state (source, file_path, file_hash, imported_at, record_count, byte_offset, message_count, parser_state)
+			VALUES (?, ?, '', ?, 0, ?, ?, ?)
+		`
+		_, err := execer.ExecContext(ctx, insertQuery, source, filePath, now, byteOffset, messageCount, parserState)
+		if err != nil {
+			return fmt.Errorf("inserting watch fields: %w", err)
+		}
 	}
 
 	return nil

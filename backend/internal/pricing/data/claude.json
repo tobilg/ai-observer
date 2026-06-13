@@ -42,35 +42,40 @@
       "inputCostPerMTok": 15,
       "outputCostPerMTok": 75,
       "cacheReadCostPerMTok": 1.5,
-      "cacheWriteCostPerMTok": 18.75
+      "cacheWriteCostPerMTok": 18.75,
+      "deprecated": true
     },
     "claude-sonnet-4-20250514": {
       "aliases": ["claude-sonnet-4", "claude-sonnet-4-0", "claude-sonnet-4-latest"],
       "inputCostPerMTok": 3,
       "outputCostPerMTok": 15,
       "cacheReadCostPerMTok": 0.3,
-      "cacheWriteCostPerMTok": 3.75
+      "cacheWriteCostPerMTok": 3.75,
+      "deprecated": true
     },
     "claude-opus-4-20250514": {
       "aliases": ["claude-opus-4", "claude-opus-4-0", "claude-opus-4-latest"],
       "inputCostPerMTok": 15,
       "outputCostPerMTok": 75,
       "cacheReadCostPerMTok": 1.5,
-      "cacheWriteCostPerMTok": 18.75
+      "cacheWriteCostPerMTok": 18.75,
+      "deprecated": true
     },
     "claude-3-7-sonnet-20250219": {
       "aliases": ["claude-3-7-sonnet", "claude-3-7-sonnet-latest", "claude-3.7-sonnet"],
       "inputCostPerMTok": 3,
       "outputCostPerMTok": 15,
       "cacheReadCostPerMTok": 0.3,
-      "cacheWriteCostPerMTok": 3.75
+      "cacheWriteCostPerMTok": 3.75,
+      "deprecated": true
     },
     "claude-3-5-sonnet-20241022": {
       "aliases": ["claude-3-5-sonnet", "claude-3-5-sonnet-v2", "claude-3.5-sonnet"],
       "inputCostPerMTok": 3,
       "outputCostPerMTok": 15,
       "cacheReadCostPerMTok": 0.3,
-      "cacheWriteCostPerMTok": 3.75
+      "cacheWriteCostPerMTok": 3.75,
+      "deprecated": true
     },
     "claude-3-5-sonnet-20240620": {
       "aliases": ["claude-3-5-sonnet-v1"],
@@ -85,14 +90,16 @@
       "inputCostPerMTok": 0.8,
       "outputCostPerMTok": 4,
       "cacheReadCostPerMTok": 0.08,
-      "cacheWriteCostPerMTok": 1
+      "cacheWriteCostPerMTok": 1,
+      "deprecated": true
     },
     "claude-3-opus-20240229": {
       "aliases": ["claude-3-opus", "claude-3-opus-latest", "claude-opus-3"],
       "inputCostPerMTok": 15,
       "outputCostPerMTok": 75,
       "cacheReadCostPerMTok": 1.5,
-      "cacheWriteCostPerMTok": 18.75
+      "cacheWriteCostPerMTok": 18.75,
+      "deprecated": true
     },
     "claude-3-sonnet-20240229": {
       "aliases": ["claude-3-sonnet"],
@@ -107,7 +114,8 @@
       "inputCostPerMTok": 0.25,
       "outputCostPerMTok": 1.25,
       "cacheReadCostPerMTok": 0.03,
-      "cacheWriteCostPerMTok": 0.3
+      "cacheWriteCostPerMTok": 0.3,
+      "deprecated": true
     }
   }
 }

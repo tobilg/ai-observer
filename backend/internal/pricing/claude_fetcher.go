@@ -20,8 +20,8 @@ const (
 
 // FetchedModelInfo contains model information extracted from Anthropic docs
 type FetchedModelInfo struct {
-	ModelID   string
-	Aliases   []string
+	ModelID     string
+	Aliases     []string
 	ReleaseDate string
 }
 
@@ -149,42 +149,52 @@ func GenerateClaudeJSON(models []FetchedModelInfo, pricing []FetchedPricingInfo)
 	// Apply cache pricing formula: Read = 0.1× input, Write = 1.25× input
 	addModelWithCache := func(modelID string, input, output float64, aliases []string, deprecated bool) {
 		data.Models[modelID] = ModelEntry{
-			Aliases:             aliases,
-			InputCostPerMTok:    input,
-			OutputCostPerMTok:   output,
+			Aliases:               aliases,
+			InputCostPerMTok:      input,
+			OutputCostPerMTok:     output,
 			CacheReadCostPerMTok:  input * 0.1,
 			CacheWriteCostPerMTok: input * 1.25,
-			Deprecated:          deprecated,
+			Deprecated:            deprecated,
 		}
 	}
 
 	// Add known models with correct pricing
 	// In a full implementation, this would merge fetched data with known models
 
-	// Latest models (Claude 4.5 series)
+	// Claude 5 series
+	addModelWithCache("claude-fable-5", 10, 50, nil, false)
+	addModelWithCache("claude-mythos-5", 10, 50, nil, false)
+
+	// Latest Claude 4 series
+	addModelWithCache("claude-opus-4-8", 5, 25, nil, false)
+	addModelWithCache("claude-opus-4-7", 5, 25, nil, false)
+	addModelWithCache("claude-opus-4-6", 5, 25, []string{"claude-opus-4-6-20260305"}, false)
+	addModelWithCache("claude-sonnet-4-6", 3, 15, []string{"claude-sonnet-4-6-20260305"}, false)
+
+	// Claude 4.5 series
 	addModelWithCache("claude-sonnet-4-5-20250929", 3, 15, []string{"claude-sonnet-4-5", "claude-sonnet-4-5-latest"}, false)
 	addModelWithCache("claude-haiku-4-5-20251001", 1, 5, []string{"claude-haiku-4-5", "claude-haiku-4-5-latest"}, false)
 	addModelWithCache("claude-opus-4-5-20251101", 5, 25, []string{"claude-opus-4-5", "claude-opus-4-5-latest"}, false)
 
 	// Claude 4.1 series
-	addModelWithCache("claude-opus-4-1-20250805", 15, 75, []string{"claude-opus-4-1", "claude-opus-4-1-latest"}, false)
+	addModelWithCache("claude-opus-4-1-20250805", 15, 75, []string{"claude-opus-4-1", "claude-opus-4-1-latest"}, true)
 
 	// Claude 4.0 series
-	addModelWithCache("claude-sonnet-4-20250514", 3, 15, []string{"claude-sonnet-4", "claude-sonnet-4-0", "claude-sonnet-4-latest"}, false)
-	addModelWithCache("claude-opus-4-20250514", 15, 75, []string{"claude-opus-4", "claude-opus-4-0", "claude-opus-4-latest"}, false)
+	addModelWithCache("claude-sonnet-4-20250514", 3, 15, []string{"claude-sonnet-4", "claude-sonnet-4-0", "claude-sonnet-4-latest"}, true)
+	addModelWithCache("claude-opus-4-20250514", 15, 75, []string{"claude-opus-4", "claude-opus-4-0", "claude-opus-4-latest"}, true)
 
 	// Claude 3.7 series
-	addModelWithCache("claude-3-7-sonnet-20250219", 3, 15, []string{"claude-3-7-sonnet", "claude-3-7-sonnet-latest", "claude-3.7-sonnet"}, false)
+	addModelWithCache("claude-3-7-sonnet-20250219", 3, 15, []string{"claude-3-7-sonnet", "claude-3-7-sonnet-latest", "claude-3.7-sonnet"}, true)
 
 	// Claude 3.5 series
-	addModelWithCache("claude-3-5-sonnet-20241022", 3, 15, []string{"claude-3-5-sonnet", "claude-3-5-sonnet-v2", "claude-3.5-sonnet"}, false)
+	addModelWithCache("claude-3-5-sonnet-20241022", 3, 15, []string{"claude-3-5-sonnet", "claude-3-5-sonnet-v2", "claude-3.5-sonnet"}, true)
 	addModelWithCache("claude-3-5-sonnet-20240620", 3, 15, []string{"claude-3-5-sonnet-v1"}, true)
-	addModelWithCache("claude-3-5-haiku-20241022", 0.8, 4, []string{"claude-3-5-haiku", "claude-3-5-haiku-latest", "claude-3.5-haiku", "claude-haiku-3-5"}, false)
+	addModelWithCache("claude-3-5-haiku-20241022", 0.8, 4, []string{"claude-3-5-haiku", "claude-3-5-haiku-latest", "claude-3.5-haiku", "claude-haiku-3-5"}, true)
 
 	// Claude 3 series
-	addModelWithCache("claude-3-opus-20240229", 15, 75, []string{"claude-3-opus", "claude-3-opus-latest", "claude-opus-3"}, false)
+	addModelWithCache("claude-3-opus-20240229", 15, 75, []string{"claude-3-opus", "claude-3-opus-latest", "claude-opus-3"}, true)
 	addModelWithCache("claude-3-sonnet-20240229", 3, 15, []string{"claude-3-sonnet"}, true)
-	addModelWithCache("claude-3-haiku-20240307", 0.25, 1.25, []string{"claude-3-haiku"}, false)
+	addModelWithCache("claude-3-haiku-20240307", 0.25, 1.25, []string{"claude-3-haiku"}, true)
 
 	return json.MarshalIndent(data, "", "  ")
 }

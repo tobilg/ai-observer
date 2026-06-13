@@ -55,9 +55,12 @@ export function DashboardBuilder({ dashboardId }: DashboardBuilderProps) {
 
   // Initial fetch and polling
   useEffect(() => {
-    fetchData()
+    const initialFetch = setTimeout(fetchData, 0)
     const interval = setInterval(fetchData, 10000)
-    return () => clearInterval(interval)
+    return () => {
+      clearTimeout(initialFetch)
+      clearInterval(interval)
+    }
   }, [fetchData])
 
   // Refresh when new spans arrive via WebSocket (debounced)

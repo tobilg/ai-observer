@@ -1,6 +1,4 @@
 import {
-  createContext,
-  useContext,
   useEffect,
   useState,
   useMemo,
@@ -11,29 +9,8 @@ import {
 import { api } from '@/lib/api'
 import { useDashboardStore } from '@/stores/dashboardStore'
 import { WIDGET_TYPES, isAbsoluteTimeSelection } from '@/types/dashboard'
-import type { TimeSeries } from '@/types/metrics'
 import { useTelemetryStore } from '@/stores/telemetryStore'
-
-interface MetricData {
-  series: TimeSeries[]
-  loading: boolean
-  error: string | null
-}
-
-interface MetricDataContextValue {
-  getMetricData: (widgetId: string) => MetricData
-  refreshAll: () => void
-}
-
-const MetricDataContext = createContext<MetricDataContextValue | null>(null)
-
-export function useMetricData(widgetId: string): MetricData {
-  const context = useContext(MetricDataContext)
-  if (!context) {
-    throw new Error('useMetricData must be used within MetricDataProvider')
-  }
-  return context.getMetricData(widgetId)
-}
+import { MetricDataContext, type MetricData } from '@/contexts/metricData'
 
 interface MetricDataProviderProps {
   children: ReactNode

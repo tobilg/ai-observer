@@ -15,6 +15,7 @@ import (
 	"github.com/tobilg/ai-observer/internal/logger"
 	appMiddleware "github.com/tobilg/ai-observer/internal/middleware"
 	"github.com/tobilg/ai-observer/internal/storage"
+	"github.com/tobilg/ai-observer/internal/watcher"
 	"github.com/tobilg/ai-observer/internal/websocket"
 	"github.com/tobilg/ai-observer/pkg/compression"
 	"golang.org/x/net/http2"
@@ -31,6 +32,7 @@ type Server struct {
 	// HTTP servers for graceful shutdown
 	otlpServer *http.Server
 	apiServer  *http.Server
+	fileWatcher *watcher.Watcher // nil if watch mode not enabled
 	mu         sync.Mutex
 }
 
@@ -151,6 +153,40 @@ func (s *Server) ListenAndServe() error {
 	return s.apiServer.ListenAndServe()
 }
 
+// StartWatcher starts the file watcher with the given configuration
+func (s *Server) StartWatcher(cfg watcher.Config) error {
+	w := watcher.New(s.storage, s.wsHub, cfg)
+	s.fileWatcher = w
+	return s.fileWatcher.Start(context.Background())
+}
+
+// ListenAndServeAPIOnly starts only the API server (no OTLP server)
+func (s *Server) ListenAndServeAPIOnly() error {
+	log := logger.Logger()
+
+	apiAddr := fmt.Sprintf(":%d", s.config.APIPort)
+	h2sAPI := &http2.Server{}
+	handlerAPI := h2c.NewHandler(s.apiRouter, h2sAPI)
+
+	s.mu.Lock()
+	s.apiServer = &http.Server{
+		Addr:         apiAddr,
+		Handler:      handlerAPI,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 0, // Disabled for WebSocket support
+		IdleTimeout:  120 * time.Second,
+	}
+	s.mu.Unlock()
+
+	log.Info("API server starting",
+		"addr", apiAddr,
+		"protocol", "HTTP/1.1 + h2c",
+		"endpoints", "GET /api/*, /ws, /health",
+	)
+
+	return s.apiServer.ListenAndServe()
+}
+
 func (s *Server) Shutdown(ctx context.Context) error {
 	logger.Info("Shutting down server")
 
@@ -193,6 +229,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 	// Wait for servers to shutdown
 	wg.Wait()
+
+	// Stop file watcher before closing storage
+	if s.fileWatcher != nil {
+		s.fileWatcher.Stop()
+	}
 
 	// Close storage
 	if err := s.storage.Close(); err != nil {

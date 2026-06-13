@@ -12,10 +12,16 @@
       "outputCostPerMTok": 1.5,
       "cacheReadCostPerMTok": 0
     },
+    "gemini-3.1-flash-lite": {
+      "inputCostPerMTok": 0.125,
+      "outputCostPerMTok": 0.75,
+      "cacheReadCostPerMTok": 0.0125
+    },
     "gemini-3-pro-preview": {
       "inputCostPerMTok": 2,
       "outputCostPerMTok": 12,
-      "cacheReadCostPerMTok": 0.2
+      "cacheReadCostPerMTok": 0.2,
+      "deprecated": true
     },
     "gemini-3-flash-preview": {
       "inputCostPerMTok": 0.5,

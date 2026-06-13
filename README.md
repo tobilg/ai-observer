@@ -20,6 +20,7 @@ AI coding assistants are becoming essential development tools, but understanding
 - **Multi-tool support** — Works with Claude Code, Gemini CLI, and OpenAI Codex CLI
 - **Real-time dashboard** — Live updates via WebSocket as telemetry arrives
 - **Customizable widgets** — Drag-and-drop dashboard builder with multiple widget types
+- **File watcher mode** — Watch local session files in real-time, no OTLP configuration needed
 - **Historical import** — Import past sessions from local JSONL/JSON files with cost calculation
 - **Cost tracking** — Embedded pricing data for 67+ models across Claude, Codex, and Gemini
 - **Fast analytics** — DuckDB-powered storage for instant queries on large datasets
@@ -31,6 +32,7 @@ AI coding assistants are becoming essential development tools, but understanding
 
 - [Import Command](docs/import.md) — Import historical session data from local AI tool files
 - [Export Command](docs/export.md) — Export telemetry data to Parquet files for archiving and sharing
+- [Watch Command](#watch-command) — Watch local session files and import incrementally in real-time
 - [Pricing System](docs/pricing.md) — Cost calculation for Claude, Codex, and Gemini models
 
 ## Screenshots
@@ -137,6 +139,7 @@ ai-observer [command] [options]
 | `export` | Export telemetry data to Parquet files |
 | `delete` | Delete telemetry data from database |
 | `setup` | Show setup instructions for AI tools |
+| `watch` | Watch local session files and import incrementally |
 | `serve` | Start the OTLP server (default if no command) |
 
 **Global Options:**
@@ -165,6 +168,9 @@ ai-observer export all --output ./export
 
 # Delete data in a date range
 ai-observer delete all --from 2025-01-01 --to 2025-01-31
+
+# Watch local session files for changes
+ai-observer watch all
 ```
 
 ### Import Command
@@ -213,6 +219,55 @@ ai-observer import claude-code --force --pricing-mode calculate
 ```
 
 See [docs/import.md](docs/import.md) for detailed documentation and [docs/pricing.md](docs/pricing.md) for pricing calculation details.
+
+### Watch Command
+
+Watch local session files in real-time and import new data incrementally as it's written. This is an alternative to configuring OTLP exporters — just start the watcher and it picks up data from the tools' native log files.
+
+```bash
+ai-observer watch [claude-code|codex|gemini|all] [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--backfill` | On first start, load all existing session data before watching |
+
+**How it works:**
+
+- **First start (default):** Records the current position in each file without importing historical data. Only data written after startup is imported.
+- **First start with `--backfill`:** Loads all existing session data, then watches for new changes.
+- **Restart:** Resumes from where it left off, importing any data written while the watcher was stopped.
+
+At startup, the watcher detects which tools are installed and reports their status:
+
+```
+File watcher starting...
+  [claude-code] Watching ~/.claude/projects/ (2 directories)
+  [codex]       Watching ~/.codex/sessions/ (1 directory)
+  [gemini]      ~/.gemini/tmp/ not found — will poll for directory creation
+```
+
+Directories that don't exist yet are polled every 30 seconds and automatically added when they appear.
+
+**File locations** are the same as the import command — override with `AI_OBSERVER_CLAUDE_PATH`, `AI_OBSERVER_CODEX_PATH`, `AI_OBSERVER_GEMINI_PATH`.
+
+> **Note:** Watch mode and OTLP ingestion (`serve`) are mutually exclusive. Running both simultaneously would produce duplicate data. Use `watch` for file-based ingestion or `serve` for OTLP — not both.
+
+**Examples:**
+
+```bash
+# Watch all tools for new data
+ai-observer watch all
+
+# Watch only Claude Code sessions
+ai-observer watch claude-code
+
+# First run: load all historical data, then watch
+ai-observer watch all --backfill
+
+# Watch Gemini CLI only
+ai-observer watch gemini
+```
 
 ### Export Command
 
@@ -367,6 +422,8 @@ trace_exporter = { otlp-http = { endpoint = "http://localhost:4318/v1/traces", p
 
 ## Architecture
 
+**OTLP mode** (`ai-observer` or `ai-observer serve`):
+
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
 │   Claude Code   │     │   Gemini CLI    │     │   Codex CLI     │
@@ -383,6 +440,46 @@ trace_exporter = { otlp-http = { endpoint = "http://localhost:4318/v1/traces", p
                     │  ┌──────────────────┐  │
                     │  │   OTLP Ingestion │  │  ← Port 4318
                     │  │   (HTTP/Proto)   │  │
+                    │  └────────┬─────────┘  │
+                    │           │            │
+                    │  ┌────────▼─────────┐  │
+                    │  │     DuckDB       │  │
+                    │  │   (Analytics)    │  │
+                    │  └────────┬─────────┘  │
+                    │           │            │
+                    │  ┌────────▼─────────┐  │
+                    │  │   REST API +     │  │  ← Port 8080
+                    │  │   WebSocket Hub  │  │
+                    │  └────────┬─────────┘  │
+                    │           │            │
+                    │  ┌────────▼─────────┐  │
+                    │  │  React Dashboard │  │
+                    │  │   (embedded)     │  │
+                    │  └──────────────────┘  │
+                    └────────────────────────┘
+```
+
+**File watcher mode** (`ai-observer watch all`):
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│   Claude Code   │     │   Gemini CLI     │     │   Codex CLI     │
+│  ~/.claude/     │     │  ~/.gemini/      │     │  ~/.codex/      │
+│  projects/      │     │  tmp/            │     │  sessions/      │
+│    *.jsonl      │     │   session-*.json │     │    *.jsonl      │
+└────────┬────────┘     └────────┬─────────┘     └────────┬────────┘
+         │                       │                       │
+         │ fsnotify              │ fsnotify              │ fsnotify
+         │ (file changes)        │ (file changes)        │ (file changes)
+         └───────────────────────┼───────────────────────┘
+                                 │
+                                 ▼
+                    ┌────────────────────────┐
+                    │     AI Observer        │
+                    │  ┌──────────────────┐  │
+                    │  │  File Watcher    │  │  ← Incremental
+                    │  │  (per-file       │  │    parsing
+                    │  │   debounce)      │  │
                     │  └────────┬─────────┘  │
                     │           │            │
                     │  ┌────────▼─────────┐  │
@@ -695,6 +792,59 @@ This means long CLI sessions produce traces with thousands of spans spanning hou
 
 </details>
 
+## Metric Availability by Ingestion Mode
+
+Not all metrics are available in every mode. OTLP receives telemetry emitted by each tool's built-in OpenTelemetry instrumentation (in-memory counters, histograms, traces), while `watch` and `import` parse local session files which only contain conversation messages and per-response token/cost data.
+
+### Claude Code
+
+Local JSONL files store conversation messages and API usage per response. Operational metrics (lines of code, active time, git activity) are tracked in-memory by Claude Code's OTel instrumentation and only emitted over the network — they are never written to disk.
+
+| Metric | OTLP (`serve`) | Watch (`watch`) | Import (`import`) |
+|--------|:-:|:-:|:-:|
+| `claude_code.token.usage` | Yes | Yes | Yes |
+| `claude_code.cost.usage` | Yes | Yes | Yes |
+| `claude_code.token.usage_user_facing` | Yes (derived) | Yes | Yes |
+| `claude_code.cost.usage_user_facing` | Yes (derived) | Yes | Yes |
+| `claude_code.session.count` | Yes | — | — |
+| `claude_code.lines_of_code.count` | Yes | — | — |
+| `claude_code.active_time.total` | Yes | — | — |
+| `claude_code.pull_request.count` | Yes | — | — |
+| `claude_code.commit.count` | Yes | — | — |
+| `claude_code.code_edit_tool.decision` | Yes | — | — |
+| Transcript logs | — | Yes | Yes |
+
+### OpenAI Codex CLI
+
+Local JSONL files store conversation events and cumulative token counts. The full trace/span hierarchy (session → task → turn → stream) is only available via OTLP.
+
+| Metric | OTLP (`serve`) | Watch (`watch`) | Import (`import`) |
+|--------|:-:|:-:|:-:|
+| `codex_cli_rs.token.usage` | Yes (derived from logs) | Yes | Yes |
+| `codex_cli_rs.cost.usage` | Yes (derived from logs) | Yes | Yes |
+| Traces / spans | Yes | — | — |
+| Transcript logs | — | Yes | Yes |
+
+### Gemini CLI
+
+Local JSON session files store messages with per-response token counts. All operational metrics (API latency, tool call timing, agent duration, memory/CPU usage, and ~20 other metrics) are tracked in-memory by Gemini CLI's OTel instrumentation and only emitted over the network.
+
+| Metric | OTLP (`serve`) | Watch (`watch`) | Import (`import`) |
+|--------|:-:|:-:|:-:|
+| `gemini_cli.token.usage` | Yes (cumulative) | Yes | Yes |
+| `gemini_cli.cost.usage` | Yes | Yes | Yes |
+| `gemini_cli.session.count` | Yes (cumulative) | — | — |
+| `gemini_cli.api.request.count` | Yes (cumulative) | — | — |
+| `gemini_cli.api.request.latency` | Yes | — | — |
+| `gemini_cli.tool.call.count` | Yes | — | — |
+| `gemini_cli.tool.call.latency` | Yes | — | — |
+| `gemini_cli.file.operation.count` | Yes (cumulative) | — | — |
+| `gemini_cli.agent.duration` | Yes | — | — |
+| All other Gemini metrics | Yes | — | — |
+| Transcript logs | — | Yes | Yes |
+
+> **Summary:** OTLP mode provides the richest telemetry — all metrics, traces, and events emitted by each tool's built-in instrumentation. Watch and import modes provide token usage, cost metrics, and full session transcripts parsed from local files. Operational metrics (lines of code, active time, API latency, git activity, etc.) only exist in the OTel telemetry stream and cannot be reconstructed from local files.
+
 ## Understanding Token Metrics: OTLP vs Local Files
 
 When comparing token usage from AI Observer's OTLP ingestion with tools like [ccusage](https://github.com/ryoppippi/ccusage) that parse local session files, you may notice significant differences in reported values. This is expected behavior due to different counting semantics.
@@ -739,6 +889,7 @@ The discrepancy is most pronounced for **input** and **output** tokens:
 | **Understanding API load** | OTLP metrics (shows actual tokens transmitted) |
 | **Cost tracking** | Either (both calculate costs correctly) |
 | **Historical analysis** | Import command (`ai-observer import`) for ccusage-compatible data |
+| **Zero-config live monitoring** | Watch mode (`ai-observer watch`) for real-time file-based ingestion |
 
 ### Reconciling the Data
 
@@ -756,6 +907,7 @@ Imported data uses the same token counting as ccusage and will show matching val
 - OTLP metrics arrive with `aggregationTemporality: 1` (DELTA), meaning each data point is a per-request value
 - The `type` attribute distinguishes token types: `input`, `output`, `cacheCreation`, `cacheRead`
 - Imported metrics include an `import_source: local_jsonl` attribute to distinguish them from OTLP data
+- Watch mode metrics include an `import_source: file_watcher` attribute
 - OTLP metrics have no `import_source` attribute (or it's null)
 
 ## Development
@@ -802,6 +954,7 @@ ai-observer/
 │   │   ├── pricing/      # Embedded pricing data and cost calculation
 │   │   ├── server/       # Server setup and routing
 │   │   ├── storage/      # DuckDB storage layer
+│   │   ├── watcher/      # File watcher for incremental import
 │   │   └── websocket/    # Real-time updates
 │   └── pkg/compression/  # GZIP decompression
 ├── frontend/

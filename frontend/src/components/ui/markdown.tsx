@@ -20,7 +20,7 @@ interface MarkdownProps {
 
 export function Markdown({ children, className }: MarkdownProps) {
   return (
-    <div className={cn('prose prose-sm dark:prose-invert max-w-none', className)}>
+    <div className={cn('prose prose-sm dark:prose-invert max-w-none overflow-hidden', className)}>
       <ReactMarkdown
         components={{
         // Headings
@@ -48,7 +48,7 @@ export function Markdown({ children, className }: MarkdownProps) {
         ),
         // Code blocks
         pre: ({ children }) => (
-          <pre className="bg-muted rounded-md p-3 overflow-x-auto my-2 text-xs">{children}</pre>
+          <pre className="bg-muted rounded-md p-3 overflow-x-auto my-2 text-xs max-w-full">{children}</pre>
         ),
         code: ({ className, children, ...props }) => {
           // Check if this is inline code (no className) or a code block
@@ -105,6 +105,12 @@ export function Markdown({ children, className }: MarkdownProps) {
         ),
         li: ({ children }) => (
           <li className="text-sm">{children}</li>
+        ),
+        // Tables
+        table: ({ children }) => (
+          <div className="overflow-x-auto max-w-full">
+            <table className="min-w-0">{children}</table>
+          </div>
         ),
         // Blockquotes
         blockquote: ({ children }) => (

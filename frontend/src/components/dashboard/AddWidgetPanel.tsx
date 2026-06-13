@@ -136,7 +136,7 @@ export function AddWidgetPanel() {
       }
     }
     fetchMetricNames()
-  }, [selectedService])
+  }, [selectedService, selectedMetric])
 
   // Calculate available columns at a specific position
   const getAvailableColumns = useCallback((gridRow: number, gridColumn: number): number => {

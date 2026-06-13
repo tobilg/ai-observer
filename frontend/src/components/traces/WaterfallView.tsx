@@ -3,7 +3,7 @@ import { formatDuration, getSpanKindIcon, formatEventTime, cn } from '@/lib/util
 import type { TraceOverview, Span } from '@/types/traces'
 import { ChevronRight, ChevronDown } from 'lucide-react'
 
-export interface SpanNode {
+interface SpanNode {
   span: Span
   children: SpanNode[]
   depth: number
@@ -12,7 +12,7 @@ export interface SpanNode {
   visualEnd: number   // ms timestamp
 }
 
-export function buildSpanTree(spans: Span[]): SpanNode[] {
+function buildSpanTree(spans: Span[]): SpanNode[] {
   // Create a map of spanId -> span for quick lookup
   const spanMap = new Map<string, Span>()
   for (const span of spans) {
@@ -60,7 +60,7 @@ export function buildSpanTree(spans: Span[]): SpanNode[] {
   return roots
 }
 
-export function flattenTree(nodes: SpanNode[], collapsedSpans: Set<string>): SpanNode[] {
+function flattenTree(nodes: SpanNode[], collapsedSpans: Set<string>): SpanNode[] {
   const result: SpanNode[] = []
   function traverse(nodes: SpanNode[]) {
     for (const node of nodes) {

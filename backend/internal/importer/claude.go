@@ -34,6 +34,9 @@ func (p *ClaudeParser) SetPricingMode(mode pricing.PricingMode) {
 	p.pricingMode = mode
 }
 
+// GetClaudeWatchPaths returns the list of paths to watch for Claude Code sessions
+func GetClaudeWatchPaths() []string { return getClaudeConfigPaths() }
+
 // getClaudeConfigPaths returns the list of paths to search for Claude Code sessions
 func getClaudeConfigPaths() []string {
 	var paths []string
@@ -100,8 +103,8 @@ func (p *ClaudeParser) FindSessionFiles(ctx context.Context) ([]string, error) {
 	return files, nil
 }
 
-// claudeJSONLEntry represents a single line in Claude Code JSONL files
-type claudeJSONLEntry struct {
+// ClaudeJSONLEntry represents a single line in Claude Code JSONL files
+type ClaudeJSONLEntry struct {
 	Type      string         `json:"type,omitempty"` // Root type: "assistant", "user", "queue-operation", etc.
 	Timestamp string         `json:"timestamp"`
 	SessionID string         `json:"sessionId,omitempty"`
@@ -109,19 +112,19 @@ type claudeJSONLEntry struct {
 	Cwd       string         `json:"cwd,omitempty"`
 	RequestID string         `json:"requestId,omitempty"`
 	CostUSD   *float64       `json:"costUSD,omitempty"`
-	Message   *claudeMessage `json:"message,omitempty"`
+	Message   *ClaudeMessage `json:"message,omitempty"`
 }
 
-type claudeMessage struct {
+type ClaudeMessage struct {
 	ID      string          `json:"id,omitempty"`
 	Model   string          `json:"model,omitempty"`
 	Role    string          `json:"role,omitempty"`
 	Type    string          `json:"type,omitempty"`
-	Content []claudeContent `json:"content,omitempty"`
-	Usage   *claudeUsage    `json:"usage,omitempty"`
+	Content []ClaudeContent `json:"content,omitempty"`
+	Usage   *ClaudeUsage    `json:"usage,omitempty"`
 }
 
-type claudeContent struct {
+type ClaudeContent struct {
 	Type      string `json:"type,omitempty"`        // "text", "tool_use", "tool_result"
 	Text      string `json:"text,omitempty"`        // message text
 	Name      string `json:"name,omitempty"`        // tool name (for tool_use)
@@ -130,7 +133,7 @@ type claudeContent struct {
 	ToolUseID string `json:"tool_use_id,omitempty"` // reference to tool_use (for tool_result)
 }
 
-type claudeUsage struct {
+type ClaudeUsage struct {
 	InputTokens              int `json:"input_tokens"`
 	OutputTokens             int `json:"output_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
@@ -173,7 +176,7 @@ func (p *ClaudeParser) ParseFile(ctx context.Context, path string) (*ImportResul
 			continue
 		}
 
-		var entry claudeJSONLEntry
+		var entry ClaudeJSONLEntry
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			// Skip malformed lines
 			continue
@@ -216,7 +219,7 @@ func (p *ClaudeParser) ParseFile(ctx context.Context, path string) (*ImportResul
 		}
 
 		// Create transcript log records from message content
-		transcriptLogs := p.createTranscriptLogs(entry, ts, sessionID, &messageIndex)
+		transcriptLogs := p.CreateTranscriptLogs(entry, ts, sessionID, &messageIndex)
 		result.Logs = append(result.Logs, transcriptLogs...)
 
 		// For assistant entries with usage data, also create metrics
@@ -258,16 +261,16 @@ func (p *ClaudeParser) ParseFile(ctx context.Context, path string) (*ImportResul
 
 			// Token usage metrics (creates both regular and user-facing variants)
 			if usage.InputTokens > 0 {
-				result.Metrics = append(result.Metrics, createTokenMetrics(ts, model, "input", float64(usage.InputTokens))...)
+				result.Metrics = append(result.Metrics, CreateTokenMetrics(ts, model, "input", float64(usage.InputTokens))...)
 			}
 			if usage.OutputTokens > 0 {
-				result.Metrics = append(result.Metrics, createTokenMetrics(ts, model, "output", float64(usage.OutputTokens))...)
+				result.Metrics = append(result.Metrics, CreateTokenMetrics(ts, model, "output", float64(usage.OutputTokens))...)
 			}
 			if usage.CacheCreationInputTokens > 0 {
-				result.Metrics = append(result.Metrics, createTokenMetrics(ts, model, "cacheCreation", float64(usage.CacheCreationInputTokens))...)
+				result.Metrics = append(result.Metrics, CreateTokenMetrics(ts, model, "cacheCreation", float64(usage.CacheCreationInputTokens))...)
 			}
 			if usage.CacheReadInputTokens > 0 {
-				result.Metrics = append(result.Metrics, createTokenMetrics(ts, model, "cacheRead", float64(usage.CacheReadInputTokens))...)
+				result.Metrics = append(result.Metrics, CreateTokenMetrics(ts, model, "cacheRead", float64(usage.CacheReadInputTokens))...)
 			}
 
 			// Cost metrics using pricing mode (creates both regular and user-facing variants)
@@ -279,7 +282,7 @@ func (p *ClaudeParser) ParseFile(ctx context.Context, path string) (*ImportResul
 			}
 			cost := pricing.GetClaudeCostWithMode(p.pricingMode, model, tokenUsage, entry.CostUSD)
 			if cost > 0 {
-				result.Metrics = append(result.Metrics, createCostMetrics(ts, model, cost)...)
+				result.Metrics = append(result.Metrics, CreateCostMetrics(ts, model, cost)...)
 			}
 		}
 
@@ -293,8 +296,8 @@ func (p *ClaudeParser) ParseFile(ctx context.Context, path string) (*ImportResul
 	return result, nil
 }
 
-// createTranscriptLogs creates transcript log records from message content
-func (p *ClaudeParser) createTranscriptLogs(entry claudeJSONLEntry, ts time.Time, sessionID string, messageIndex *int) []api.LogRecord {
+// CreateTranscriptLogs creates transcript log records from message content
+func (p *ClaudeParser) CreateTranscriptLogs(entry ClaudeJSONLEntry, ts time.Time, sessionID string, messageIndex *int) []api.LogRecord {
 	var logs []api.LogRecord
 
 	if entry.Message == nil || len(entry.Message.Content) == 0 {
@@ -374,14 +377,14 @@ func (p *ClaudeParser) createTranscriptLogs(entry claudeJSONLEntry, ts time.Time
 
 // Metric name constants for Claude Code imports
 const (
-	claudeTokenUsageMetric           = "claude_code.token.usage"
-	claudeUserFacingTokenUsageMetric = "claude_code.token.usage_user_facing"
-	claudeCostMetric                 = "claude_code.cost.usage"
-	claudeUserFacingCostMetric       = "claude_code.cost.usage_user_facing"
+	ClaudeTokenUsageMetric           = "claude_code.token.usage"
+	ClaudeUserFacingTokenUsageMetric = "claude_code.token.usage_user_facing"
+	ClaudeCostMetric                 = "claude_code.cost.usage"
+	ClaudeUserFacingCostMetric       = "claude_code.cost.usage_user_facing"
 )
 
-// createTokenMetric creates a token usage metric with the specified name
-func createTokenMetric(ts time.Time, metricName, model, tokenType string, value float64) api.MetricDataPoint {
+// CreateTokenMetric creates a token usage metric with the specified name
+func CreateTokenMetric(ts time.Time, metricName, model, tokenType string, value float64) api.MetricDataPoint {
 	return api.MetricDataPoint{
 		Timestamp:   ts,
 		ServiceName: SourceClaude.ServiceName(),
@@ -396,18 +399,18 @@ func createTokenMetric(ts time.Time, metricName, model, tokenType string, value 
 	}
 }
 
-// createTokenMetrics creates both regular and user-facing token usage metrics.
+// CreateTokenMetrics creates both regular and user-facing token usage metrics.
 // JSONL data is already user-facing (only assistant messages with cache tokens),
 // so both metrics have identical values for consistency with OTLP-derived metrics.
-func createTokenMetrics(ts time.Time, model, tokenType string, value float64) []api.MetricDataPoint {
+func CreateTokenMetrics(ts time.Time, model, tokenType string, value float64) []api.MetricDataPoint {
 	return []api.MetricDataPoint{
-		createTokenMetric(ts, claudeTokenUsageMetric, model, tokenType, value),
-		createTokenMetric(ts, claudeUserFacingTokenUsageMetric, model, tokenType, value),
+		CreateTokenMetric(ts, ClaudeTokenUsageMetric, model, tokenType, value),
+		CreateTokenMetric(ts, ClaudeUserFacingTokenUsageMetric, model, tokenType, value),
 	}
 }
 
-// createCostMetric creates a cost metric with the specified name
-func createCostMetric(ts time.Time, metricName, model string, value float64) api.MetricDataPoint {
+// CreateCostMetric creates a cost metric with the specified name
+func CreateCostMetric(ts time.Time, metricName, model string, value float64) api.MetricDataPoint {
 	return api.MetricDataPoint{
 		Timestamp:   ts,
 		ServiceName: SourceClaude.ServiceName(),
@@ -421,12 +424,12 @@ func createCostMetric(ts time.Time, metricName, model string, value float64) api
 	}
 }
 
-// createCostMetrics creates both regular and user-facing cost metrics.
+// CreateCostMetrics creates both regular and user-facing cost metrics.
 // JSONL data is already user-facing (only assistant messages with cache tokens),
 // so both metrics have identical values for consistency with OTLP-derived metrics.
-func createCostMetrics(ts time.Time, model string, value float64) []api.MetricDataPoint {
+func CreateCostMetrics(ts time.Time, model string, value float64) []api.MetricDataPoint {
 	return []api.MetricDataPoint{
-		createCostMetric(ts, claudeCostMetric, model, value),
-		createCostMetric(ts, claudeUserFacingCostMetric, model, value),
+		CreateCostMetric(ts, ClaudeCostMetric, model, value),
+		CreateCostMetric(ts, ClaudeUserFacingCostMetric, model, value),
 	}
 }

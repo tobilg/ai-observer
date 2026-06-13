@@ -145,3 +145,9 @@ CREATE TABLE IF NOT EXISTS import_state (
 const indexImportState = `
 CREATE INDEX IF NOT EXISTS idx_import_state_source ON import_state(source);
 `
+
+const migrateImportStateForWatch = `
+ALTER TABLE import_state ADD COLUMN IF NOT EXISTS byte_offset BIGINT DEFAULT 0;
+ALTER TABLE import_state ADD COLUMN IF NOT EXISTS message_count INTEGER DEFAULT 0;
+ALTER TABLE import_state ADD COLUMN IF NOT EXISTS parser_state VARCHAR;
+`

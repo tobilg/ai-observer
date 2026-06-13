@@ -76,24 +76,6 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   }
 }
 
-// Hook-based wrapper for functional components
-interface UseErrorBoundaryReturn {
-  resetBoundary: () => void
-}
-
-// Context for error boundary reset
-import { createContext, useContext } from 'react'
-
-const ErrorBoundaryContext = createContext<UseErrorBoundaryReturn | null>(null)
-
-export function useErrorBoundary(): UseErrorBoundaryReturn {
-  const context = useContext(ErrorBoundaryContext)
-  if (!context) {
-    return { resetBoundary: () => {} }
-  }
-  return context
-}
-
 // Wrapper component that provides context
 interface ErrorBoundaryWithContextProps extends ErrorBoundaryProps {
   children: ReactNode

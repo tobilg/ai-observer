@@ -12,6 +12,12 @@ func TestClaudePricingLoaded(t *testing.T) {
 
 	// Verify expected models exist
 	models := []string{
+		"claude-fable-5",
+		"claude-mythos-5",
+		"claude-opus-4-8",
+		"claude-opus-4-7",
+		"claude-opus-4-6",
+		"claude-sonnet-4-6",
 		"claude-sonnet-4-5-20250929",
 		"claude-haiku-4-5-20251001",
 		"claude-opus-4-5-20251101",
@@ -43,6 +49,8 @@ func TestClaudeAliasLookup(t *testing.T) {
 		alias    string
 		expected string
 	}{
+		{"claude-opus-4-6-20260305", "claude-opus-4-6"},
+		{"claude-sonnet-4-6-20260305", "claude-sonnet-4-6"},
 		{"claude-sonnet-4-5", "claude-sonnet-4-5-20250929"},
 		{"claude-haiku-4-5", "claude-haiku-4-5-20251001"},
 		{"claude-opus-4-5", "claude-opus-4-5-20251101"},
@@ -67,14 +75,25 @@ func TestCodexPricingLoaded(t *testing.T) {
 
 	// Verify expected models exist
 	models := []string{
-		"gpt-5",
+		"gpt-5.5",
+		"gpt-5.5-pro",
+		"gpt-5.4",
+		"gpt-5.4-mini",
+		"gpt-5.4-nano",
+		"gpt-5.4-pro",
+		"gpt-5.3-codex",
+		"gpt-5.2",
 		"gpt-5.1",
+		"gpt-5",
 		"gpt-5-mini",
+		"gpt-5-nano",
+		"gpt-realtime-2",
 		"gpt-4.1",
 		"gpt-4o",
 		"gpt-4o-mini",
 		"o1",
 		"o3",
+		"o3-pro",
 		"o4-mini",
 	}
 
@@ -101,11 +120,16 @@ func TestGeminiPricingLoaded(t *testing.T) {
 
 	// Verify expected models exist
 	models := []string{
+		"gemini-3.1-pro-preview",
+		"gemini-3.1-pro-preview-customtools",
+		"gemini-3.1-flash-lite",
 		"gemini-3-pro-preview",
 		"gemini-3-flash-preview",
 		"gemini-2.5-pro",
 		"gemini-2.5-flash",
+		"gemini-2.5-flash-lite",
 		"gemini-2.0-flash",
+		"gemini-2.0-flash-lite",
 	}
 
 	for _, model := range models {

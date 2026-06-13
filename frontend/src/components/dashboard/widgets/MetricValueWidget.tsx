@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { Card } from '@/components/ui/card'
 import { Gauge } from 'lucide-react'
-import { useMetricData } from '@/contexts/MetricDataContext'
+import { useMetricData } from '@/contexts/metricData'
 import { getMetricMetadata, formatMetricValue, getSourceDisplayName, getServiceDisplayName } from '@/lib/metricMetadata'
 import type { WidgetConfig } from '@/types/dashboard'
 
@@ -26,7 +26,7 @@ export function MetricValueWidget({
   )
 
   // Get service name from config, series labels, or fall back to source display name
-  const serviceName = useMemo(() => {
+  const serviceName = (() => {
     if (config.service) return getServiceDisplayName(config.service)
     for (const s of series) {
       if (s.labels?.service) return getServiceDisplayName(s.labels.service)
@@ -36,7 +36,7 @@ export function MetricValueWidget({
       return getSourceDisplayName(metadata.source)
     }
     return null
-  }, [config.service, series, metadata])
+  })()
 
   // Get breakdown display value from metadata
   const breakdownDisplayValue = useMemo(() => {

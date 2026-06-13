@@ -24,6 +24,18 @@ func (s *DuckDBStore) InsertSpans(ctx context.Context, spans []api.Span) error {
 	}
 	defer tx.Rollback()
 
+	if err := insertSpansTx(ctx, tx, spans); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func insertSpansTx(ctx context.Context, tx *sql.Tx, spans []api.Span) error {
+	if len(spans) == 0 {
+		return nil
+	}
+
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO otel_traces (
 			Timestamp, TraceId, SpanId, ParentSpanId, TraceState,
@@ -89,7 +101,7 @@ func (s *DuckDBStore) InsertSpans(ctx context.Context, spans []api.Span) error {
 		}
 	}
 
-	return tx.Commit()
+	return nil
 }
 
 func (s *DuckDBStore) QueryTraces(ctx context.Context, service, search string, from, to time.Time, limit, offset int) (*api.TracesResponse, error) {
@@ -468,7 +480,6 @@ func (s *DuckDBStore) scanSpans(ctx context.Context, query string, args ...inter
 
 	return spans, nil
 }
-
 
 func (s *DuckDBStore) GetServices(ctx context.Context) ([]string, error) {
 	s.mu.RLock()

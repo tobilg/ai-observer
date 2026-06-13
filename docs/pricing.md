@@ -10,9 +10,9 @@ Pricing data is stored in `internal/pricing/data/`:
 
 | File | Provider | Models |
 |------|----------|--------|
-| `claude.json` | Anthropic | 13 models |
-| `codex.json` | OpenAI | 44 models |
-| `gemini.json` | Google | 10 models |
+| `claude.json` | Anthropic | 19 models |
+| `codex.json` | OpenAI | 50 models |
+| `gemini.json` | Google | 12 models |
 
 ### JSON Schema
 
@@ -87,9 +87,9 @@ Claude Code JSONL files include a `costUSD` field with the cost reported by the 
 ### Usage
 
 ```bash
-ai-observer import claude --pricing-mode auto      # default
-ai-observer import claude --pricing-mode calculate
-ai-observer import claude --pricing-mode display
+ai-observer import claude-code --pricing-mode auto      # default
+ai-observer import claude-code --pricing-mode calculate
+ai-observer import claude-code --pricing-mode display
 ```
 
 ### Decision Flow
@@ -208,14 +208,15 @@ ai-observer import claude --pricing-mode display
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Current Pricing (January 2026)
+## Current Pricing (June 2026)
 
 ### Claude (Anthropic)
 
 | Model | Input/MTok | Output/MTok | Cache Read | Cache Write |
 |-------|------------|-------------|------------|-------------|
-| claude-opus-4-5-* | $5.00 | $25.00 | $0.50 | $6.25 |
-| claude-sonnet-4-5-* | $3.00 | $15.00 | $0.30 | $3.75 |
+| claude-fable-5 / claude-mythos-5 | $10.00 | $50.00 | $1.00 | $12.50 |
+| claude-opus-4-8 / 4-7 / 4-6 / 4-5 | $5.00 | $25.00 | $0.50 | $6.25 |
+| claude-sonnet-4-6 / 4-5 | $3.00 | $15.00 | $0.30 | $3.75 |
 | claude-haiku-4-5-* | $1.00 | $5.00 | $0.10 | $1.25 |
 | claude-opus-4-* | $15.00 | $75.00 | $1.50 | $18.75 |
 | claude-sonnet-4-* | $3.00 | $15.00 | $0.30 | $3.75 |
@@ -227,9 +228,15 @@ ai-observer import claude --pricing-mode display
 
 | Model | Input/MTok | Output/MTok | Cache Read |
 |-------|------------|-------------|------------|
-| gpt-5.2 | $1.75 | $14.00 | $0.175 |
+| gpt-5.5 | $5.00 | $30.00 | $0.50 |
+| gpt-5.5-pro / gpt-5.4-pro | $30.00 | $180.00 | — |
+| gpt-5.4 | $2.50 | $15.00 | $0.25 |
+| gpt-5.4-mini | $0.75 | $4.50 | $0.075 |
+| gpt-5.4-nano | $0.20 | $1.25 | $0.02 |
+| gpt-5.3-codex / gpt-5.2 | $1.75 | $14.00 | $0.175 |
 | gpt-5.1 / gpt-5 | $1.25 | $10.00 | $0.125 |
 | gpt-5-mini | $0.25 | $2.00 | $0.025 |
+| gpt-realtime-2 (text) | $4.00 | $24.00 | $0.40 |
 | gpt-4.1 | $2.00 | $8.00 | $0.50 |
 | gpt-4.1-mini | $0.40 | $1.60 | $0.10 |
 | gpt-4.1-nano | $0.10 | $0.40 | $0.025 |
@@ -240,6 +247,9 @@ ai-observer import claude --pricing-mode display
 
 | Model | Input/MTok | Output/MTok | Cache Read |
 |-------|------------|-------------|------------|
+| gemini-3.1-pro-preview | $2.00 | $12.00 | $0.20 |
+| gemini-3.1-flash-lite | $0.125 | $0.75 | $0.0125 |
+| gemini-3-flash-preview | $0.50 | $3.00 | $0.05 |
 | gemini-3-pro-preview | $2.00 | $12.00 | $0.20 |
 | gemini-2.5-pro | $1.25 | $10.00 | $0.125 |
 | gemini-2.5-flash | $0.30 | $2.50 | $0.03 |

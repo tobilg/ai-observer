@@ -219,7 +219,7 @@ export function MetricsPage() {
     fetchSeries()
 
     return () => abortController.abort()
-  }, [selectedMetric, selectedService, lastUpdate, timeSelection, fromTime, toTime, intervalSeconds, isAbsoluteRange])
+  }, [selectedMetric, selectedService, lastUpdate, timeSelection, fromTime, toTime, intervalSeconds, isAbsoluteRange, series.length])
 
   // Get metadata for selected metric
   const metadata = useMemo(

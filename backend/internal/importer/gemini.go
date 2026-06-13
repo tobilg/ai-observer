@@ -25,6 +25,9 @@ func NewGeminiParser() *GeminiParser {
 	}
 }
 
+// GetGeminiWatchPath returns the path to watch for Gemini CLI sessions
+func GetGeminiWatchPath() string { return getGeminiPath() }
+
 // getGeminiPath returns the path to Gemini CLI data
 func getGeminiPath() string {
 	// Check environment variable override
@@ -80,57 +83,57 @@ func (p *GeminiParser) FindSessionFiles(ctx context.Context) ([]string, error) {
 	return files, nil
 }
 
-// geminiSession represents a Gemini CLI session file
-type geminiSession struct {
+// GeminiSession represents a Gemini CLI session file
+type GeminiSession struct {
 	SessionID   string          `json:"sessionId"`
 	ProjectHash string          `json:"projectHash"`
 	StartTime   string          `json:"startTime"`
 	LastUpdated string          `json:"lastUpdated"`
-	Messages    []geminiMessage `json:"messages"`
+	Messages    []GeminiMessage `json:"messages"`
 	Summary     string          `json:"summary,omitempty"`
 }
 
-// geminiMessage represents a message in the session
-type geminiMessage struct {
+// GeminiMessage represents a message in the session
+type GeminiMessage struct {
 	ID        string            `json:"id"`
 	Timestamp string            `json:"timestamp"`
 	Type      string            `json:"type"` // "user", "gemini", "info", "error", "warning"
 	Content   string            `json:"content,omitempty"`
-	Tokens    *geminiTokens     `json:"tokens,omitempty"`
+	Tokens    *GeminiTokens     `json:"tokens,omitempty"`
 	Model     string            `json:"model,omitempty"`
-	ToolCalls []geminiToolCall  `json:"toolCalls,omitempty"`
+	ToolCalls []GeminiToolCall  `json:"toolCalls,omitempty"`
 }
 
-// geminiToolCall represents a tool call in a message
-type geminiToolCall struct {
+// GeminiToolCall represents a tool call in a message
+type GeminiToolCall struct {
 	ID          string              `json:"id"`
 	Name        string              `json:"name"`
 	Args        json.RawMessage     `json:"args,omitempty"`
-	Result      []geminiToolResult  `json:"result,omitempty"`
+	Result      []GeminiToolResult  `json:"result,omitempty"`
 	Status      string              `json:"status,omitempty"`
 	Timestamp   string              `json:"timestamp,omitempty"`
 	DisplayName string              `json:"displayName,omitempty"`
 }
 
-// geminiToolResult represents the result of a tool call
-type geminiToolResult struct {
-	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
+// GeminiToolResult represents the result of a tool call
+type GeminiToolResult struct {
+	FunctionResponse *GeminiFunctionResponse `json:"functionResponse,omitempty"`
 }
 
-// geminiFunctionResponse represents the function response
-type geminiFunctionResponse struct {
+// GeminiFunctionResponse represents the function response
+type GeminiFunctionResponse struct {
 	ID       string                    `json:"id"`
 	Name     string                    `json:"name"`
-	Response *geminiFunctionResponseData `json:"response,omitempty"`
+	Response *GeminiFunctionResponseData `json:"response,omitempty"`
 }
 
-// geminiFunctionResponseData contains the actual response data
-type geminiFunctionResponseData struct {
+// GeminiFunctionResponseData contains the actual response data
+type GeminiFunctionResponseData struct {
 	Output string `json:"output,omitempty"`
 }
 
-// geminiTokens represents token counts for a message
-type geminiTokens struct {
+// GeminiTokens represents token counts for a message
+type GeminiTokens struct {
 	Input    int `json:"input"`
 	Output   int `json:"output"`
 	Cached   int `json:"cached"`
@@ -146,7 +149,7 @@ func (p *GeminiParser) ParseFile(ctx context.Context, path string) (*ImportResul
 		return nil, fmt.Errorf("reading file: %w", err)
 	}
 
-	var session geminiSession
+	var session GeminiSession
 	if err := json.Unmarshal(data, &session); err != nil {
 		return nil, fmt.Errorf("parsing JSON: %w", err)
 	}
@@ -158,14 +161,14 @@ func (p *GeminiParser) ParseFile(ctx context.Context, path string) (*ImportResul
 
 	// Parse start time
 	if session.StartTime != "" {
-		if ts, err := parseGeminiTime(session.StartTime); err == nil {
+		if ts, err := ParseGeminiTime(session.StartTime); err == nil {
 			result.FirstTime = ts
 		}
 	}
 
 	// Parse last updated time
 	if session.LastUpdated != "" {
-		if ts, err := parseGeminiTime(session.LastUpdated); err == nil {
+		if ts, err := ParseGeminiTime(session.LastUpdated); err == nil {
 			result.LastTime = ts
 		}
 	}
@@ -178,7 +181,7 @@ func (p *GeminiParser) ParseFile(ctx context.Context, path string) (*ImportResul
 		}
 
 		// Parse message timestamp
-		ts, err := parseGeminiTime(msg.Timestamp)
+		ts, err := ParseGeminiTime(msg.Timestamp)
 		if err != nil {
 			continue
 		}
@@ -195,15 +198,15 @@ func (p *GeminiParser) ParseFile(ctx context.Context, path string) (*ImportResul
 		logRecord := api.LogRecord{
 			Timestamp:      ts,
 			ServiceName:    SourceGemini.ServiceName(),
-			SeverityText:   mapGeminiSeverity(msg.Type),
-			SeverityNumber: mapGeminiSeverityNumber(msg.Type),
+			SeverityText:   MapGeminiSeverity(msg.Type),
+			SeverityNumber: MapGeminiSeverityNumber(msg.Type),
 			Body:           msg.Content, // Actual message content!
 			LogAttributes: map[string]string{
 				"event.name":    "transcript.message",
 				"session.id":    session.SessionID,
 				"message.id":    msg.ID,
 				"message.index": fmt.Sprintf("%d", messageIndex),
-				"message.role":  mapGeminiTypeToRole(msg.Type),
+				"message.role":  MapGeminiTypeToRole(msg.Type),
 				"import_source": "local_jsonl",
 			},
 		}
@@ -233,7 +236,7 @@ func (p *GeminiParser) ParseFile(ctx context.Context, path string) (*ImportResul
 		for _, toolCall := range msg.ToolCalls {
 			toolTs := ts // Use message timestamp as fallback
 			if toolCall.Timestamp != "" {
-				if parsed, err := parseGeminiTime(toolCall.Timestamp); err == nil {
+				if parsed, err := ParseGeminiTime(toolCall.Timestamp); err == nil {
 					toolTs = parsed
 				}
 			}
@@ -306,37 +309,37 @@ func (p *GeminiParser) ParseFile(ctx context.Context, path string) (*ImportResul
 			var totalCost float64
 
 			if tokens.Input > 0 {
-				result.Metrics = append(result.Metrics, createGeminiTokenMetric(ts, model, "input", float64(tokens.Input)))
+				result.Metrics = append(result.Metrics, CreateGeminiTokenMetric(ts, model, "input", float64(tokens.Input)))
 				if cost := pricing.CalculateGeminiCostForTokenType(model, "input", int64(tokens.Input)); cost != nil {
 					totalCost += *cost
 				}
 			}
 			if tokens.Output > 0 {
-				result.Metrics = append(result.Metrics, createGeminiTokenMetric(ts, model, "output", float64(tokens.Output)))
+				result.Metrics = append(result.Metrics, CreateGeminiTokenMetric(ts, model, "output", float64(tokens.Output)))
 				if cost := pricing.CalculateGeminiCostForTokenType(model, "output", int64(tokens.Output)); cost != nil {
 					totalCost += *cost
 				}
 			}
 			if tokens.Cached > 0 {
-				result.Metrics = append(result.Metrics, createGeminiTokenMetric(ts, model, "cached", float64(tokens.Cached)))
+				result.Metrics = append(result.Metrics, CreateGeminiTokenMetric(ts, model, "cached", float64(tokens.Cached)))
 				if cost := pricing.CalculateGeminiCostForTokenType(model, "cache", int64(tokens.Cached)); cost != nil {
 					totalCost += *cost
 				}
 			}
 			if tokens.Thoughts > 0 {
-				result.Metrics = append(result.Metrics, createGeminiTokenMetric(ts, model, "thoughts", float64(tokens.Thoughts)))
+				result.Metrics = append(result.Metrics, CreateGeminiTokenMetric(ts, model, "thoughts", float64(tokens.Thoughts)))
 				if cost := pricing.CalculateGeminiCostForTokenType(model, "thought", int64(tokens.Thoughts)); cost != nil {
 					totalCost += *cost
 				}
 			}
 			if tokens.Tool > 0 {
-				result.Metrics = append(result.Metrics, createGeminiTokenMetric(ts, model, "tool", float64(tokens.Tool)))
+				result.Metrics = append(result.Metrics, CreateGeminiTokenMetric(ts, model, "tool", float64(tokens.Tool)))
 				// Tool tokens don't have direct cost
 			}
 
 			// Add cost metric if we calculated any cost
 			if totalCost > 0 {
-				result.Metrics = append(result.Metrics, createGeminiCostMetric(ts, model, totalCost))
+				result.Metrics = append(result.Metrics, CreateGeminiCostMetric(ts, model, totalCost))
 			}
 		}
 	}
@@ -344,8 +347,8 @@ func (p *GeminiParser) ParseFile(ctx context.Context, path string) (*ImportResul
 	return result, nil
 }
 
-// parseGeminiTime parses various time formats used by Gemini
-func parseGeminiTime(s string) (time.Time, error) {
+// ParseGeminiTime parses various time formats used by Gemini
+func ParseGeminiTime(s string) (time.Time, error) {
 	formats := []string{
 		time.RFC3339Nano,
 		time.RFC3339,
@@ -362,8 +365,8 @@ func parseGeminiTime(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("unable to parse time: %s", s)
 }
 
-// mapGeminiSeverity maps Gemini message type to OTLP severity
-func mapGeminiSeverity(msgType string) string {
+// MapGeminiSeverity maps Gemini message type to OTLP severity
+func MapGeminiSeverity(msgType string) string {
 	switch msgType {
 	case "error":
 		return "ERROR"
@@ -376,8 +379,8 @@ func mapGeminiSeverity(msgType string) string {
 	}
 }
 
-// mapGeminiSeverityNumber maps Gemini message type to OTLP severity number
-func mapGeminiSeverityNumber(msgType string) int32 {
+// MapGeminiSeverityNumber maps Gemini message type to OTLP severity number
+func MapGeminiSeverityNumber(msgType string) int32 {
 	switch msgType {
 	case "error":
 		return 17 // ERROR
@@ -390,8 +393,8 @@ func mapGeminiSeverityNumber(msgType string) int32 {
 	}
 }
 
-// mapGeminiEventName maps Gemini message type to event name
-func mapGeminiEventName(msgType string) string {
+// MapGeminiEventName maps Gemini message type to event name
+func MapGeminiEventName(msgType string) string {
 	switch msgType {
 	case "gemini":
 		return "api_response"
@@ -408,8 +411,8 @@ func mapGeminiEventName(msgType string) string {
 	}
 }
 
-// mapGeminiTypeToRole maps Gemini message type to transcript role
-func mapGeminiTypeToRole(msgType string) string {
+// MapGeminiTypeToRole maps Gemini message type to transcript role
+func MapGeminiTypeToRole(msgType string) string {
 	switch msgType {
 	case "user":
 		return "user"
@@ -420,8 +423,8 @@ func mapGeminiTypeToRole(msgType string) string {
 	}
 }
 
-// createGeminiTokenMetric creates a token usage metric for Gemini
-func createGeminiTokenMetric(ts time.Time, model, tokenType string, value float64) api.MetricDataPoint {
+// CreateGeminiTokenMetric creates a token usage metric for Gemini
+func CreateGeminiTokenMetric(ts time.Time, model, tokenType string, value float64) api.MetricDataPoint {
 	return api.MetricDataPoint{
 		Timestamp:   ts,
 		ServiceName: SourceGemini.ServiceName(),
@@ -436,8 +439,8 @@ func createGeminiTokenMetric(ts time.Time, model, tokenType string, value float6
 	}
 }
 
-// createGeminiCostMetric creates a cost usage metric for Gemini
-func createGeminiCostMetric(ts time.Time, model string, cost float64) api.MetricDataPoint {
+// CreateGeminiCostMetric creates a cost usage metric for Gemini
+func CreateGeminiCostMetric(ts time.Time, model string, cost float64) api.MetricDataPoint {
 	return api.MetricDataPoint{
 		Timestamp:   ts,
 		ServiceName: SourceGemini.ServiceName(),

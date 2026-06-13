@@ -33,7 +33,7 @@ export function ChatBubbleView({ messages, className }: ChatBubbleViewProps) {
   }
 
   return (
-    <div className={cn('space-y-4', className)}>
+    <div className={cn('space-y-4 w-full min-w-0 overflow-hidden', className)}>
       {messages.map((message, index) => {
         const isUser = message.role === 'user'
         const isToolUse = message.role === 'tool_use'
@@ -84,7 +84,7 @@ export function ChatBubbleView({ messages, className }: ChatBubbleViewProps) {
 
             <div
               className={cn(
-                'max-w-[80%] w-full min-w-0 rounded-2xl px-4 py-3 overflow-x-auto',
+                'max-w-[80%] min-w-0 rounded-2xl px-4 py-3 overflow-hidden',
                 isUser
                   ? 'bg-primary text-primary-foreground rounded-br-md'
                   : 'bg-muted rounded-bl-md'

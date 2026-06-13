@@ -10,9 +10,9 @@ export function Layout() {
   return (
     <>
       <AppSidebar />
-      <SidebarInset>
+      <SidebarInset className="min-w-0">
         <Header isConnected={isConnected} />
-        <main className="px-6 py-6">
+        <main className="px-6 py-6 min-w-0 overflow-x-hidden">
           <Outlet />
         </main>
       </SidebarInset>

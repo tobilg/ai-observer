@@ -270,7 +270,7 @@ export function DashboardGrid({ stats, recentTraces }: DashboardGridProps) {
       beforeLogicalRow: logicalRow,
       gridRow: 2 * logicalRow - 1, // Separator grid row (odd numbers)
     }))
-  }, [widgets, isEditMode])
+  }, [widgets, isEditMode, isMobile])
 
   // Transform logical row to actual grid row (for edit mode)
   const getActualGridRow = useCallback(

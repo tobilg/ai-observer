@@ -23,6 +23,18 @@ func (s *DuckDBStore) InsertLogs(ctx context.Context, logs []api.LogRecord) erro
 	}
 	defer tx.Rollback()
 
+	if err := insertLogsTx(ctx, tx, logs); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func insertLogsTx(ctx context.Context, tx *sql.Tx, logs []api.LogRecord) error {
+	if len(logs) == 0 {
+		return nil
+	}
+
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO otel_logs (
 			Timestamp, TraceId, SpanId, TraceFlags, SeverityText,
@@ -59,7 +71,7 @@ func (s *DuckDBStore) InsertLogs(ctx context.Context, logs []api.LogRecord) erro
 		}
 	}
 
-	return tx.Commit()
+	return nil
 }
 
 func (s *DuckDBStore) QueryLogs(ctx context.Context, service, severity, traceID, search string, from, to time.Time, limit, offset int) (*api.LogsResponse, error) {
@@ -240,6 +252,7 @@ func (s *DuckDBStore) QuerySessions(ctx context.Context, service string, from, t
 			MAX(json_extract_string(LogAttributes, '$.model')) as model
 		FROM otel_logs
 		WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
+		  AND json_valid(LogAttributes)
 		  AND (
 			json_extract_string(LogAttributes, '$."session.id"') IS NOT NULL
 			OR json_extract_string(LogAttributes, '$."conversation.id"') IS NOT NULL
@@ -266,6 +279,7 @@ func (s *DuckDBStore) QuerySessions(ctx context.Context, service string, from, t
 		))
 		FROM otel_logs
 		WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
+		  AND json_valid(LogAttributes)
 		  AND (
 			json_extract_string(LogAttributes, '$."session.id"') IS NOT NULL
 			OR json_extract_string(LogAttributes, '$."conversation.id"') IS NOT NULL
@@ -330,6 +344,7 @@ func (s *DuckDBStore) GetSessionTranscript(ctx context.Context, sessionID string
 
 	// Query for logs matching either session.id or conversation.id
 	// Note: Keys contain dots, use JSONPath with escaped quotes: $."key.name"
+	// Use json_valid() guard to skip rows with malformed JSON in LogAttributes
 	query := `
 		SELECT
 			Timestamp,
@@ -337,7 +352,8 @@ func (s *DuckDBStore) GetSessionTranscript(ctx context.Context, sessionID string
 			Body,
 			LogAttributes
 		FROM otel_logs
-		WHERE (
+		WHERE json_valid(LogAttributes)
+		  AND (
 			json_extract_string(LogAttributes, '$."session.id"') = ?
 			OR json_extract_string(LogAttributes, '$."conversation.id"') = ?
 		)

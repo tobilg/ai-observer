@@ -68,7 +68,7 @@ export function SessionTranscriptPage() {
   const [filters, setFilters] = useLocalStorage<TranscriptFilters>(TRANSCRIPT_FILTERS_STORAGE_KEY, DEFAULT_FILTERS)
 
   // Important: keep hook order stable across loading/error states
-  const messages = transcript?.messages ?? []
+  const messages = useMemo(() => transcript?.messages ?? [], [transcript])
 
   useEffect(() => {
     if (!sessionId) {
@@ -242,7 +242,7 @@ export function SessionTranscriptPage() {
       </Card>
 
       {/* Transcript */}
-      <Card>
+      <Card className="overflow-hidden">
         <CardHeader>
           <div className="flex items-center justify-between gap-4 flex-wrap">
             <CardTitle>Transcript</CardTitle>

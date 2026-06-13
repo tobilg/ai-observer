@@ -26,6 +26,9 @@ func NewCodexParser() *CodexParser {
 	}
 }
 
+// GetCodexWatchPath returns the path to watch for Codex CLI sessions
+func GetCodexWatchPath() string { return getCodexSessionsPath() }
+
 // getCodexSessionsPath returns the path to Codex CLI sessions
 func getCodexSessionsPath() string {
 	// Check environment variable override
@@ -79,21 +82,21 @@ func (p *CodexParser) FindSessionFiles(ctx context.Context) ([]string, error) {
 	return files, nil
 }
 
-// codexJSONLEntry represents a single line in Codex CLI JSONL files
+// CodexJSONLEntry represents a single line in Codex CLI JSONL files
 // Format: { "timestamp": "...", "type": "session_meta|response_item|event_msg|...", "payload": {...} }
-type codexJSONLEntry struct {
+type CodexJSONLEntry struct {
 	Timestamp string          `json:"timestamp"`
 	Type      string          `json:"type"`
 	Payload   json.RawMessage `json:"payload"`
 }
 
-// codexResponseItem represents a ResponseItem in the rollout file
+// CodexResponseItem represents a ResponseItem in the rollout file
 // Types: message, function_call, function_call_output, reasoning, local_shell_call, etc.
-type codexResponseItem struct {
+type CodexResponseItem struct {
 	Type string `json:"type"`
 	// For "message" type
 	Role    string               `json:"role,omitempty"`
-	Content []codexContentItem   `json:"content,omitempty"`
+	Content []CodexContentItem   `json:"content,omitempty"`
 	// For "function_call" type
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
@@ -101,23 +104,23 @@ type codexResponseItem struct {
 	// For "function_call_output" type
 	Output json.RawMessage `json:"output,omitempty"`
 	// For "reasoning" type
-	Summary []codexReasoningSummary `json:"summary,omitempty"`
+	Summary []CodexReasoningSummary `json:"summary,omitempty"`
 }
 
-// codexContentItem represents content within a message
-type codexContentItem struct {
+// CodexContentItem represents content within a message
+type CodexContentItem struct {
 	Type string `json:"type"` // "input_text", "output_text", "input_image"
 	Text string `json:"text,omitempty"`
 }
 
-// codexReasoningSummary represents reasoning summary
-type codexReasoningSummary struct {
+// CodexReasoningSummary represents reasoning summary
+type CodexReasoningSummary struct {
 	Type string `json:"type"` // "summary_text"
 	Text string `json:"text,omitempty"`
 }
 
-// codexSessionMeta represents session metadata
-type codexSessionMeta struct {
+// CodexSessionMeta represents session metadata
+type CodexSessionMeta struct {
 	ID            string `json:"id"`
 	Timestamp     string `json:"timestamp"`
 	Cwd           string `json:"cwd"`
@@ -127,20 +130,20 @@ type codexSessionMeta struct {
 	Model         string `json:"model"`
 }
 
-// codexEventMsg represents an event message payload
+// CodexEventMsg represents an event message payload
 // The actual JSON structure has "info" at the same level as "type", not nested in another "payload"
-type codexEventMsg struct {
+type CodexEventMsg struct {
 	Type string           `json:"type"`
-	Info *codexTokenInfo  `json:"info"` // Present for token_count events
+	Info *CodexTokenInfo  `json:"info"` // Present for token_count events
 }
 
-// codexTokenInfo contains token usage information
-type codexTokenInfo struct {
-	TotalTokenUsage *codexTokenCount `json:"total_token_usage"`
+// CodexTokenInfo contains token usage information
+type CodexTokenInfo struct {
+	TotalTokenUsage *CodexTokenCount `json:"total_token_usage"`
 }
 
-// codexTokenCount represents token count data
-type codexTokenCount struct {
+// CodexTokenCount represents token count data
+type CodexTokenCount struct {
 	InputTokens              int `json:"input_tokens"`
 	OutputTokens             int `json:"output_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
@@ -170,9 +173,9 @@ func (p *CodexParser) ParseFile(ctx context.Context, path string) (*ImportResult
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
 
-	var sessionMeta *codexSessionMeta
+	var sessionMeta *CodexSessionMeta
 	var currentModel string
-	var lastTokenCount *codexTokenCount
+	var lastTokenCount *CodexTokenCount
 	messageIndex := 0 // Track message order for transcripts
 
 	for scanner.Scan() {
@@ -185,7 +188,7 @@ func (p *CodexParser) ParseFile(ctx context.Context, path string) (*ImportResult
 			continue
 		}
 
-		var entry codexJSONLEntry
+		var entry CodexJSONLEntry
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			continue
 		}
@@ -209,7 +212,7 @@ func (p *CodexParser) ParseFile(ctx context.Context, path string) (*ImportResult
 
 		switch entry.Type {
 		case "session_meta":
-			var meta codexSessionMeta
+			var meta CodexSessionMeta
 			if err := json.Unmarshal(entry.Payload, &meta); err == nil {
 				sessionMeta = &meta
 				if meta.ID != "" {
@@ -243,7 +246,7 @@ func (p *CodexParser) ParseFile(ctx context.Context, path string) (*ImportResult
 			}
 
 		case "event_msg":
-			var eventMsg codexEventMsg
+			var eventMsg CodexEventMsg
 			if err := json.Unmarshal(entry.Payload, &eventMsg); err != nil {
 				continue
 			}
@@ -285,29 +288,29 @@ func (p *CodexParser) ParseFile(ctx context.Context, path string) (*ImportResult
 
 					// Create metrics for non-zero deltas
 					if deltaInput > 0 {
-						result.Metrics = append(result.Metrics, createCodexTokenMetric(ts, currentModel, "input", float64(deltaInput)))
+						result.Metrics = append(result.Metrics, CreateCodexTokenMetric(ts, currentModel, "input", float64(deltaInput)))
 					}
 					if deltaOutput > 0 {
-						result.Metrics = append(result.Metrics, createCodexTokenMetric(ts, currentModel, "output", float64(deltaOutput)))
+						result.Metrics = append(result.Metrics, CreateCodexTokenMetric(ts, currentModel, "output", float64(deltaOutput)))
 					}
 					if deltaCacheCreation > 0 {
-						result.Metrics = append(result.Metrics, createCodexTokenMetric(ts, currentModel, "cache_creation", float64(deltaCacheCreation)))
+						result.Metrics = append(result.Metrics, CreateCodexTokenMetric(ts, currentModel, "cache_creation", float64(deltaCacheCreation)))
 					}
 					if deltaCacheRead > 0 {
-						result.Metrics = append(result.Metrics, createCodexTokenMetric(ts, currentModel, "cache_read", float64(deltaCacheRead)))
+						result.Metrics = append(result.Metrics, CreateCodexTokenMetric(ts, currentModel, "cache_read", float64(deltaCacheRead)))
 					}
 					if deltaReasoning > 0 {
-						result.Metrics = append(result.Metrics, createCodexTokenMetric(ts, currentModel, "reasoning", float64(deltaReasoning)))
+						result.Metrics = append(result.Metrics, CreateCodexTokenMetric(ts, currentModel, "reasoning", float64(deltaReasoning)))
 					}
 					if deltaTool > 0 {
-						result.Metrics = append(result.Metrics, createCodexTokenMetric(ts, currentModel, "tool", float64(deltaTool)))
+						result.Metrics = append(result.Metrics, CreateCodexTokenMetric(ts, currentModel, "tool", float64(deltaTool)))
 					}
 
 					// Calculate and add cost metric
 					// Note: cache_read is used for cost calculation (cache_creation tokens are billed at input rate)
 					cost := pricing.CalculateCodexCost(currentModel, int64(deltaInput), int64(deltaCacheRead), int64(deltaOutput))
 					if cost != nil && *cost > 0 {
-						result.Metrics = append(result.Metrics, createCodexCostMetric(ts, currentModel, *cost))
+						result.Metrics = append(result.Metrics, CreateCodexCostMetric(ts, currentModel, *cost))
 					}
 
 					lastTokenCount = tokenCount
@@ -347,7 +350,7 @@ func (p *CodexParser) ParseFile(ctx context.Context, path string) (*ImportResult
 
 		case "response_item":
 			// Handle ResponseItem entries for transcript content
-			var respItem codexResponseItem
+			var respItem CodexResponseItem
 			if err := json.Unmarshal(entry.Payload, &respItem); err != nil {
 				continue
 			}
@@ -515,8 +518,8 @@ func (p *CodexParser) ParseFile(ctx context.Context, path string) (*ImportResult
 	return result, nil
 }
 
-// createCodexTokenMetric creates a token usage metric for Codex
-func createCodexTokenMetric(ts time.Time, model, tokenType string, value float64) api.MetricDataPoint {
+// CreateCodexTokenMetric creates a token usage metric for Codex
+func CreateCodexTokenMetric(ts time.Time, model, tokenType string, value float64) api.MetricDataPoint {
 	return api.MetricDataPoint{
 		Timestamp:   ts,
 		ServiceName: SourceCodex.ServiceName(),
@@ -531,8 +534,8 @@ func createCodexTokenMetric(ts time.Time, model, tokenType string, value float64
 	}
 }
 
-// createCodexCostMetric creates a cost usage metric for Codex
-func createCodexCostMetric(ts time.Time, model string, cost float64) api.MetricDataPoint {
+// CreateCodexCostMetric creates a cost usage metric for Codex
+func CreateCodexCostMetric(ts time.Time, model string, cost float64) api.MetricDataPoint {
 	return api.MetricDataPoint{
 		Timestamp:   ts,
 		ServiceName: SourceCodex.ServiceName(),
