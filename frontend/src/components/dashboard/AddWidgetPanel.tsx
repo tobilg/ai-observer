@@ -293,7 +293,7 @@ export function AddWidgetPanel() {
 
   return (
     <Sheet open={isAddPanelOpen} onOpenChange={handleOpenChange}>
-      <SheetContent className="w-[400px] sm:w-[540px] p-6 flex flex-col">
+      <SheetContent className="w-100 sm:w-135 p-6 flex flex-col">
         <SheetHeader className="px-0 pb-4">
           <SheetTitle>Add Widget</SheetTitle>
           <SheetDescription>
