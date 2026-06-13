@@ -1,16 +1,40 @@
 {
   "provider": "anthropic",
-  "lastUpdated": "2026-03-29T00:00:00Z",
+  "lastUpdated": "2026-06-13T00:00:00Z",
   "models": {
-    "claude-opus-4-6-20260301": {
-      "aliases": ["claude-opus-4-6", "claude-opus-4-6-latest"],
+    "claude-fable-5": {
+      "inputCostPerMTok": 10,
+      "outputCostPerMTok": 50,
+      "cacheReadCostPerMTok": 1,
+      "cacheWriteCostPerMTok": 12.5
+    },
+    "claude-mythos-5": {
+      "inputCostPerMTok": 10,
+      "outputCostPerMTok": 50,
+      "cacheReadCostPerMTok": 1,
+      "cacheWriteCostPerMTok": 12.5
+    },
+    "claude-opus-4-8": {
       "inputCostPerMTok": 5,
       "outputCostPerMTok": 25,
       "cacheReadCostPerMTok": 0.5,
       "cacheWriteCostPerMTok": 6.25
     },
-    "claude-sonnet-4-6-20260301": {
-      "aliases": ["claude-sonnet-4-6", "claude-sonnet-4-6-latest"],
+    "claude-opus-4-7": {
+      "inputCostPerMTok": 5,
+      "outputCostPerMTok": 25,
+      "cacheReadCostPerMTok": 0.5,
+      "cacheWriteCostPerMTok": 6.25
+    },
+    "claude-opus-4-6": {
+      "aliases": ["claude-opus-4-6-20260305", "claude-opus-4-6-20260301"],
+      "inputCostPerMTok": 5,
+      "outputCostPerMTok": 25,
+      "cacheReadCostPerMTok": 0.5,
+      "cacheWriteCostPerMTok": 6.25
+    },
+    "claude-sonnet-4-6": {
+      "aliases": ["claude-sonnet-4-6-20260305", "claude-sonnet-4-6-20260301"],
       "inputCostPerMTok": 3,
       "outputCostPerMTok": 15,
       "cacheReadCostPerMTok": 0.3,

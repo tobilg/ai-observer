@@ -1,8 +1,9 @@
 {
   "provider": "google",
-  "lastUpdated": "2026-03-29T00:00:00Z",
+  "lastUpdated": "2026-06-13T00:00:00Z",
   "models": {
     "gemini-3.1-pro-preview": {
+      "aliases": ["gemini-3.1-pro-preview-customtools"],
       "inputCostPerMTok": 2,
       "outputCostPerMTok": 12,
       "cacheReadCostPerMTok": 0.2
