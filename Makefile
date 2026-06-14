@@ -98,7 +98,8 @@ clean:
 setup:
 	@echo "Setting up project..."
 	cd backend && go mod download
-	cd frontend && pnpm install
+	cd frontend && pnpm install --ignore-scripts
+	cd frontend && pnpm rebuild esbuild
 
 # Release notes generation
 release-notes:
