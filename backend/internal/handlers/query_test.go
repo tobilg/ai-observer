@@ -212,6 +212,37 @@ func TestGetTrace(t *testing.T) {
 	}
 }
 
+func TestGetTraceSpans_CopilotTraceID(t *testing.T) {
+	h, cleanup := setupTestHandlers(t)
+	defer cleanup()
+
+	traceID := "ef47fb6b7e5cf1fd1dd3969ad3d7ddefaefbd34d7a71bd79"
+	insertTestTrace(t, h.store, traceID, "7f8d1be9fdb869ef1fe76ebb", "copilot-chat", "chat gpt-4o-mini-2024-07-18")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/traces/"+traceID+"/spans?kind="+api.TraceKindOTelTrace, nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("traceId", traceID)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	rec := httptest.NewRecorder()
+	h.GetTraceSpans(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp api.SpansResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(resp.Spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(resp.Spans))
+	}
+	if resp.Spans[0].TraceID != traceID {
+		t.Fatalf("expected trace id %q, got %q", traceID, resp.Spans[0].TraceID)
+	}
+}
+
 func TestGetTrace_MissingTraceID(t *testing.T) {
 	h, cleanup := setupTestHandlers(t)
 	defer cleanup()

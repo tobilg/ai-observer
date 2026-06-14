@@ -274,6 +274,64 @@ func TestGetTraceSpans(t *testing.T) {
 	}
 }
 
+func TestGetTraceSpans_CopilotTraceID(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now()
+	traceID := "ef47fb6b7e5cf1fd1dd3969ad3d7ddefaefbd34d7a71bd79"
+	rootSpanID := "7f8d1be9fdb869ef1fe76ebb"
+
+	spans := []api.Span{
+		{
+			TraceID:     traceID,
+			SpanID:      rootSpanID,
+			ServiceName: "copilot-chat",
+			SpanName:    "chat gpt-4o-mini-2024-07-18",
+			Timestamp:   now,
+			Duration:    int64(time.Second),
+			StatusCode:  "UNSET",
+		},
+	}
+	if err := store.InsertSpans(ctx, spans); err != nil {
+		t.Fatalf("InsertSpans failed: %v", err)
+	}
+
+	resp, err := store.QueryTraces(ctx, "copilot-chat", "", now.Add(-time.Minute), now.Add(time.Minute), 10, 0)
+	if err != nil {
+		t.Fatalf("QueryTraces failed: %v", err)
+	}
+	if len(resp.Traces) != 1 {
+		t.Fatalf("expected 1 trace, got %d", len(resp.Traces))
+	}
+	if resp.Traces[0].TraceID != traceID {
+		t.Fatalf("expected trace id %q, got %q", traceID, resp.Traces[0].TraceID)
+	}
+
+	traceSpans, err := store.GetTraceSpans(ctx, traceID, api.TraceKindOTelTrace)
+	if err != nil {
+		t.Fatalf("GetTraceSpans by trace id failed: %v", err)
+	}
+	if len(traceSpans) != 1 {
+		t.Fatalf("expected 1 span by trace id, got %d", len(traceSpans))
+	}
+	if traceSpans[0].TraceID != traceID {
+		t.Fatalf("expected span trace id %q, got %q", traceID, traceSpans[0].TraceID)
+	}
+
+	traceSpans, err = store.GetTraceSpans(ctx, rootSpanID, api.TraceKindOTelTrace)
+	if err != nil {
+		t.Fatalf("GetTraceSpans by root span id failed: %v", err)
+	}
+	if len(traceSpans) != 1 {
+		t.Fatalf("expected 1 span by root span id, got %d", len(traceSpans))
+	}
+	if traceSpans[0].TraceID != traceID {
+		t.Fatalf("expected fallback span trace id %q, got %q", traceID, traceSpans[0].TraceID)
+	}
+}
+
 func TestGetTraceSpans_NotFound(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()

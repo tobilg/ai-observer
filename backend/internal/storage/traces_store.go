@@ -353,7 +353,27 @@ func (s *DuckDBStore) getOTelTraceSpans(ctx context.Context, traceID string) ([]
 		ORDER BY Timestamp
 	`
 
-	return s.scanSpans(ctx, query, traceID)
+	spans, err := s.scanSpans(ctx, query, traceID)
+	if err != nil || len(spans) > 0 {
+		return spans, err
+	}
+
+	var resolvedTraceID string
+	err = s.db.QueryRowContext(ctx, `
+		SELECT TraceId
+		FROM otel_traces
+		WHERE SpanId = ?
+		ORDER BY Timestamp
+		LIMIT 1
+	`, traceID).Scan(&resolvedTraceID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("resolving trace from span id: %w", err)
+	}
+
+	return s.scanSpans(ctx, query, resolvedTraceID)
 }
 
 func (s *DuckDBStore) loadDedupedCodexTraceSpans(ctx context.Context, traceID string) ([]api.Span, error) {

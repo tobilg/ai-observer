@@ -261,11 +261,11 @@ export const api = {
   },
 
   async getTrace(id: string, kind: TraceKind, options?: FetchOptions): Promise<SpansResponse> {
-    return fetchJSON(`${API_BASE}/traces/${id}?kind=${kind}`, options)
+    return fetchJSON(`${API_BASE}/traces/${encodeURIComponent(id)}?kind=${kind}`, options)
   },
 
   async getTraceSpans(id: string, kind: TraceKind, options?: FetchOptions): Promise<SpansResponse> {
-    return fetchJSON(`${API_BASE}/traces/${id}/spans?kind=${kind}`, options)
+    return fetchJSON(`${API_BASE}/traces/${encodeURIComponent(id)}/spans?kind=${kind}`, options)
   },
 
   async getRecentTraces(limit: number = 10, params: Pick<QueryParams, 'from' | 'to'> = {}, options?: FetchOptions): Promise<TracesResponse> {

@@ -81,13 +81,20 @@ CREATE TABLE IF NOT EXISTS otel_metrics (
 
 const indexTraces = `
 CREATE INDEX IF NOT EXISTS idx_traces_timestamp ON otel_traces(Timestamp);
-CREATE INDEX IF NOT EXISTS idx_traces_trace_id ON otel_traces(TraceId);
 CREATE INDEX IF NOT EXISTS idx_traces_service_name ON otel_traces(ServiceName);
 CREATE INDEX IF NOT EXISTS idx_traces_service_timestamp ON otel_traces(ServiceName, Timestamp);
-CREATE INDEX IF NOT EXISTS idx_traces_trace_timestamp ON otel_traces(TraceId, Timestamp);
-CREATE INDEX IF NOT EXISTS idx_traces_service_trace_span ON otel_traces(ServiceName, TraceId, SpanId);
-CREATE INDEX IF NOT EXISTS idx_traces_trace_span ON otel_traces(TraceId, SpanId);
 CREATE INDEX IF NOT EXISTS idx_traces_service_span_name ON otel_traces(ServiceName, SpanName);
+
+DROP INDEX IF EXISTS idx_traces_trace_id;
+DROP INDEX IF EXISTS idx_traces_trace_timestamp;
+DROP INDEX IF EXISTS idx_traces_service_trace_span;
+DROP INDEX IF EXISTS idx_traces_trace_span;
+
+CREATE INDEX IF NOT EXISTS idx_traces_trace_id_v2 ON otel_traces(TraceId);
+CREATE INDEX IF NOT EXISTS idx_traces_trace_timestamp_v2 ON otel_traces(TraceId, Timestamp);
+CREATE INDEX IF NOT EXISTS idx_traces_service_trace_span_v2 ON otel_traces(ServiceName, TraceId, SpanId);
+CREATE INDEX IF NOT EXISTS idx_traces_trace_span_v2 ON otel_traces(TraceId, SpanId);
+CREATE INDEX IF NOT EXISTS idx_traces_span_id ON otel_traces(SpanId);
 `
 
 const indexLogs = `
