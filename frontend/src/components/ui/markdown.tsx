@@ -66,16 +66,16 @@ export function Markdown({ children, className }: MarkdownProps) {
           const match = /language-([\w-]+)/.exec(className || '')
           const language = match?.[1]
 
-          let highlighted = ''
-          try {
-            if (language && hljs.getLanguage(language)) {
-              highlighted = hljs.highlight(codeText, { language }).value
-            } else {
-              highlighted = hljs.highlightAuto(codeText).value
+          const highlighted = (() => {
+            try {
+              if (language && hljs.getLanguage(language)) {
+                return hljs.highlight(codeText, { language }).value
+              }
+              return hljs.highlightAuto(codeText).value
+            } catch {
+              return escapeHTML(codeText)
             }
-          } catch {
-            highlighted = escapeHTML(codeText)
-          }
+          })()
 
           return (
             <code

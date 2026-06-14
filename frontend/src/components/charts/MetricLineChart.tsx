@@ -41,9 +41,23 @@ export function MetricLineChart({
 
   // Left margin: more for long date labels, less for short time-only labels
   const leftMargin = needsTiltedLabels ? (hasShortLabels ? 15 : 40) : 0
+  const formatTooltipValue = (value: unknown, name: unknown): [string, string] => {
+    const numericValue = typeof value === 'number' ? value : Number(value)
+    return tooltipFormatter(
+      Number.isFinite(numericValue) ? numericValue : undefined,
+      typeof name === 'string' ? name : undefined
+    )
+  }
+  const initialDimension = { width: 1, height: compact ? 128 : 320 }
 
   return (
-    <ResponsiveContainer width="100%" height="100%">
+    <ResponsiveContainer
+      width="100%"
+      height="100%"
+      minWidth={0}
+      minHeight={0}
+      initialDimension={initialDimension}
+    >
       <LineChart
         data={data}
         margin={
@@ -58,15 +72,13 @@ export function MetricLineChart({
         />
         <XAxis
           dataKey="time"
-          tick={
-            {
-              fontSize: compact ? 10 : 11,
-              fill: 'var(--color-muted-foreground)',
-              angle: needsTiltedLabels ? -45 : 0,
-              textAnchor: needsTiltedLabels ? 'end' : 'middle',
-              dy: needsTiltedLabels ? 5 : 0,
-            } as React.SVGProps<SVGTextElement>
-          }
+          tick={{
+            fontSize: compact ? 10 : 11,
+            fill: 'var(--color-muted-foreground)',
+            angle: needsTiltedLabels ? -45 : 0,
+            textAnchor: needsTiltedLabels ? 'end' : 'middle',
+            dy: needsTiltedLabels ? 5 : 0,
+          }}
           interval={interval}
           height={needsTiltedLabels ? 90 : undefined}
           {...(compact ? compactAxisStyle : {})}
@@ -79,7 +91,7 @@ export function MetricLineChart({
         />
         <Tooltip
           offset={compact ? 20 : undefined}
-          formatter={tooltipFormatter}
+          formatter={formatTooltipValue}
           {...(compact ? compactTooltipStyle : {})}
         />
         {showLegend && (

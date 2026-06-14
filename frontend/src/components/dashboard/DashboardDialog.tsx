@@ -51,15 +51,18 @@ export function DashboardDialog({
   // Reset form when dialog opens
   useEffect(() => {
     if (open) {
-      setName(initialName)
-      setDescription(initialDescription)
-      setActiveTab('create')
-      setImportSource('file')
-      setImportFile(null)
-      setImportUrl('')
-      setImportData(null)
-      setImportErrors([])
-      setFetchingUrl(false)
+      const timer = window.setTimeout(() => {
+        setName(initialName)
+        setDescription(initialDescription)
+        setActiveTab('create')
+        setImportSource('file')
+        setImportFile(null)
+        setImportUrl('')
+        setImportData(null)
+        setImportErrors([])
+        setFetchingUrl(false)
+      }, 0)
+      return () => window.clearTimeout(timer)
     }
   }, [open, initialName, initialDescription])
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { createElement, useEffect, useMemo, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -69,11 +69,11 @@ export function SessionTranscriptPage() {
 
   // Important: keep hook order stable across loading/error states
   const messages = useMemo(() => transcript?.messages ?? [], [transcript])
+  const effectiveLoading = Boolean(sessionId) && loading
+  const effectiveError = sessionId ? error : 'Session ID is required'
 
   useEffect(() => {
     if (!sessionId) {
-      setError('Session ID is required')
-      setLoading(false)
       return
     }
 
@@ -147,7 +147,7 @@ export function SessionTranscriptPage() {
     }
   }
 
-  if (loading) {
+  if (effectiveLoading) {
     return (
       <div className="space-y-6">
         <Button
@@ -165,7 +165,7 @@ export function SessionTranscriptPage() {
     )
   }
 
-  if (error || !transcript) {
+  if (effectiveError || !transcript) {
     return (
       <div className="space-y-6">
         <Button
@@ -179,7 +179,7 @@ export function SessionTranscriptPage() {
         <Card>
           <CardContent className="py-8">
             <div className="text-center text-muted-foreground">
-              {error || 'Session not found'}
+              {effectiveError || 'Session not found'}
             </div>
           </CardContent>
         </Card>
@@ -187,7 +187,7 @@ export function SessionTranscriptPage() {
     )
   }
 
-  const ServiceIcon = getServiceIcon(transcript.serviceName)
+  const serviceIcon = getServiceIcon(transcript.serviceName)
 
   const setRoleFilter = (key: keyof Pick<TranscriptFilters, 'showUser' | 'showAssistant' | 'showToolUse' | 'showToolResult'>) => {
     setFilters((prev) => ({ ...prev, [key]: !prev[key] }))
@@ -213,7 +213,7 @@ export function SessionTranscriptPage() {
       <Card>
         <CardHeader>
           <div className="flex items-center gap-4">
-            <ServiceIcon className="h-10 w-10 text-muted-foreground" />
+            {createElement(serviceIcon, { className: 'h-10 w-10 text-muted-foreground' })}
             <div className="flex-1">
               <CardTitle className="flex items-center gap-2">
                 <span className="font-mono text-base truncate max-w-[400px]">

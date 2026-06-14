@@ -864,6 +864,60 @@ func TestDashboardWidgetsPersistAfterReopen(t *testing.T) {
 	}
 }
 
+func TestDashboardWidgetIndexMigrationDropsLegacyIndex(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "dashboards.duckdb")
+
+	store, err := NewDuckDBStore(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+
+	if _, err := store.db.Exec("DROP INDEX IF EXISTS idx_dashboard_widgets_dashboard_id_v2"); err != nil {
+		t.Fatalf("failed to drop versioned index: %v", err)
+	}
+	if _, err := store.db.Exec("CREATE INDEX idx_dashboard_widgets_dashboard_id ON dashboard_widgets(dashboard_id)"); err != nil {
+		t.Fatalf("failed to create legacy index: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("failed to close store: %v", err)
+	}
+
+	reopened, err := NewDuckDBStore(dbPath)
+	if err != nil {
+		t.Fatalf("failed to reopen store: %v", err)
+	}
+	defer reopened.Close()
+
+	rows, err := reopened.db.Query(`
+		SELECT index_name
+		FROM duckdb_indexes()
+		WHERE table_name = 'dashboard_widgets'
+	`)
+	if err != nil {
+		t.Fatalf("failed to query indexes: %v", err)
+	}
+	defer rows.Close()
+
+	indexes := map[string]bool{}
+	for rows.Next() {
+		var indexName string
+		if err := rows.Scan(&indexName); err != nil {
+			t.Fatalf("failed to scan index: %v", err)
+		}
+		indexes[indexName] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("failed to iterate indexes: %v", err)
+	}
+
+	if indexes["idx_dashboard_widgets_dashboard_id"] {
+		t.Fatal("expected legacy dashboard widget index to be dropped")
+	}
+	if !indexes["idx_dashboard_widgets_dashboard_id_v2"] {
+		t.Fatal("expected versioned dashboard widget index to be created")
+	}
+}
+
 func TestGetDashboardWithWidgets(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()

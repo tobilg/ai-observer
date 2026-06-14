@@ -107,23 +107,22 @@ export function AddWidgetPanel() {
     return groups
   }, [metricNames, selectedService, getSourceFromService])
 
-  // Reset breakdown when metric changes
-  useEffect(() => {
+  const handleMetricChange = useCallback((metricName: string) => {
+    setSelectedMetric(metricName)
     setSelectedBreakdown('')
     setSelectedBreakdownValue('')
     setBreakdownValues([])
-  }, [selectedMetric])
+  }, [])
 
-  // Reset breakdown value when breakdown attribute changes
-  useEffect(() => {
+  const handleBreakdownChange = useCallback((breakdown: string) => {
+    setSelectedBreakdown(breakdown)
     setSelectedBreakdownValue('')
     setBreakdownValues([])
-  }, [selectedBreakdown])
+  }, [])
 
   // Fetch breakdown values when attribute is selected
   useEffect(() => {
     if (!selectedMetric || !selectedBreakdown) {
-      setBreakdownValues([])
       return
     }
 
@@ -167,14 +166,14 @@ export function AddWidgetPanel() {
         const data = await api.getMetricNames(selectedService || undefined)
         setMetricNames(data.names ?? [])
         if (data.names?.length > 0 && !selectedMetric) {
-          setSelectedMetric(data.names[0])
+          handleMetricChange(data.names[0])
         }
       } catch (error) {
         console.error('Failed to fetch metric names:', error)
       }
     }
     fetchMetricNames()
-  }, [selectedService, selectedMetric])
+  }, [selectedService, selectedMetric, handleMetricChange])
 
   // Calculate available columns at a specific position
   const getAvailableColumns = useCallback((gridRow: number, gridColumn: number): number => {
@@ -402,7 +401,7 @@ export function AddWidgetPanel() {
                 <label className="text-sm font-medium mb-2 block">Metric</label>
                 <Select
                   value={selectedMetric}
-                  onChange={(e) => setSelectedMetric(e.target.value)}
+                  onChange={(e) => handleMetricChange(e.target.value)}
                 >
                   <option value="">Select a metric</option>
                   {groupedMetrics.claude_code.length > 0 && (
@@ -472,7 +471,7 @@ export function AddWidgetPanel() {
                     </label>
                     <Select
                       value={selectedBreakdown}
-                      onChange={(e) => setSelectedBreakdown(e.target.value)}
+                      onChange={(e) => handleBreakdownChange(e.target.value)}
                     >
                       <option value="">
                         {selectedWidgetType === 'metric_value' ? 'Total (all values)' : 'Default (type)'}

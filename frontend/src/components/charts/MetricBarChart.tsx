@@ -80,9 +80,16 @@ export function MetricBarChart({
 
   // Left margin: more for long date labels, less for short time-only labels
   const leftMargin = needsTiltedLabels ? (hasShortLabels ? 15 : 40) : 0
+  const initialDimension = { width: 1, height: compact ? 128 : 320 }
 
   return (
-    <ResponsiveContainer width="100%" height="100%">
+    <ResponsiveContainer
+      width="100%"
+      height="100%"
+      minWidth={0}
+      minHeight={0}
+      initialDimension={initialDimension}
+    >
       <BarChart
         data={data}
         margin={
@@ -97,15 +104,13 @@ export function MetricBarChart({
         />
         <XAxis
           dataKey="time"
-          tick={
-            {
-              fontSize: compact ? 10 : 11,
-              fill: 'var(--color-muted-foreground)',
-              angle: needsTiltedLabels ? -45 : 0,
-              textAnchor: needsTiltedLabels ? 'end' : 'middle',
-              dy: needsTiltedLabels ? 5 : 0,
-            } as React.SVGProps<SVGTextElement>
-          }
+          tick={{
+            fontSize: compact ? 10 : 11,
+            fill: 'var(--color-muted-foreground)',
+            angle: needsTiltedLabels ? -45 : 0,
+            textAnchor: needsTiltedLabels ? 'end' : 'middle',
+            dy: needsTiltedLabels ? 5 : 0,
+          }}
           interval={interval}
           height={needsTiltedLabels ? 90 : undefined}
           {...(compact ? compactAxisStyle : {})}

@@ -17,6 +17,8 @@ interface MetricDataProviderProps {
   children: ReactNode
 }
 
+const EMPTY_RESULTS = new Map<string, MetricData>()
+
 export function MetricDataProvider({ children }: MetricDataProviderProps) {
   const { widgets, timeSelection, fromTime, toTime, intervalSeconds, isAbsoluteRange } = useDashboardStore()
   const metricsUpdateCount = useTelemetryStore((state) => state.metricsUpdateCount)
@@ -84,7 +86,6 @@ export function MetricDataProvider({ children }: MetricDataProviderProps) {
   // Fetch batch data when queries or time selection change
   useEffect(() => {
     if (queries.length === 0) {
-      setResults(new Map())
       return
     }
 
@@ -158,14 +159,15 @@ export function MetricDataProvider({ children }: MetricDataProviderProps) {
 
   const getMetricData = useCallback(
     (widgetId: string): MetricData => {
-      const data = results.get(widgetId)
+      const activeResults = queries.length === 0 ? EMPTY_RESULTS : results
+      const data = activeResults.get(widgetId)
       if (data) {
         return data
       }
       // Return loading state if not yet fetched
       return { series: [], loading: loading, error: null }
     },
-    [results, loading]
+    [queries.length, results, loading]
   )
 
   const refreshAll = useCallback(() => {

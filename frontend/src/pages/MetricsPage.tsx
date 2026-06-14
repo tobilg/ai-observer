@@ -88,6 +88,20 @@ export function MetricsPage() {
     return null
   }, [])
 
+  const isMetricValidForService = useCallback((metricName: string, service: string) => {
+    if (!metricName || !service) return true
+
+    const filterSource = getSourceFromService(service)
+    if (!filterSource) return true
+
+    if (isSharedGenAIMetric(metricName) && (filterSource === 'gemini_cli' || filterSource === 'github_copilot')) {
+      return true
+    }
+
+    const meta = getMetricMetadata(metricName)
+    return meta.source === filterSource || meta.source === 'unknown'
+  }, [getSourceFromService])
+
   // Fetch services on mount
   useEffect(() => {
     const fetchServices = async () => {
@@ -124,25 +138,6 @@ export function MetricsPage() {
     return () => abortController.abort()
   }, [selectedService])
 
-  // Reset selected metric when service changes and current metric is not valid
-  useEffect(() => {
-    if (!selectedService) return // No filtering when no service selected
-
-    const filterSource = getSourceFromService(selectedService)
-    if (!filterSource) return
-
-    // Check if current metric belongs to the selected service's source
-    if (selectedMetric) {
-      const meta = getMetricMetadata(selectedMetric)
-      if (isSharedGenAIMetric(selectedMetric) && (filterSource === 'gemini_cli' || filterSource === 'github_copilot')) {
-        return
-      }
-      if (meta.source !== filterSource && meta.source !== 'unknown') {
-        setSelectedMetric('')
-      }
-    }
-  }, [selectedService, selectedMetric, getSourceFromService])
-
   // Auto-refresh at the X-axis tick interval rate (disabled for absolute ranges)
   useEffect(() => {
     // Skip auto-refresh for absolute date ranges (static historical data)
@@ -175,7 +170,6 @@ export function MetricsPage() {
 
   useEffect(() => {
     if (!selectedMetric) {
-      setSeries([])
       return
     }
 
@@ -229,6 +223,21 @@ export function MetricsPage() {
 
     return () => abortController.abort()
   }, [selectedMetric, selectedService, lastUpdate, timeSelection, fromTime, toTime, intervalSeconds, isAbsoluteRange, series.length])
+
+  const handleServiceChange = (value: string) => {
+    setSelectedService(value)
+    if (!isMetricValidForService(selectedMetric, value)) {
+      setSelectedMetric('')
+      setSeries([])
+    }
+  }
+
+  const handleMetricChange = (value: string) => {
+    setSelectedMetric(value)
+    if (!value) {
+      setSeries([])
+    }
+  }
 
   // Get metadata for selected metric
   const metadata = useMemo(
@@ -426,7 +435,7 @@ export function MetricsPage() {
               <label className="text-sm font-medium mb-2 block">Service</label>
               <Select
                 value={selectedService}
-                onChange={(e) => setSelectedService(e.target.value)}
+                onChange={(e) => handleServiceChange(e.target.value)}
               >
                 <option value="">All Services</option>
                 {services.map((s) => (
@@ -440,7 +449,7 @@ export function MetricsPage() {
               <label className="text-sm font-medium mb-2 block">Metric</label>
               <Select
                 value={selectedMetric}
-                onChange={(e) => setSelectedMetric(e.target.value)}
+                onChange={(e) => handleMetricChange(e.target.value)}
               >
                 <option value="">Select a metric</option>
                 {groupedMetrics.claude_code.length > 0 && (

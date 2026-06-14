@@ -2,7 +2,7 @@
 // Provides human-readable names, descriptions, and formatting for metrics from
 // Claude Code, Gemini CLI, Codex CLI, and GitHub Copilot
 
-import { Bot, Github, Terminal, Sparkles, type LucideIcon } from 'lucide-react'
+import { Bot, BotMessageSquare, Terminal, Sparkles, type LucideIcon } from 'lucide-react'
 
 // ============================================================================
 // Type Definitions
@@ -1699,7 +1699,7 @@ export function getServiceIcon(serviceName: string): LucideIcon {
       return Terminal
     case 'copilot-chat':
     case 'github-copilot':
-      return Github
+      return BotMessageSquare
     default:
       return Bot // fallback
   }

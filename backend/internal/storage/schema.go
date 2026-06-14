@@ -146,7 +146,10 @@ CREATE TABLE IF NOT EXISTS dashboard_widgets (
 
 const indexDashboards = `
 CREATE INDEX IF NOT EXISTS idx_dashboards_is_default ON dashboards(is_default);
-CREATE INDEX IF NOT EXISTS idx_dashboard_widgets_dashboard_id ON dashboard_widgets(dashboard_id);
+
+DROP INDEX IF EXISTS idx_dashboard_widgets_dashboard_id;
+
+CREATE INDEX IF NOT EXISTS idx_dashboard_widgets_dashboard_id_v2 ON dashboard_widgets(dashboard_id);
 `
 
 const schemaImportState = `
