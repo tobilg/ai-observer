@@ -1,0 +1,4 @@
+onlyBuiltDependencies:
+  - esbuild
+overrides:
+  '@csstools/css-color-parser': 4.1.4

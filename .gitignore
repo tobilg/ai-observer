@@ -43,6 +43,7 @@ bin/
 backend/server
 data/*.duckdb
 data/*.duckdb.wal
+data/*.duckdb.wal.checkpoint
 
 # Embedded frontend build output
 backend/internal/frontend/dist/

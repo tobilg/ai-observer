@@ -1,0 +1,28 @@
+.git
+.github
+.DS_Store
+.env
+.tmp
+
+# Local runtime data
+data/
+input/
+
+# Build outputs
+bin/
+backend/bin/
+backend/server
+backend/internal/frontend/dist/
+frontend/dist/
+frontend/coverage/
+coverage.*
+*.out
+*.test
+
+# Dependency/cache directories
+frontend/node_modules/
+.pnpm-store/
+
+# Local agent/workspace scratch data
+.claude/
+external-projects/
