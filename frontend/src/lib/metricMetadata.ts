@@ -1,15 +1,15 @@
 // Metric Metadata System for AI Observer
 // Provides human-readable names, descriptions, and formatting for metrics from
-// Claude Code, Gemini CLI, and Codex CLI
+// Claude Code, Gemini CLI, Codex CLI, and GitHub Copilot
 
-import { Bot, Terminal, Sparkles, type LucideIcon } from 'lucide-react'
+import { Bot, Github, Terminal, Sparkles, type LucideIcon } from 'lucide-react'
 
 // ============================================================================
 // Type Definitions
 // ============================================================================
 
 export type MetricType = 'counter' | 'gauge' | 'histogram' | 'summary'
-export type SourceTool = 'claude_code' | 'gemini_cli' | 'codex_cli_rs' | 'unknown'
+export type SourceTool = 'claude_code' | 'gemini_cli' | 'codex_cli_rs' | 'github_copilot' | 'unknown'
 export type UnitFormatter = 'number' | 'duration' | 'bytes' | 'currency' | 'percentage' | 'tokens' | 'ratio'
 
 export interface UnitFormat {
@@ -1048,6 +1048,274 @@ export const METRIC_CATALOG: MetricMetadata[] = [
   },
 
   // ==========================================================================
+  // GITHUB COPILOT METRICS
+  // ==========================================================================
+  {
+    name: 'github_copilot.token.usage',
+    displayName: 'Token Usage',
+    description: 'Number of tokens consumed by GitHub Copilot chat operations',
+    source: 'github_copilot',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.tokens,
+    isMonotonic: true,
+    breakdowns: [
+      {
+        attributeKey: 'type',
+        displayName: 'Token Type',
+        showInLegend: true,
+        knownValues: {
+          input: 'Input',
+          output: 'Output',
+          cache_read: 'Cache Read',
+          cache_creation: 'Cache Creation',
+          reasoning: 'Reasoning',
+        },
+      },
+      {
+        attributeKey: 'model',
+        displayName: 'Model',
+        showInLegend: true,
+      },
+    ],
+  },
+  {
+    name: 'github_copilot.cost.usage',
+    displayName: 'Cost',
+    description: 'Estimated cost in USD for GitHub Copilot usage',
+    source: 'github_copilot',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.usd,
+    isMonotonic: true,
+    breakdowns: [
+      {
+        attributeKey: 'model',
+        displayName: 'Model',
+        showInLegend: true,
+      },
+    ],
+  },
+  {
+    name: 'copilot_chat.tool.call.count',
+    displayName: 'Tool Calls',
+    description: 'Number of GitHub Copilot tool calls',
+    source: 'github_copilot',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.count,
+    isMonotonic: true,
+    breakdowns: [
+      {
+        attributeKey: 'tool.name',
+        displayName: 'Tool',
+        showInLegend: true,
+      },
+      {
+        attributeKey: 'status',
+        displayName: 'Status',
+        showInLegend: true,
+      },
+    ],
+  },
+  {
+    name: 'copilot_chat.tool.call.duration',
+    displayName: 'Tool Duration',
+    description: 'GitHub Copilot tool call duration',
+    source: 'github_copilot',
+    metricType: 'histogram',
+    unit: UNIT_FORMATS.seconds,
+    isMonotonic: false,
+    breakdowns: [
+      {
+        attributeKey: 'tool.name',
+        displayName: 'Tool',
+        showInLegend: true,
+      },
+    ],
+  },
+  {
+    name: 'copilot_chat.agent.invocation.duration',
+    displayName: 'Agent Invocation Duration',
+    description: 'Duration of GitHub Copilot agent invocations',
+    source: 'github_copilot',
+    metricType: 'histogram',
+    unit: UNIT_FORMATS.seconds,
+    isMonotonic: false,
+  },
+  {
+    name: 'copilot_chat.agent.turn.count',
+    displayName: 'Agent Turns',
+    description: 'Number of GitHub Copilot agent turns',
+    source: 'github_copilot',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.count,
+    isMonotonic: true,
+  },
+  {
+    name: 'copilot_chat.session.count',
+    displayName: 'Sessions',
+    description: 'Number of GitHub Copilot chat sessions',
+    source: 'github_copilot',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.count,
+    isMonotonic: true,
+  },
+  {
+    name: 'copilot_chat.time_to_first_token',
+    displayName: 'Time to First Token',
+    description: 'Time until the first GitHub Copilot response token is received',
+    source: 'github_copilot',
+    metricType: 'histogram',
+    unit: UNIT_FORMATS.seconds,
+    isMonotonic: false,
+  },
+  {
+    name: 'copilot_chat.edit.acceptance.count',
+    displayName: 'Edit Acceptance',
+    description: 'Number of accepted or rejected GitHub Copilot edits',
+    source: 'github_copilot',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.count,
+    isMonotonic: true,
+    breakdowns: [
+      {
+        attributeKey: 'outcome',
+        displayName: 'Outcome',
+        showInLegend: true,
+      },
+    ],
+  },
+  {
+    name: 'copilot_chat.chat_edit.outcome.count',
+    displayName: 'Chat Edit Outcomes',
+    description: 'GitHub Copilot chat edit outcomes',
+    source: 'github_copilot',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.count,
+    isMonotonic: true,
+    breakdowns: [
+      {
+        attributeKey: 'outcome',
+        displayName: 'Outcome',
+        showInLegend: true,
+      },
+    ],
+  },
+  {
+    name: 'copilot_chat.lines_of_code.count',
+    displayName: 'Lines of Code',
+    description: 'Number of lines of code changed by GitHub Copilot',
+    source: 'github_copilot',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.count,
+    isMonotonic: true,
+    breakdowns: [
+      {
+        attributeKey: 'type',
+        displayName: 'Change Type',
+        showInLegend: true,
+        knownValues: {
+          added: 'Lines Added',
+          removed: 'Lines Removed',
+        },
+      },
+    ],
+  },
+  {
+    name: 'copilot_chat.edit.survival.four_gram',
+    displayName: 'Edit Survival (Four-Gram)',
+    description: 'GitHub Copilot edit survival ratio using four-gram matching',
+    source: 'github_copilot',
+    metricType: 'gauge',
+    unit: UNIT_FORMATS.ratio,
+    isMonotonic: false,
+  },
+  {
+    name: 'copilot_chat.edit.survival.no_revert',
+    displayName: 'Edit Survival (No Revert)',
+    description: 'GitHub Copilot edit survival ratio based on non-reverted edits',
+    source: 'github_copilot',
+    metricType: 'gauge',
+    unit: UNIT_FORMATS.ratio,
+    isMonotonic: false,
+  },
+  {
+    name: 'copilot_chat.user.action.count',
+    displayName: 'User Actions',
+    description: 'Number of GitHub Copilot user actions',
+    source: 'github_copilot',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.count,
+    isMonotonic: true,
+    breakdowns: [
+      {
+        attributeKey: 'action',
+        displayName: 'Action',
+        showInLegend: true,
+      },
+    ],
+  },
+  {
+    name: 'copilot_chat.user.feedback.count',
+    displayName: 'User Feedback',
+    description: 'Number of GitHub Copilot user feedback events',
+    source: 'github_copilot',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.count,
+    isMonotonic: true,
+    breakdowns: [
+      {
+        attributeKey: 'feedback',
+        displayName: 'Feedback',
+        showInLegend: true,
+      },
+    ],
+  },
+  {
+    name: 'copilot_chat.agent.edit_response.count',
+    displayName: 'Agent Edit Responses',
+    description: 'Number of GitHub Copilot agent edit responses',
+    source: 'github_copilot',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.count,
+    isMonotonic: true,
+  },
+  {
+    name: 'copilot_chat.agent.summarization.count',
+    displayName: 'Agent Summarizations',
+    description: 'Number of GitHub Copilot agent summarization events',
+    source: 'github_copilot',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.count,
+    isMonotonic: true,
+  },
+  {
+    name: 'copilot_chat.pull_request.count',
+    displayName: 'Pull Requests',
+    description: 'Number of GitHub Copilot pull request events',
+    source: 'github_copilot',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.count,
+    isMonotonic: true,
+  },
+  {
+    name: 'copilot_chat.cloud.session.count',
+    displayName: 'Cloud Sessions',
+    description: 'Number of GitHub Copilot cloud sessions',
+    source: 'github_copilot',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.count,
+    isMonotonic: true,
+  },
+  {
+    name: 'copilot_chat.cloud.pr_ready.count',
+    displayName: 'Cloud PR Ready',
+    description: 'Number of GitHub Copilot cloud pull requests marked ready',
+    source: 'github_copilot',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.count,
+    isMonotonic: true,
+  },
+
+  // ==========================================================================
   // CODEX CLI EVENTS (from codex_cli_rs service)
   // ==========================================================================
   {
@@ -1188,6 +1456,7 @@ export function getMetricMetadata(metricName: string): MetricMetadata {
   if (metricName.startsWith('claude_code.')) source = 'claude_code'
   else if (metricName.startsWith('gemini_cli.')) source = 'gemini_cli'
   else if (metricName.startsWith('codex.') || metricName.startsWith('codex_cli_rs.')) source = 'codex_cli_rs'
+  else if (metricName.startsWith('github_copilot.') || metricName.startsWith('copilot_chat.')) source = 'github_copilot'
   else if (metricName.startsWith('gen_ai.')) source = 'gemini_cli'
 
   // Return fallback metadata
@@ -1208,7 +1477,15 @@ export function getMetricMetadata(metricName: string): MetricMetadata {
  */
 export function formatMetricName(name: string): string {
   // Remove common prefixes
-  const prefixes = ['claude_code.', 'gemini_cli.', 'codex_cli_rs.', 'codex.', 'gen_ai.']
+  const prefixes = [
+    'claude_code.',
+    'gemini_cli.',
+    'codex_cli_rs.',
+    'codex.',
+    'github_copilot.',
+    'copilot_chat.',
+    'gen_ai.',
+  ]
   let cleaned = name
   for (const prefix of prefixes) {
     if (cleaned.startsWith(prefix)) {
@@ -1358,6 +1635,7 @@ export function getMetricsBySource(): Record<SourceTool, MetricMetadata[]> {
     claude_code: [],
     gemini_cli: [],
     codex_cli_rs: [],
+    github_copilot: [],
     unknown: [],
   }
 
@@ -1379,6 +1657,8 @@ export function getSourceDisplayName(source: SourceTool): string {
       return 'Gemini CLI'
     case 'codex_cli_rs':
       return 'Codex CLI'
+    case 'github_copilot':
+      return 'GitHub Copilot'
     default:
       return 'Other'
   }
@@ -1392,9 +1672,14 @@ export function getServiceDisplayName(serviceName: string): string {
     case 'claude-code':
       return 'Claude Code'
     case 'gemini-cli':
+    case 'gemini_cli':
       return 'Gemini CLI'
     case 'codex_cli_rs':
       return 'Codex CLI'
+    case 'copilot-chat':
+      return 'GitHub Copilot VS Code Extension'
+    case 'github-copilot':
+      return 'GitHub Copilot CLI'
     default:
       return serviceName // fallback to original
   }
@@ -1408,9 +1693,13 @@ export function getServiceIcon(serviceName: string): LucideIcon {
     case 'claude-code':
       return Bot
     case 'gemini-cli':
+    case 'gemini_cli':
       return Sparkles
     case 'codex_cli_rs':
       return Terminal
+    case 'copilot-chat':
+    case 'github-copilot':
+      return Github
     default:
       return Bot // fallback
   }

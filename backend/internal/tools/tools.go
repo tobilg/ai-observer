@@ -56,9 +56,15 @@ func ServiceNameFor(tool string) string {
 }
 
 // NormalizeServiceName accepts either a short tool name (claude, codex, gemini)
-// or a full service name (claude-code, codex_cli_rs, gemini_cli) and returns
+// or a full service name (claude-code, codex_cli_rs, gemini_cli, copilot-chat,
+// github-copilot) and returns
 // the canonical service name. Returns empty string if invalid.
 func NormalizeServiceName(input string) string {
+	switch input {
+	case "copilot-chat", "github-copilot":
+		return input
+	}
+
 	// First try as short tool name
 	if t, ok := Parse(input); ok {
 		return t.ServiceName()

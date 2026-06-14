@@ -36,6 +36,16 @@ func loadProvider(filename string) (*providerData, error) {
 			CacheWriteCostPerToken: entry.CacheWriteCostPerMTok * mTokToToken,
 			Deprecated:             entry.Deprecated,
 		}
+		if entry.LongContext != nil {
+			pricing.LongContextThreshold = entry.LongContext.ThresholdInputTokens
+			pricing.LongContextPricing = &ModelPricing{
+				InputCostPerToken:      entry.LongContext.InputCostPerMTok * mTokToToken,
+				OutputCostPerToken:     entry.LongContext.OutputCostPerMTok * mTokToToken,
+				CacheReadCostPerToken:  entry.LongContext.CacheReadCostPerMTok * mTokToToken,
+				CacheWriteCostPerToken: entry.LongContext.CacheWriteCostPerMTok * mTokToToken,
+				Deprecated:             entry.Deprecated,
+			}
+		}
 
 		provider.models[modelName] = pricing
 
@@ -68,5 +78,18 @@ func init() {
 	registry.gemini, err = loadProvider("data/gemini.json")
 	if err != nil {
 		log.Printf("Warning: failed to load Gemini pricing: %v", err)
+	}
+
+	// Load GitHub Copilot pricing
+	registry.copilot, err = loadProvider("data/github_copilot.json")
+	if err != nil {
+		log.Printf("Warning: failed to load GitHub Copilot pricing: %v", err)
+	} else {
+		catalog, err := loadGitHubModelsCatalog("data/github_models_catalog.json")
+		if err != nil {
+			log.Printf("Warning: failed to load GitHub Models catalog aliases: %v", err)
+		} else {
+			applyGitHubModelsCatalogAliases(registry.copilot, catalog.Models)
+		}
 	}
 }

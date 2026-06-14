@@ -42,6 +42,7 @@ func (h *Handlers) HandleTraces(w http.ResponseWriter, r *http.Request) {
 	}
 
 	spans := otlp.ConvertTraces(req)
+	derivedMetrics := otlp.DeriveCopilotMetricsFromSpans(spans)
 
 	// Store spans as-is - Codex CLI spans are handled at query time
 	if err := h.store.InsertSpans(r.Context(), spans); err != nil {
@@ -50,16 +51,24 @@ func (h *Handlers) HandleTraces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(derivedMetrics) > 0 {
+		if err := h.store.InsertMetrics(r.Context(), derivedMetrics); err != nil {
+			log.Warn("Failed to store derived metrics from traces", "error", err)
+		}
+	}
+
 	// Broadcast to WebSocket clients
 	if h.hub != nil && len(spans) > 0 {
 		h.hub.Broadcast(websocket.NewTracesMessage(spans))
 	}
+	if h.hub != nil && len(derivedMetrics) > 0 {
+		h.hub.Broadcast(websocket.NewMetricsMessage(derivedMetrics))
+	}
 
-	log.Debug("Received spans", "count", len(spans))
+	log.Debug("Received spans", "count", len(spans), "derived_metrics", len(derivedMetrics))
 
 	// OTLP success response
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("{}"))
 }
-

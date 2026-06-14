@@ -7,6 +7,7 @@ const (
 	ProviderAnthropic Provider = "anthropic"
 	ProviderOpenAI    Provider = "openai"
 	ProviderGoogle    Provider = "google"
+	ProviderCopilot   Provider = "github_copilot"
 )
 
 // ModelPricing contains per-token pricing in USD
@@ -16,16 +17,28 @@ type ModelPricing struct {
 	CacheReadCostPerToken  float64
 	CacheWriteCostPerToken float64
 	Deprecated             bool
+	LongContextThreshold   int64
+	LongContextPricing     *ModelPricing
 }
 
 // ModelEntry represents the JSON format for a model's pricing (per million tokens)
 type ModelEntry struct {
-	Aliases             []string `json:"aliases,omitempty"`
-	InputCostPerMTok    float64  `json:"inputCostPerMTok"`
-	OutputCostPerMTok   float64  `json:"outputCostPerMTok"`
-	CacheReadCostPerMTok  float64  `json:"cacheReadCostPerMTok,omitempty"`
-	CacheWriteCostPerMTok float64  `json:"cacheWriteCostPerMTok,omitempty"`
-	Deprecated          bool     `json:"deprecated,omitempty"`
+	Aliases               []string          `json:"aliases,omitempty"`
+	InputCostPerMTok      float64           `json:"inputCostPerMTok"`
+	OutputCostPerMTok     float64           `json:"outputCostPerMTok"`
+	CacheReadCostPerMTok  float64           `json:"cacheReadCostPerMTok,omitempty"`
+	CacheWriteCostPerMTok float64           `json:"cacheWriteCostPerMTok,omitempty"`
+	Deprecated            bool              `json:"deprecated,omitempty"`
+	LongContext           *LongContextEntry `json:"longContext,omitempty"`
+}
+
+// LongContextEntry represents optional pricing above an input-token threshold.
+type LongContextEntry struct {
+	ThresholdInputTokens  int64   `json:"thresholdInputTokens"`
+	InputCostPerMTok      float64 `json:"inputCostPerMTok"`
+	OutputCostPerMTok     float64 `json:"outputCostPerMTok"`
+	CacheReadCostPerMTok  float64 `json:"cacheReadCostPerMTok,omitempty"`
+	CacheWriteCostPerMTok float64 `json:"cacheWriteCostPerMTok,omitempty"`
 }
 
 // PricingData represents the root structure of a pricing JSON file
@@ -51,17 +64,36 @@ type providerData struct {
 
 // GetPricing returns pricing for a model
 func (p *providerData) GetPricing(model string) *ModelPricing {
-	// Try direct lookup first
-	if pricing, ok := p.models[model]; ok {
-		return pricing
+	canonical, ok := p.resolveCanonical(model)
+	if !ok {
+		return nil
 	}
-	// Try alias lookup
+	return p.models[canonical]
+}
+
+func (p *providerData) resolveCanonical(model string) (string, bool) {
+	if _, ok := p.models[model]; ok {
+		return model, true
+	}
 	if canonical, ok := p.aliases[model]; ok {
-		if pricing, ok := p.models[canonical]; ok {
-			return pricing
+		if _, ok := p.models[canonical]; ok {
+			return canonical, true
 		}
 	}
-	return nil
+	return "", false
+}
+
+func (p *providerData) registerAlias(alias, canonical string) {
+	if alias == "" || alias == canonical {
+		return
+	}
+	if _, ok := p.models[canonical]; !ok {
+		return
+	}
+	if p.aliases == nil {
+		p.aliases = make(map[string]string)
+	}
+	p.aliases[alias] = canonical
 }
 
 // GetProvider returns the provider type
@@ -80,9 +112,10 @@ func (p *providerData) ListModels() []string {
 
 // Registry holds all loaded pricing providers
 type Registry struct {
-	claude *providerData
-	codex  *providerData
-	gemini *providerData
+	claude  *providerData
+	codex   *providerData
+	gemini  *providerData
+	copilot *providerData
 }
 
 // Global registry instance
@@ -115,6 +148,15 @@ func GetGeminiPricing(model string) *ModelPricing {
 	return registry.gemini.GetPricing(normalized)
 }
 
+// GetCopilotPricing returns pricing for a GitHub Copilot model or GitHub Models catalog alias.
+func GetCopilotPricing(model string) *ModelPricing {
+	if registry.copilot == nil {
+		return nil
+	}
+	normalized := NormalizeCopilotModel(model)
+	return registry.copilot.GetPricing(normalized)
+}
+
 // GetClaudeProvider returns the Claude pricing provider
 func GetClaudeProvider() PricingProvider {
 	return registry.claude
@@ -128,4 +170,9 @@ func GetCodexProvider() PricingProvider {
 // GetGeminiProvider returns the Gemini pricing provider
 func GetGeminiProvider() PricingProvider {
 	return registry.gemini
+}
+
+// GetCopilotProvider returns the GitHub Copilot pricing provider.
+func GetCopilotProvider() PricingProvider {
+	return registry.copilot
 }

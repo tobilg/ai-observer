@@ -2,10 +2,12 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/tobilg/ai-observer/internal/api"
+	"github.com/tobilg/ai-observer/internal/storage"
 )
 
 // ListDashboards handles GET /api/dashboards
@@ -111,6 +113,10 @@ func (h *Handlers) UpdateDashboard(w http.ResponseWriter, r *http.Request) {
 
 	dashboard, err := h.store.UpdateDashboard(r.Context(), id, &req)
 	if err != nil {
+		if errors.Is(err, storage.ErrDashboardNotFound) {
+			api.WriteError(w, http.StatusNotFound, "dashboard not found")
+			return
+		}
 		api.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -143,6 +149,10 @@ func (h *Handlers) SetDefaultDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.store.SetDefaultDashboard(r.Context(), id); err != nil {
+		if errors.Is(err, storage.ErrDashboardNotFound) {
+			api.WriteError(w, http.StatusNotFound, "dashboard not found")
+			return
+		}
 		api.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -199,6 +209,10 @@ func (h *Handlers) CreateWidget(w http.ResponseWriter, r *http.Request) {
 
 	widget, err := h.store.CreateWidget(r.Context(), dashboardID, &req)
 	if err != nil {
+		if errors.Is(err, storage.ErrDashboardNotFound) {
+			api.WriteError(w, http.StatusNotFound, "dashboard not found")
+			return
+		}
 		api.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -233,6 +247,14 @@ func (h *Handlers) UpdateWidgetPositions(w http.ResponseWriter, r *http.Request)
 	}
 
 	if err := h.store.UpdateWidgetPositions(r.Context(), dashboardID, req.Positions); err != nil {
+		if errors.Is(err, storage.ErrDashboardNotFound) {
+			api.WriteError(w, http.StatusNotFound, "dashboard not found")
+			return
+		}
+		if errors.Is(err, storage.ErrWidgetNotFound) {
+			api.WriteError(w, http.StatusNotFound, "widget not found")
+			return
+		}
 		api.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -281,6 +303,10 @@ func (h *Handlers) UpdateWidget(w http.ResponseWriter, r *http.Request) {
 
 	widget, err := h.store.UpdateWidget(r.Context(), dashboardID, widgetID, &req)
 	if err != nil {
+		if errors.Is(err, storage.ErrWidgetNotFound) {
+			api.WriteError(w, http.StatusNotFound, "widget not found")
+			return
+		}
 		api.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -298,6 +324,10 @@ func (h *Handlers) DeleteWidget(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.store.DeleteWidget(r.Context(), dashboardID, widgetID); err != nil {
+		if errors.Is(err, storage.ErrWidgetNotFound) {
+			api.WriteError(w, http.StatusNotFound, "widget not found")
+			return
+		}
 		api.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

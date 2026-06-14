@@ -4,21 +4,22 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { WaterfallView } from '@/components/traces/WaterfallView'
 import { api } from '@/lib/api'
+import { isAbortError } from '@/lib/errors'
 import { formatDuration, formatTimestamp, getStatusColor } from '@/lib/utils'
 import { getServiceDisplayName } from '@/lib/metricMetadata'
-import type { Span, TraceOverview } from '@/types/traces'
+import type { Span, TraceKind, TraceOverview } from '@/types/traces'
 import { ArrowLeft } from 'lucide-react'
 import { toast } from 'sonner'
 
 export function TraceDetailPage() {
-  const { traceId } = useParams<{ traceId: string }>()
+  const { kind, id } = useParams<{ kind: TraceKind; id: string }>()
   const navigate = useNavigate()
   const [spans, setSpans] = useState<Span[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!traceId) return
+    if (!id || !kind) return
 
     const abortController = new AbortController()
 
@@ -26,14 +27,14 @@ export function TraceDetailPage() {
       setLoading(true)
       setError(null)
       try {
-        const data = await api.getTraceSpans(traceId, { signal: abortController.signal })
+        const data = await api.getTraceSpans(id, kind, { signal: abortController.signal })
         if (data.spans && data.spans.length > 0) {
           setSpans(data.spans)
         } else {
           setError('No spans found for this trace')
         }
       } catch (err) {
-        if (err instanceof Error && err.name === 'AbortError') {
+        if (isAbortError(err)) {
           return
         }
         console.error('Failed to fetch trace spans:', err)
@@ -49,15 +50,16 @@ export function TraceDetailPage() {
     fetchSpans()
 
     return () => abortController.abort()
-  }, [traceId])
+  }, [id, kind])
 
   // Compute trace overview from spans
   const traceOverview: TraceOverview | null = useMemo(() => {
     if (spans.length === 0) return null
 
-    // Find root span (no parent or parent not in this trace)
+    // Prefer the requested row root; grouped Codex rows may include same-turn sibling roots.
     const spanIds = new Set(spans.map(s => s.spanId))
-    const rootSpan = spans.find(s => !s.parentSpanId || !spanIds.has(s.parentSpanId))
+    const rootSpan = spans.find(s => s.spanId === id) ?? spans.find(s => !s.parentSpanId || !spanIds.has(s.parentSpanId))
+    const isCodexTurn = kind === 'codex_operation' && spans.some(s => s.spanAttributes?.turn_id)
 
     // Calculate total duration from earliest start to latest end
     let minStart = Number.MAX_SAFE_INTEGER
@@ -75,19 +77,29 @@ export function TraceDetailPage() {
     const totalDuration = (maxEnd - minStart) * 1_000_000 // Convert back to nanoseconds
 
     return {
-      traceId: traceId!,
+      id: id!,
+      kind: kind!,
+      traceId: rootSpan?.traceId || spans[0]?.traceId || id!,
+      rootSpanId: rootSpan?.spanId || spans[0]?.spanId || id!,
       rootSpan: rootSpan?.spanName || 'Unknown',
       serviceName: rootSpan?.serviceName || spans[0]?.serviceName || 'Unknown',
+      groupLevel: isCodexTurn ? 'codex_turn' : kind === 'codex_operation' ? 'codex_operation' : undefined,
       startTime: rootSpan?.timestamp || spans[0]?.timestamp || new Date().toISOString(),
       duration: totalDuration,
       spanCount: spans.length,
       status: hasError ? 'ERROR' : 'OK'
     }
-  }, [spans, traceId])
+  }, [spans, id, kind])
 
   const handleBack = () => {
     navigate('/traces')
   }
+
+  const traceLabel = traceOverview?.groupLevel === 'codex_turn'
+    ? 'Codex Turn'
+    : kind === 'codex_operation'
+      ? 'Codex Operation'
+      : 'Trace'
 
   return (
     <div className="space-y-6">
@@ -101,7 +113,7 @@ export function TraceDetailPage() {
           <ArrowLeft className="h-5 w-5" />
         </button>
         <h1 className="text-2xl font-bold tracking-tight font-mono">
-          Trace {traceId}
+          {traceLabel} {id}
         </h1>
       </div>
 
@@ -137,6 +149,16 @@ export function TraceDetailPage() {
                 <div className="flex items-center gap-2">
                   <span className="text-muted-foreground">Service:</span>
                   <span className="font-medium">{getServiceDisplayName(traceOverview.serviceName)}</span>
+                </div>
+                {traceOverview.kind === 'codex_operation' && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground">Trace ID:</span>
+                    <span className="font-medium font-mono">{traceOverview.traceId}</span>
+                  </div>
+                )}
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground">Root Span:</span>
+                  <span className="font-medium font-mono">{traceOverview.rootSpanId}</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-muted-foreground">Duration:</span>

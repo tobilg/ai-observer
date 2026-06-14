@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -9,6 +9,7 @@ import { DateRangePicker } from '@/components/ui/date-range-picker'
 import { DataPagination } from '@/components/ui/data-pagination'
 import { WaterfallView } from '@/components/traces/WaterfallView'
 import { api } from '@/lib/api'
+import { isAbortError } from '@/lib/errors'
 import { formatDuration, formatTimestamp, getStatusColor, cn } from '@/lib/utils'
 import { getServiceDisplayName } from '@/lib/metricMetadata'
 import type { TraceOverview, Span } from '@/types/traces'
@@ -24,11 +25,33 @@ import { useTelemetryStore } from '@/stores/telemetryStore'
 const TIME_SELECTION_STORAGE_KEY = 'ai-observer-traces-timeselection'
 const PAGE_SIZE_STORAGE_KEY = 'ai-observer-traces-pageSize'
 
+function getTraceKind(trace: TraceOverview) {
+  return trace.kind ?? 'otel_trace'
+}
+
+function getTraceRequestId(trace: TraceOverview) {
+  if (getTraceKind(trace) === 'codex_operation') {
+    return trace.id || trace.rootSpanId || trace.traceId
+  }
+  return trace.traceId || trace.id || trace.rootSpanId
+}
+
+function getTraceRowKey(trace: TraceOverview, index: number) {
+  return [
+    getTraceKind(trace),
+    getTraceRequestId(trace),
+    trace.traceId,
+    trace.rootSpanId,
+    trace.startTime,
+    index,
+  ].filter(Boolean).join(':')
+}
+
 export function TracesPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [traces, setTraces] = useState<TraceOverview[]>([])
   const [total, setTotal] = useState(0)
-  const [expandedTraces, setExpandedTraces] = useState<Set<string>>(new Set())
+  const [expandedTraceKey, setExpandedTraceKey] = useState<string | null>(null)
   const [spansMap, setSpansMap] = useState<Map<string, Span[]>>(new Map())
   const [services, setServices] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
@@ -55,16 +78,7 @@ export function TracesPage() {
   // Anchor time for tracking new traces (used by refresh button)
   const [anchorTime, setAnchorTime] = useState<Date>(() => new Date())
 
-  // Count unique new traces since anchor time
-  const newTracesCount = useMemo(() => {
-    const newTraceIds = new Set<string>()
-    for (const span of recentSpans) {
-      if (new Date(span.timestamp) > anchorTime) {
-        newTraceIds.add(span.traceId)
-      }
-    }
-    return newTraceIds.size
-  }, [recentSpans, anchorTime])
+  const [newTracesCount, setNewTracesCount] = useState(0)
 
   useEffect(() => {
     const fetchServices = async () => {
@@ -96,7 +110,7 @@ export function TracesPage() {
         setTraces(data.traces ?? [])
         setTotal(data.total ?? 0)
       } catch (err) {
-        if (err instanceof Error && err.name === 'AbortError') {
+        if (isAbortError(err)) {
           return // Ignore abort errors
         }
         console.error('Failed to fetch traces:', err)
@@ -113,31 +127,71 @@ export function TracesPage() {
   }, [service, debouncedSearch, fromTime, toTime, pageSize, offset])
 
   useEffect(() => {
+    const hasNewSpans = recentSpans.some((span) => new Date(span.timestamp) > anchorTime)
+    if (!hasNewSpans) {
+      setNewTracesCount(0)
+      return
+    }
+
+    const abortController = new AbortController()
+    const timeout = window.setTimeout(async () => {
+      try {
+        const data = await api.getTraces({
+          service: service || undefined,
+          search: debouncedSearch || undefined,
+          from: anchorTime.toISOString(),
+          to: new Date().toISOString(),
+          limit: 1,
+          offset: 0,
+        }, { signal: abortController.signal })
+        if (!abortController.signal.aborted) {
+          setNewTracesCount(data.total ?? 0)
+        }
+      } catch (err) {
+        if (isAbortError(err)) {
+          return
+        }
+        console.error('Failed to count new traces:', err)
+      }
+    }, 250)
+
+    return () => {
+      window.clearTimeout(timeout)
+      abortController.abort()
+    }
+  }, [recentSpans, anchorTime, service, debouncedSearch])
+
+  useEffect(() => {
     const abortController = new AbortController()
 
-    // Fetch spans for each expanded trace that isn't already loaded
+    // Fetch spans only for the currently expanded trace.
     const fetchMissingSpans = async () => {
-      for (const traceId of expandedTraces) {
-        if (!spansMap.has(traceId)) {
-          try {
-            const data = await api.getTraceSpans(traceId, { signal: abortController.signal })
-            if (!abortController.signal.aborted) {
-              setSpansMap(prev => new Map(prev).set(traceId, data.spans ?? []))
-            }
-          } catch (err) {
-            if (err instanceof Error && err.name === 'AbortError') {
-              return
-            }
-            console.error('Failed to fetch spans:', err)
-            toast.error('Failed to fetch trace spans')
-          }
+      if (!expandedTraceKey || spansMap.has(expandedTraceKey)) {
+        return
+      }
+
+      const expandedTrace = traces.find((trace, index) => getTraceRowKey(trace, index) === expandedTraceKey)
+      if (!expandedTrace) {
+        return
+      }
+
+      try {
+        const data = await api.getTraceSpans(getTraceRequestId(expandedTrace), getTraceKind(expandedTrace), { signal: abortController.signal })
+        if (!abortController.signal.aborted) {
+          setSpansMap(prev => new Map(prev).set(expandedTraceKey, data.spans ?? []))
         }
+      } catch (err) {
+        if (isAbortError(err)) {
+          return
+        }
+        console.error('Failed to fetch spans:', err)
+        toast.error('Failed to fetch trace spans')
       }
     }
     fetchMissingSpans()
 
     return () => abortController.abort()
-  }, [expandedTraces, spansMap])
+  }, [expandedTraceKey, spansMap, traces])
 
   const updateSearchParams = (updates: { service?: string; search?: string; timeSelection?: TimeSelection }) => {
     const params: Record<string, string> = {}
@@ -173,20 +227,14 @@ export function TracesPage() {
 
   const handleRefresh = () => {
     setAnchorTime(new Date())
+    setNewTracesCount(0)
+    setExpandedTraceKey(null)
     resetToFirstPage()
     clearRecentSpans()
   }
 
-  const toggleTrace = (traceId: string) => {
-    setExpandedTraces(prev => {
-      const next = new Set(prev)
-      if (next.has(traceId)) {
-        next.delete(traceId)
-      } else {
-        next.add(traceId)
-      }
-      return next
-    })
+  const toggleTrace = (traceKey: string) => {
+    setExpandedTraceKey(prev => prev === traceKey ? null : traceKey)
   }
 
   return (
@@ -266,19 +314,20 @@ export function TracesPage() {
           ) : (
             <>
               <div className="space-y-2">
-                {traces.map((trace) => {
-                  const isExpanded = expandedTraces.has(trace.traceId)
-                  const spans = spansMap.get(trace.traceId)
+                {traces.map((trace, index) => {
+                  const traceKey = getTraceRowKey(trace, index)
+                  const isExpanded = expandedTraceKey === traceKey
+                  const spans = spansMap.get(traceKey)
 
                   return (
-                    <div key={trace.traceId} className="rounded-lg border">
+                    <div key={traceKey} className="rounded-lg border">
                       {/* Trace header (clickable) */}
                       <div
                         className={cn(
                           'p-3 cursor-pointer transition-colors hover:bg-accent',
                           isExpanded && 'bg-accent'
                         )}
-                        onClick={() => toggleTrace(trace.traceId)}
+                        onClick={() => toggleTrace(traceKey)}
                       >
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2 min-w-0 flex-1">

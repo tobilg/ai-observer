@@ -26,8 +26,13 @@ import {
   getMetricMetadata,
   getSourceDisplayName,
   getServiceDisplayName,
+  METRIC_CATALOG,
   type SourceTool,
 } from '@/lib/metricMetadata'
+
+function isSharedGenAIMetric(metricName: string): boolean {
+  return metricName.startsWith('gen_ai.')
+}
 
 export function AddWidgetPanel() {
   const { isAddPanelOpen, setAddPanelOpen, widgets, addWidget, targetPosition, setTargetPosition } = useDashboardStore()
@@ -49,25 +54,58 @@ export function AddWidgetPanel() {
     [selectedMetric]
   )
 
+  const getSourceFromService = useCallback((service: string): SourceTool | null => {
+    const normalized = service.toLowerCase().replace(/-/g, '_')
+    if (normalized.includes('claude')) return 'claude_code'
+    if (normalized.includes('gemini')) return 'gemini_cli'
+    if (normalized.includes('codex')) return 'codex_cli_rs'
+    if (normalized.includes('copilot')) return 'github_copilot'
+    return null
+  }, [])
+
   // Group metric names by source
   const groupedMetrics = useMemo(() => {
     const groups: Record<SourceTool | 'other', string[]> = {
       claude_code: [],
       gemini_cli: [],
       codex_cli_rs: [],
+      github_copilot: [],
       unknown: [],
       other: [],
     }
-    for (const name of metricNames) {
-      const meta = getMetricMetadata(name)
-      if (meta.source === 'unknown') {
-        groups.other.push(name)
-      } else {
-        groups[meta.source].push(name)
+    const filterSource = selectedService ? getSourceFromService(selectedService) : null
+
+    const allMetricNames = new Set<string>()
+    for (const metric of METRIC_CATALOG) {
+      if (
+        !filterSource ||
+        metric.source === filterSource ||
+        (isSharedGenAIMetric(metric.name) && (filterSource === 'gemini_cli' || filterSource === 'github_copilot'))
+      ) {
+        allMetricNames.add(metric.name)
       }
     }
+
+    for (const name of metricNames) {
+      allMetricNames.add(name)
+    }
+
+    for (const name of allMetricNames) {
+      const meta = getMetricMetadata(name)
+      const source = filterSource && isSharedGenAIMetric(name) ? filterSource : meta.source
+      if (source === 'unknown') {
+        groups.other.push(name)
+      } else {
+        groups[source].push(name)
+      }
+    }
+
+    for (const key of Object.keys(groups) as (SourceTool | 'other')[]) {
+      groups[key].sort()
+    }
+
     return groups
-  }, [metricNames])
+  }, [metricNames, selectedService, getSourceFromService])
 
   // Reset breakdown when metric changes
   useEffect(() => {
@@ -220,6 +258,7 @@ export function AddWidgetPanel() {
       setAddPanelOpen(false)
     } catch (error) {
       console.error('Failed to add widget:', error)
+      toast.error('Failed to add widget')
     } finally {
       setAdding(false)
     }
@@ -276,6 +315,7 @@ export function AddWidgetPanel() {
       setChartStacked(true)
     } catch (error) {
       console.error('Failed to add widget:', error)
+      toast.error('Failed to add widget')
     } finally {
       setAdding(false)
     }
@@ -382,6 +422,13 @@ export function AddWidgetPanel() {
                   {groupedMetrics.codex_cli_rs.length > 0 && (
                     <optgroup label={getSourceDisplayName('codex_cli_rs')}>
                       {groupedMetrics.codex_cli_rs.map((name) => (
+                        <option key={name} value={name}>{getMetricMetadata(name).displayName}</option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {groupedMetrics.github_copilot.length > 0 && (
+                    <optgroup label={getSourceDisplayName('github_copilot')}>
+                      {groupedMetrics.github_copilot.map((name) => (
                         <option key={name} value={name}>{getMetricMetadata(name).displayName}</option>
                       ))}
                     </optgroup>

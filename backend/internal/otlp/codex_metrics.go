@@ -77,21 +77,17 @@ func ExtractCodexMetrics(
 
 		floatValue := float64(value)
 		metricType := "sum"
-		isMonotonic := true
-		aggregationTemporality := int32(2) // CUMULATIVE
 
 		return api.MetricDataPoint{
-			Timestamp:              timestamp,
-			ServiceName:            serviceName,
-			MetricName:             CodexTokenUsageMetric,
-			MetricDescription:      "Number of tokens consumed by Codex CLI",
-			MetricUnit:             "tokens",
-			ResourceAttributes:     resourceAttrs,
-			Attributes:             attrs,
-			MetricType:             metricType,
-			Value:                  &floatValue,
-			IsMonotonic:            &isMonotonic,
-			AggregationTemporality: &aggregationTemporality,
+			Timestamp:          timestamp,
+			ServiceName:        serviceName,
+			MetricName:         CodexTokenUsageMetric,
+			MetricDescription:  "Number of tokens consumed by Codex CLI",
+			MetricUnit:         "tokens",
+			ResourceAttributes: resourceAttrs,
+			Attributes:         attrs,
+			MetricType:         metricType,
+			Value:              &floatValue,
 		}
 	}
 
@@ -116,21 +112,17 @@ func ExtractCodexMetrics(
 	cost := CalculateCodexCost(model, inputTokens, cachedTokens, outputTokens)
 	if cost != nil {
 		metricType := "sum"
-		isMonotonic := true
-		aggregationTemporality := int32(2) // CUMULATIVE
 
 		costMetric := api.MetricDataPoint{
-			Timestamp:              timestamp,
-			ServiceName:            serviceName,
-			MetricName:             CodexCostUsageMetric,
-			MetricDescription:      "Total cost in USD for Codex CLI usage",
-			MetricUnit:             "USD",
-			ResourceAttributes:     resourceAttrs,
-			Attributes:             baseAttrs,
-			MetricType:             metricType,
-			Value:                  cost,
-			IsMonotonic:            &isMonotonic,
-			AggregationTemporality: &aggregationTemporality,
+			Timestamp:          timestamp,
+			ServiceName:        serviceName,
+			MetricName:         CodexCostUsageMetric,
+			MetricDescription:  "Total cost in USD for Codex CLI usage",
+			MetricUnit:         "USD",
+			ResourceAttributes: resourceAttrs,
+			Attributes:         baseAttrs,
+			MetricType:         metricType,
+			Value:              cost,
 		}
 		metrics = append(metrics, costMetric)
 	}

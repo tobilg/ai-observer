@@ -82,6 +82,8 @@ Environment Variables:
   AI_OBSERVER_CLAUDE_PATH    Custom Claude Code config directory
   AI_OBSERVER_CODEX_PATH     Custom Codex CLI home directory
   AI_OBSERVER_GEMINI_PATH    Custom Gemini CLI home directory
+  COPILOT_OTEL_ENABLED       Enable GitHub Copilot OTLP export
+  COPILOT_OTEL_CAPTURE_CONTENT Capture GitHub Copilot prompts and tool content
 `)
 }
 

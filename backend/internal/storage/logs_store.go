@@ -140,7 +140,8 @@ func (s *DuckDBStore) QueryLogs(ctx context.Context, service, severity, traceID,
 		return nil, fmt.Errorf("counting logs: %w", err)
 	}
 
-	query += fmt.Sprintf(" ORDER BY Timestamp DESC LIMIT %d OFFSET %d", limit, offset)
+	query += " ORDER BY Timestamp DESC"
+	query, args = appendLimitOffset(query, args, limit, offset)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -224,7 +225,7 @@ func (s *DuckDBStore) GetLogLevels(ctx context.Context) (map[string]int64, error
 }
 
 // QuerySessions returns sessions with transcript messages from all services
-// Supports: Claude Code (transcript.message), Gemini CLI (session.id), Codex CLI (conversation.id)
+// Supports: Claude Code (transcript.message), Gemini CLI (session.id), Codex CLI (conversation.id), Copilot (gen_ai.conversation.id)
 func (s *DuckDBStore) QuerySessions(ctx context.Context, service string, from, to time.Time, limit, offset int) (*api.SessionsResponse, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -243,19 +244,25 @@ func (s *DuckDBStore) QuerySessions(ctx context.Context, service string, from, t
 		SELECT
 			COALESCE(
 				json_extract_string(LogAttributes, '$."session.id"'),
-				json_extract_string(LogAttributes, '$."conversation.id"')
+				json_extract_string(LogAttributes, '$."conversation.id"'),
+				json_extract_string(LogAttributes, '$."gen_ai.conversation.id"')
 			) as session_id,
 			ServiceName,
 			MIN(Timestamp) as start_time,
 			MAX(Timestamp) as last_time,
 			COUNT(*) as message_count,
-			MAX(json_extract_string(LogAttributes, '$.model')) as model
+			COALESCE(
+				MAX(json_extract_string(LogAttributes, '$.model')),
+				MAX(json_extract_string(LogAttributes, '$."gen_ai.response.model"')),
+				MAX(json_extract_string(LogAttributes, '$."gen_ai.request.model"'))
+			) as model
 		FROM otel_logs
 		WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
 		  AND json_valid(LogAttributes)
 		  AND (
 			json_extract_string(LogAttributes, '$."session.id"') IS NOT NULL
 			OR json_extract_string(LogAttributes, '$."conversation.id"') IS NOT NULL
+			OR json_extract_string(LogAttributes, '$."gen_ai.conversation.id"') IS NOT NULL
 		  )
 	`
 	args := []interface{}{fromStr, toStr}
@@ -275,7 +282,8 @@ func (s *DuckDBStore) QuerySessions(ctx context.Context, service string, from, t
 	countQuery := `
 		SELECT COUNT(DISTINCT COALESCE(
 			json_extract_string(LogAttributes, '$."session.id"'),
-			json_extract_string(LogAttributes, '$."conversation.id"')
+			json_extract_string(LogAttributes, '$."conversation.id"'),
+			json_extract_string(LogAttributes, '$."gen_ai.conversation.id"')
 		))
 		FROM otel_logs
 		WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
@@ -283,6 +291,7 @@ func (s *DuckDBStore) QuerySessions(ctx context.Context, service string, from, t
 		  AND (
 			json_extract_string(LogAttributes, '$."session.id"') IS NOT NULL
 			OR json_extract_string(LogAttributes, '$."conversation.id"') IS NOT NULL
+			OR json_extract_string(LogAttributes, '$."gen_ai.conversation.id"') IS NOT NULL
 		  )
 	`
 	countArgs := []interface{}{fromStr, toStr}
@@ -296,7 +305,7 @@ func (s *DuckDBStore) QuerySessions(ctx context.Context, service string, from, t
 		return nil, fmt.Errorf("counting sessions: %w", err)
 	}
 
-	query += fmt.Sprintf(" LIMIT %d OFFSET %d", limit, offset)
+	query, args = appendLimitOffset(query, args, limit, offset)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -337,7 +346,7 @@ func (s *DuckDBStore) QuerySessions(ctx context.Context, service string, from, t
 }
 
 // GetSessionTranscript returns all logs for a session, mapping events to transcript roles
-// Supports: Claude Code, Gemini CLI, Codex CLI
+// Supports: Claude Code, Gemini CLI, Codex CLI, GitHub Copilot
 func (s *DuckDBStore) GetSessionTranscript(ctx context.Context, sessionID string) (*api.TranscriptResponse, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -356,11 +365,12 @@ func (s *DuckDBStore) GetSessionTranscript(ctx context.Context, sessionID string
 		  AND (
 			json_extract_string(LogAttributes, '$."session.id"') = ?
 			OR json_extract_string(LogAttributes, '$."conversation.id"') = ?
+			OR json_extract_string(LogAttributes, '$."gen_ai.conversation.id"') = ?
 		)
 		ORDER BY Timestamp ASC
 	`
 
-	rows, err := s.db.QueryContext(ctx, query, sessionID, sessionID)
+	rows, err := s.db.QueryContext(ctx, query, sessionID, sessionID, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("querying transcript: %w", err)
 	}
@@ -418,14 +428,14 @@ func (s *DuckDBStore) GetSessionTranscript(ctx context.Context, sessionID string
 			Role:         role,
 			Content:      content,
 			Index:        index,
-			Model:        attrs["model"],
+			Model:        getModelName(attrs),
 			ToolName:     getToolName(attrs, eventName),
 			ToolInput:    getToolInput(attrs),
 			ToolOutput:   getToolOutput(attrs),
-			InputTokens:  parseIntAttr(attrs, "input_tokens", "inputTokens"),
-			OutputTokens: parseIntAttr(attrs, "output_tokens", "outputTokens"),
-			CacheRead:    parseIntAttr(attrs, "cache_read_input_tokens", "cacheRead"),
-			CacheWrite:   parseIntAttr(attrs, "cache_creation_input_tokens", "cacheWrite"),
+			InputTokens:  parseIntAttr(attrs, "input_tokens", "inputTokens", "gen_ai.usage.input_tokens"),
+			OutputTokens: parseIntAttr(attrs, "output_tokens", "outputTokens", "gen_ai.usage.output_tokens"),
+			CacheRead:    parseIntAttr(attrs, "cache_read_input_tokens", "cacheRead", "gen_ai.usage.cache_read.input_tokens"),
+			CacheWrite:   parseIntAttr(attrs, "cache_creation_input_tokens", "cacheWrite", "gen_ai.usage.cache_creation.input_tokens"),
 			CostUSD:      parseFloatAttr(attrs, "cost_usd", "costUsd"),
 			DurationMs:   parseIntAttr(attrs, "duration_ms", "durationMs"),
 			Success:      parseBoolAttr(attrs, "success", "tool_success"),
@@ -477,14 +487,36 @@ func mapEventToRole(eventName, serviceName string) string {
 	case "gemini_cli.tool_call":
 		return "tool_use"
 
+	// GitHub Copilot
+	case "gen_ai.client.inference.operation.details", "copilot_chat.agent.turn":
+		return "assistant"
+	case "copilot_chat.tool.call":
+		return "tool_use"
+
 	default:
 		return ""
 	}
 }
 
+func getModelName(attrs map[string]string) string {
+	if model, ok := attrs["model"]; ok {
+		return model
+	}
+	if model, ok := attrs["gen_ai.response.model"]; ok {
+		return model
+	}
+	if model, ok := attrs["gen_ai.request.model"]; ok {
+		return model
+	}
+	return ""
+}
+
 // getToolName extracts tool name from attributes
 func getToolName(attrs map[string]string, eventName string) string {
 	if name, ok := attrs["tool.name"]; ok {
+		return name
+	}
+	if name, ok := attrs["gen_ai.tool.name"]; ok {
 		return name
 	}
 	if name, ok := attrs["tool_name"]; ok {
@@ -501,6 +533,9 @@ func getToolInput(attrs map[string]string) string {
 	if input, ok := attrs["tool.input"]; ok {
 		return input
 	}
+	if input, ok := attrs["gen_ai.tool.call.arguments"]; ok {
+		return input
+	}
 	if input, ok := attrs["tool_parameters"]; ok {
 		return input
 	}
@@ -514,6 +549,9 @@ func getToolInput(attrs map[string]string) string {
 // getToolOutput extracts tool output from attributes (for imported data and Codex OTLP)
 func getToolOutput(attrs map[string]string) string {
 	if output, ok := attrs["tool.output"]; ok {
+		return output
+	}
+	if output, ok := attrs["gen_ai.tool.call.result"]; ok {
 		return output
 	}
 	if output, ok := attrs["tool_result"]; ok {
@@ -579,6 +617,18 @@ func extractMessageContent(eventName string, attrs map[string]string, body strin
 		// Codex tool results have output in attributes
 		if output, ok := attrs["output"]; ok && output != "" {
 			return output
+		}
+		return body
+
+	case "gen_ai.client.inference.operation.details", "copilot_chat.agent.turn":
+		if output, ok := attrs["gen_ai.output.messages"]; ok && output != "" {
+			return output
+		}
+		return body
+
+	case "copilot_chat.tool.call":
+		if result, ok := attrs["gen_ai.tool.call.result"]; ok && result != "" {
+			return result
 		}
 		return body
 

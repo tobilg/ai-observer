@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { BrowserRouter } from 'react-router-dom'
 import { TracesPage } from '../TracesPage'
 import { api } from '@/lib/api'
+import type { TracesResponse } from '@/types/traces'
 
 // Mock the API module
 vi.mock('@/lib/api', () => ({
@@ -35,7 +36,10 @@ vi.mock('@/stores/telemetryStore', () => ({
 
 const mockTraces = [
   {
+    id: 'trace-1',
+    kind: 'otel_trace',
     traceId: 'trace-1',
+    rootSpanId: 'span-1',
     rootSpan: 'llm/chat',
     serviceName: 'claude-code',
     duration: 1500000000, // 1.5s in nanoseconds
@@ -44,7 +48,10 @@ const mockTraces = [
     startTime: '2024-01-15T10:00:00Z',
   },
   {
+    id: 'trace-2',
+    kind: 'otel_trace',
     traceId: 'trace-2',
+    rootSpanId: 'span-2',
     rootSpan: 'tool/read_file',
     serviceName: 'claude-code',
     duration: 250000000, // 250ms in nanoseconds
@@ -118,6 +125,36 @@ describe('TracesPage', () => {
     })
 
     expect(screen.getByText('ERROR')).toBeInTheDocument()
+  })
+
+  it('renders Codex traces as normal trace rows', async () => {
+    vi.mocked(api.getTraces).mockResolvedValue({
+      traces: [
+        {
+          id: 'codex-session-trace',
+          kind: 'otel_trace',
+          traceId: 'codex-session-trace',
+          rootSpanId: 'session-root',
+          rootSpan: 'codex_session',
+          serviceName: 'codex_cli_rs',
+          duration: 12000000000,
+          spanCount: 42,
+          status: 'OK',
+          startTime: '2024-01-15T10:00:00Z',
+        },
+      ],
+      total: 1,
+      hasMore: false,
+    })
+
+    renderTracesPage()
+
+    await waitFor(() => {
+      expect(screen.getByText('codex_session')).toBeInTheDocument()
+    })
+
+    expect(screen.queryByText('Codex turn')).not.toBeInTheDocument()
+    expect(screen.queryByText('Codex operation')).not.toBeInTheDocument()
   })
 
   it('shows span count for each trace', async () => {
@@ -195,8 +232,53 @@ describe('TracesPage', () => {
 
     // Wait for spans to load
     await waitFor(() => {
-      expect(api.getTraceSpans).toHaveBeenCalledWith('trace-1', expect.any(Object))
+      expect(api.getTraceSpans).toHaveBeenCalledWith('trace-1', 'otel_trace', expect.any(Object))
     })
+    expect(api.getTraceSpans).toHaveBeenCalledTimes(1)
+  })
+
+  it('opens only the clicked row when trace identifiers are missing from a stale API response', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.getTraces).mockResolvedValue({
+      traces: [
+        {
+          traceId: 'legacy-trace-1',
+          rootSpan: 'legacy/root-1',
+          serviceName: 'claude-code',
+          duration: 100000000,
+          spanCount: 1,
+          status: 'OK',
+          startTime: '2024-01-15T10:00:00Z',
+        },
+        {
+          traceId: 'legacy-trace-2',
+          rootSpan: 'legacy/root-2',
+          serviceName: 'claude-code',
+          duration: 100000000,
+          spanCount: 1,
+          status: 'OK',
+          startTime: '2024-01-15T10:01:00Z',
+        },
+      ],
+      total: 2,
+      hasMore: false,
+    } as unknown as TracesResponse)
+
+    renderTracesPage()
+
+    await waitFor(() => {
+      expect(screen.getByText('legacy/root-1')).toBeInTheDocument()
+    })
+
+    const traceRow = screen.getByText('legacy/root-1').closest('div[class*="cursor-pointer"]')
+    expect(traceRow).toBeDefined()
+
+    await user.click(traceRow!)
+
+    await waitFor(() => {
+      expect(api.getTraceSpans).toHaveBeenCalledWith('legacy-trace-1', 'otel_trace', expect.any(Object))
+    })
+    expect(api.getTraceSpans).toHaveBeenCalledTimes(1)
   })
 
   it('handles search input', async () => {

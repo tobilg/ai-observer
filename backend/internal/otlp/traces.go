@@ -2,6 +2,7 @@ package otlp
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"strconv"
 	"time"
 
@@ -84,6 +85,14 @@ func anyValueToString(v *commonpb.AnyValue) string {
 			return "true"
 		}
 		return "false"
+	case *commonpb.AnyValue_ArrayValue:
+		data, _ := json.Marshal(convertArrayValue(val.ArrayValue))
+		return string(data)
+	case *commonpb.AnyValue_KvlistValue:
+		data, _ := json.Marshal(convertKvListValue(val.KvlistValue))
+		return string(data)
+	case *commonpb.AnyValue_BytesValue:
+		return string(val.BytesValue)
 	default:
 		return ""
 	}

@@ -6,6 +6,7 @@ import { Select } from '@/components/ui/select'
 import { DateRangePicker } from '@/components/ui/date-range-picker'
 import { DataPagination } from '@/components/ui/data-pagination'
 import { api } from '@/lib/api'
+import { isAbortError } from '@/lib/errors'
 import { formatTimestamp, cn } from '@/lib/utils'
 import { getServiceDisplayName, getServiceIcon } from '@/lib/metricMetadata'
 import type { Session } from '@/types/sessions'
@@ -69,7 +70,7 @@ export function SessionsPage() {
         setSessions(data.sessions ?? [])
         setTotal(data.total ?? 0)
       } catch (err) {
-        if (err instanceof Error && err.name === 'AbortError') {
+        if (isAbortError(err)) {
           return
         }
         console.error('Failed to fetch sessions:', err)

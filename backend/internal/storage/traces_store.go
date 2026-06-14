@@ -5,9 +5,16 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/tobilg/ai-observer/internal/api"
+)
+
+const (
+	codexServiceName     = "codex_cli_rs"
+	codexTurnIDAttribute = "turn_id"
 )
 
 func (s *DuckDBStore) InsertSpans(ctx context.Context, spans []api.Span) error {
@@ -51,7 +58,26 @@ func insertSpansTx(ctx context.Context, tx *sql.Tx, spans []api.Span) error {
 	}
 	defer stmt.Close()
 
+	existsStmt, err := tx.PrepareContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM otel_traces
+			WHERE ServiceName = ? AND TraceId = ? AND SpanId = ?
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("preparing dedupe statement: %w", err)
+	}
+	defer existsStmt.Close()
+
 	for _, span := range spans {
+		var exists bool
+		if err := existsStmt.QueryRowContext(ctx, span.ServiceName, span.TraceID, span.SpanID).Scan(&exists); err != nil {
+			return fmt.Errorf("checking duplicate span: %w", err)
+		}
+		if exists {
+			continue
+		}
+
 		eventTimestamps := make([]time.Time, len(span.Events))
 		eventNames := make([]string, len(span.Events))
 		eventAttributes := make([]map[string]string, len(span.Events))
@@ -108,290 +134,214 @@ func (s *DuckDBStore) QueryTraces(ctx context.Context, service, search string, f
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// For Codex CLI, we treat first-level spans (those whose parent doesn't exist) as virtual traces.
-	// For other services, we use traditional GROUP BY TraceId.
-	// When service filter is empty, we combine both approaches.
-
-	const codexService = "codex_cli_rs"
-
-	// Check if we need Codex query, non-Codex query, or both
-	includeCodex := service == "" || service == codexService
-	includeOther := service == "" || service != codexService
-
-	var allTraces []api.TraceOverview
-	var total int
-
-	// Query non-Codex traces (traditional GROUP BY TraceId)
-	if includeOther {
-		traces, count, err := s.queryNonCodexTraces(ctx, service, search, from, to, limit, offset)
-		if err != nil {
-			return nil, err
-		}
-		allTraces = append(allTraces, traces...)
-		total += count
-	}
-
-	// Query Codex virtual traces (first-level spans as trace roots)
-	if includeCodex {
-		traces, count, err := s.queryCodexVirtualTraces(ctx, search, from, to, limit, offset)
-		if err != nil {
-			return nil, err
-		}
-		allTraces = append(allTraces, traces...)
-		total += count
-	}
-
-	// Sort combined results by StartTime DESC and apply pagination
-	// (We fetched more than needed to handle combined pagination properly)
-	sortTracesByStartTime(allTraces)
-
-	// Apply offset and limit to combined results
-	if offset >= len(allTraces) {
-		allTraces = nil
-	} else {
-		end := offset + limit
-		if end > len(allTraces) {
-			end = len(allTraces)
-		}
-		allTraces = allTraces[offset:end]
+	limit, offset = normalizePagination(limit, offset)
+	traces, total, err := s.queryRawTraceOverviews(ctx, service, search, from, to, limit, offset, true)
+	if err != nil {
+		return nil, err
 	}
 
 	return &api.TracesResponse{
-		Traces:  allTraces,
+		Traces:  traces,
 		Total:   total,
-		HasMore: offset+len(allTraces) < total,
+		HasMore: offset+len(traces) < total,
 	}, nil
 }
 
-// queryNonCodexTraces queries traces for non-Codex services using GROUP BY TraceId
-func (s *DuckDBStore) queryNonCodexTraces(ctx context.Context, service, search string, from, to time.Time, limit, offset int) ([]api.TraceOverview, int, error) {
-	const codexService = "codex_cli_rs"
-
-	// Format times as strings to avoid timezone issues with DuckDB's TIMESTAMP type
+// queryRawTraceOverviews queries all services as normal OTLP traces, including Codex.
+func (s *DuckDBStore) queryRawTraceOverviews(ctx context.Context, service, search string, from, to time.Time, limit, offset int, includeCount bool) ([]api.TraceOverview, int, error) {
 	fromStr := formatTimeForDB(from)
 	toStr := formatTimeForDB(to)
+	limit, offset = normalizePagination(limit, offset)
 
-	timeFilter := "Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP"
-	serviceFilter := " AND ServiceName != '" + codexService + "'"
-	if service != "" && service != codexService {
+	serviceFilter := ""
+	if service != "" {
 		serviceFilter = " AND ServiceName = ?"
 	}
 
 	searchFilter := ""
 	if search != "" {
-		searchFilter = " AND (SpanName ILIKE ? OR ServiceName ILIKE ? OR StatusMessage ILIKE ? OR CAST(SpanAttributes AS VARCHAR) ILIKE ?)"
+		searchFilter = `
+		,
+		matching_traces AS (
+			SELECT DISTINCT TraceId
+			FROM spans
+			WHERE SpanName ILIKE ?
+			   OR ServiceName ILIKE ?
+			   OR COALESCE(StatusMessage, '') ILIKE ?
+			   OR COALESCE(CAST(SpanAttributes AS VARCHAR), '') ILIKE ?
+			   OR COALESCE(CAST(ResourceAttributes AS VARCHAR), '') ILIKE ?
+		)
+	`
 	}
 
-	var args []interface{}
-	args = append(args, fromStr, toStr)
-	if service != "" && service != codexService {
+	args := []interface{}{fromStr, toStr}
+	if service != "" {
 		args = append(args, service)
 	}
-
-	query := `
-		SELECT
-			TraceId,
-			FIRST(SpanName ORDER BY Timestamp ASC) as RootSpan,
-			FIRST(ServiceName ORDER BY Timestamp ASC) as ServiceName,
-			MIN(Timestamp) as StartTime,
-			CAST((MAX(epoch_ms(Timestamp) + Duration/1000000) - MIN(epoch_ms(Timestamp))) * 1000000 AS BIGINT) as Duration,
-			COUNT(*) as SpanCount,
-			CASE WHEN SUM(CASE WHEN StatusCode = 'ERROR' THEN 1 ELSE 0 END) > 0 THEN 'ERROR'
-			     WHEN SUM(CASE WHEN StatusCode = 'OK' THEN 1 ELSE 0 END) > 0 THEN 'OK'
-			     ELSE 'UNSET' END as Status
-		FROM otel_traces
-		WHERE ` + timeFilter + serviceFilter + searchFilter + `
-		GROUP BY TraceId
-		ORDER BY StartTime DESC
-		LIMIT ? OFFSET ?
-	`
-
 	if search != "" {
 		pattern := "%" + search + "%"
-		args = append(args, pattern, pattern, pattern, pattern)
+		args = append(args, pattern, pattern, pattern, pattern, pattern)
 	}
-	args = append(args, limit+offset, 0) // Fetch enough for combined pagination
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	joinMatching := ""
+	if search != "" {
+		joinMatching = "JOIN matching_traces mt ON mt.TraceId = spans.TraceId"
+	}
+
+	baseQuery := `
+		WITH spans AS (
+			SELECT * FROM (
+				SELECT *,
+					ROW_NUMBER() OVER (
+						PARTITION BY ServiceName, TraceId, SpanId
+						ORDER BY Timestamp DESC
+					) AS rn
+				FROM otel_traces
+				WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
+				` + serviceFilter + `
+			)
+			WHERE rn = 1
+		)
+		` + searchFilter + `
+	`
+
+	query := baseQuery + `
+		SELECT
+			spans.TraceId as ID,
+			'` + api.TraceKindOTelTrace + `' as Kind,
+			spans.TraceId,
+			FIRST(spans.SpanId ORDER BY spans.Timestamp ASC) as RootSpanId,
+			FIRST(spans.SpanName ORDER BY spans.Timestamp ASC) as RootSpan,
+			FIRST(spans.ServiceName ORDER BY spans.Timestamp ASC) as ServiceName,
+			MIN(spans.Timestamp) as StartTime,
+			CAST((MAX(epoch_ms(spans.Timestamp) + COALESCE(spans.Duration, 0)/1000000) - MIN(epoch_ms(spans.Timestamp))) * 1000000 AS BIGINT) as Duration,
+			COUNT(*) as SpanCount,
+			CASE WHEN SUM(CASE WHEN spans.StatusCode = 'ERROR' THEN 1 ELSE 0 END) > 0 THEN 'ERROR'
+			     WHEN SUM(CASE WHEN spans.StatusCode = 'OK' THEN 1 ELSE 0 END) > 0 THEN 'OK'
+			     ELSE 'UNSET' END as Status
+		FROM spans
+		` + joinMatching + `
+		GROUP BY spans.TraceId
+		ORDER BY StartTime DESC
+	`
+	query, queryArgs := appendLimitOffset(query, append([]interface{}{}, args...), limit, offset)
+
+	rows, err := s.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
-		return nil, 0, fmt.Errorf("querying non-codex traces: %w", err)
+		return nil, 0, fmt.Errorf("querying traces: %w", err)
 	}
 	defer rows.Close()
 
 	var traces []api.TraceOverview
 	for rows.Next() {
 		var t api.TraceOverview
-		if err := rows.Scan(&t.TraceID, &t.RootSpan, &t.ServiceName, &t.StartTime, &t.Duration, &t.SpanCount, &t.Status); err != nil {
+		if err := rows.Scan(&t.ID, &t.Kind, &t.TraceID, &t.RootSpanID, &t.RootSpan, &t.ServiceName, &t.StartTime, &t.Duration, &t.SpanCount, &t.Status); err != nil {
 			return nil, 0, fmt.Errorf("scanning trace: %w", err)
 		}
 		traces = append(traces, t)
 	}
-
-	// Count query
-	var countArgs []interface{}
-	countArgs = append(countArgs, fromStr, toStr)
-	if service != "" && service != codexService {
-		countArgs = append(countArgs, service)
-	}
-	if search != "" {
-		pattern := "%" + search + "%"
-		countArgs = append(countArgs, pattern, pattern, pattern, pattern)
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterating traces: %w", err)
 	}
 
-	countQuery := `SELECT COUNT(DISTINCT TraceId) FROM otel_traces WHERE ` + timeFilter + serviceFilter + searchFilter
-	var count int
-	if err := s.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&count); err != nil {
-		return nil, 0, fmt.Errorf("counting non-codex traces: %w", err)
-	}
-
-	return traces, count, nil
-}
-
-// queryCodexVirtualTraces queries Codex CLI "virtual traces" - first-level spans treated as trace roots
-func (s *DuckDBStore) queryCodexVirtualTraces(ctx context.Context, search string, from, to time.Time, limit, offset int) ([]api.TraceOverview, int, error) {
-	const codexService = "codex_cli_rs"
-
-	// Format times as strings to avoid timezone issues with DuckDB's TIMESTAMP type
-	fromStr := formatTimeForDB(from)
-	toStr := formatTimeForDB(to)
-
-	// First, check if there are any Codex spans at all
-	var codexCount int
-	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM otel_traces WHERE ServiceName = ?`,
-		codexService).Scan(&codexCount)
-	if err != nil || codexCount == 0 {
-		return nil, 0, nil // No Codex spans, return empty
-	}
-
-	searchFilter := ""
-	searchArgs := []interface{}{}
-	if search != "" {
-		searchFilter = " AND (SpanName ILIKE ? OR StatusMessage ILIKE ? OR CAST(SpanAttributes AS VARCHAR) ILIKE ?)"
-		pattern := "%" + search + "%"
-		searchArgs = append(searchArgs, pattern, pattern, pattern)
-	}
-
-	// Query first-level spans (those whose parent doesn't exist)
-	// Use string interpolation for service name since it's a constant
-	query := `
-		SELECT
-			t.SpanId as TraceId,
-			t.SpanName as RootSpan,
-			t.ServiceName,
-			t.Timestamp as StartTime,
-			t.Duration,
-			1 as SpanCount,
-			COALESCE(t.StatusCode, 'UNSET') as Status
-		FROM otel_traces t
-		WHERE t.ServiceName = '` + codexService + `'
-		  AND t.Timestamp >= ?::TIMESTAMP AND t.Timestamp <= ?::TIMESTAMP
-		  AND NOT EXISTS (
-			SELECT 1 FROM otel_traces p
-			WHERE p.SpanId = t.ParentSpanId AND p.ServiceName = '` + codexService + `'
-		  )
-		` + searchFilter + `
-		ORDER BY t.Timestamp DESC
-		LIMIT ? OFFSET ?
-	`
-
-	var args []interface{}
-	args = append(args, fromStr, toStr)
-	args = append(args, searchArgs...)
-	args = append(args, limit+offset, 0)
-
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		// Log the error but don't fail - just return empty results
-		fmt.Printf("Warning: Codex query failed: %v\n", err)
-		return nil, 0, nil
-	}
-	defer rows.Close()
-
-	var traces []api.TraceOverview
-	for rows.Next() {
-		var t api.TraceOverview
-		if err := rows.Scan(&t.TraceID, &t.RootSpan, &t.ServiceName, &t.StartTime, &t.Duration, &t.SpanCount, &t.Status); err != nil {
-			return nil, 0, fmt.Errorf("scanning codex trace: %w", err)
-		}
-		traces = append(traces, t)
-	}
-
-	// Get accurate span counts for each trace
-	for i := range traces {
-		var count int
-		err := s.db.QueryRowContext(ctx, `
-			WITH RECURSIVE subtree AS (
-				SELECT SpanId FROM otel_traces WHERE SpanId = ?
-				UNION ALL
-				SELECT t.SpanId FROM otel_traces t
-				JOIN subtree s ON t.ParentSpanId = s.SpanId
-				WHERE t.ServiceName = '`+codexService+`'
-			)
-			SELECT COUNT(*) FROM subtree
-		`, traces[i].TraceID).Scan(&count)
-		if err == nil {
-			traces[i].SpanCount = count
-		}
-	}
-
-	// Count total first-level spans
-	countQuery := `
-		SELECT COUNT(*) FROM otel_traces t
-		WHERE t.ServiceName = '` + codexService + `'
-		  AND t.Timestamp >= ?::TIMESTAMP AND t.Timestamp <= ?::TIMESTAMP
-		  AND NOT EXISTS (
-			SELECT 1 FROM otel_traces p
-			WHERE p.SpanId = t.ParentSpanId AND p.ServiceName = '` + codexService + `'
-		  )
-		` + searchFilter
-
-	var countArgs []interface{}
-	countArgs = append(countArgs, fromStr, toStr)
-	countArgs = append(countArgs, searchArgs...)
-
-	var count int
-	if err := s.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&count); err != nil {
-		// Return what we have without count
+	if !includeCount {
 		return traces, len(traces), nil
 	}
 
+	countQuery := baseQuery + `
+		SELECT COUNT(DISTINCT spans.TraceId)
+		FROM spans
+		` + joinMatching + `
+	`
+	var count int
+	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&count); err != nil {
+		return nil, 0, fmt.Errorf("counting traces: %w", err)
+	}
+
 	return traces, count, nil
 }
 
-// sortTracesByStartTime sorts traces by StartTime in descending order
-func sortTracesByStartTime(traces []api.TraceOverview) {
-	for i := 0; i < len(traces)-1; i++ {
-		for j := i + 1; j < len(traces); j++ {
-			if traces[j].StartTime.After(traces[i].StartTime) {
-				traces[i], traces[j] = traces[j], traces[i]
-			}
-		}
+func codexTurnID(span api.Span) string {
+	if span.SpanAttributes == nil {
+		return ""
 	}
+	return strings.TrimSpace(span.SpanAttributes[codexTurnIDAttribute])
 }
 
-func (s *DuckDBStore) GetTraceSpans(ctx context.Context, traceID string) ([]api.Span, error) {
+func collectCodexOperationSpans(root api.Span, traceSpans []api.Span, children map[string][]api.Span) []api.Span {
+	turnID := codexTurnID(root)
+	if turnID == "" {
+		return collectCodexSubtree(root, children)
+	}
+
+	var grouped []api.Span
+	visited := make(map[string]bool)
+
+	var visit func(api.Span)
+	visit = func(span api.Span) {
+		if visited[span.SpanID] {
+			return
+		}
+		visited[span.SpanID] = true
+		grouped = append(grouped, span)
+		for _, child := range children[span.SpanID] {
+			visit(child)
+		}
+	}
+
+	for _, span := range traceSpans {
+		if span.TraceID == root.TraceID && codexTurnID(span) == turnID {
+			visit(span)
+		}
+	}
+	if len(grouped) == 0 {
+		visit(root)
+	}
+
+	sort.Slice(grouped, func(i, j int) bool {
+		return grouped[i].Timestamp.Before(grouped[j].Timestamp)
+	})
+	return grouped
+}
+
+func collectCodexSubtree(root api.Span, children map[string][]api.Span) []api.Span {
+	var subtree []api.Span
+	visited := make(map[string]bool)
+
+	var visit func(api.Span)
+	visit = func(span api.Span) {
+		if visited[span.SpanID] {
+			return
+		}
+		visited[span.SpanID] = true
+		subtree = append(subtree, span)
+		for _, child := range children[span.SpanID] {
+			visit(child)
+		}
+	}
+
+	visit(root)
+	sort.Slice(subtree, func(i, j int) bool {
+		return subtree[i].Timestamp.Before(subtree[j].Timestamp)
+	})
+	return subtree
+}
+
+func (s *DuckDBStore) GetTraceSpans(ctx context.Context, id, kind string) ([]api.Span, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	const codexService = "codex_cli_rs"
-
-	// Check if this is a Codex first-level span (virtual trace root)
-	// For Codex, the "traceID" is actually the SpanId of the first-level span
-	var isCodexSpan bool
-	err := s.db.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM otel_traces WHERE SpanId = ? AND ServiceName = ?)`,
-		traceID, codexService).Scan(&isCodexSpan)
-	if err != nil {
-		return nil, fmt.Errorf("checking codex span: %w", err)
+	switch kind {
+	case api.TraceKindCodexOperation:
+		return s.getCodexSpanSubtree(ctx, id)
+	case api.TraceKindOTelTrace:
+		return s.getOTelTraceSpans(ctx, id)
+	default:
+		return nil, fmt.Errorf("unsupported trace kind: %s", kind)
 	}
+}
 
-	if isCodexSpan {
-		// Use recursive CTE to get the span and all its descendants
-		return s.getCodexSpanSubtree(ctx, traceID)
-	}
-
-	// Standard query by TraceId for non-Codex services
+func (s *DuckDBStore) getOTelTraceSpans(ctx context.Context, traceID string) ([]api.Span, error) {
 	query := `
 		SELECT
 			Timestamp, TraceId, SpanId, ParentSpanId, TraceState,
@@ -406,37 +356,88 @@ func (s *DuckDBStore) GetTraceSpans(ctx context.Context, traceID string) ([]api.
 	return s.scanSpans(ctx, query, traceID)
 }
 
-// getCodexSpanSubtree returns a Codex span and all its descendants using recursive CTE
-func (s *DuckDBStore) getCodexSpanSubtree(ctx context.Context, rootSpanID string) ([]api.Span, error) {
-	const codexService = "codex_cli_rs"
-
+func (s *DuckDBStore) loadDedupedCodexTraceSpans(ctx context.Context, traceID string) ([]api.Span, error) {
 	query := `
-		WITH RECURSIVE subtree AS (
-			-- Base case: the root span
-			SELECT
-				Timestamp, TraceId, SpanId, ParentSpanId, TraceState,
-				SpanName, SpanKind, ServiceName, ResourceAttributes,
-				ScopeName, ScopeVersion, SpanAttributes, Duration,
-				StatusCode, StatusMessage
+		SELECT
+			Timestamp, TraceId, SpanId, ParentSpanId, TraceState,
+			SpanName, SpanKind, ServiceName, ResourceAttributes,
+			ScopeName, ScopeVersion, SpanAttributes, Duration,
+			StatusCode, StatusMessage
+		FROM (
+			SELECT *,
+				ROW_NUMBER() OVER (
+					PARTITION BY ServiceName, TraceId, SpanId
+					ORDER BY Timestamp DESC
+				) AS rn
 			FROM otel_traces
-			WHERE SpanId = ?
-
-			UNION ALL
-
-			-- Recursive case: children of spans in the subtree
-			SELECT
-				t.Timestamp, t.TraceId, t.SpanId, t.ParentSpanId, t.TraceState,
-				t.SpanName, t.SpanKind, t.ServiceName, t.ResourceAttributes,
-				t.ScopeName, t.ScopeVersion, t.SpanAttributes, t.Duration,
-				t.StatusCode, t.StatusMessage
-			FROM otel_traces t
-			JOIN subtree s ON t.ParentSpanId = s.SpanId
-			WHERE t.ServiceName = '` + codexService + `'
+			WHERE ServiceName = ? AND TraceId = ?
 		)
-		SELECT * FROM subtree ORDER BY Timestamp
+		WHERE rn = 1
+		ORDER BY Timestamp
 	`
 
-	return s.scanSpans(ctx, query, rootSpanID)
+	return s.scanSpans(ctx, query, codexServiceName, traceID)
+}
+
+func buildCodexChildren(spans []api.Span) map[string][]api.Span {
+	children := make(map[string][]api.Span)
+	for _, span := range spans {
+		if span.ParentSpanID == "" {
+			continue
+		}
+		children[span.ParentSpanID] = append(children[span.ParentSpanID], span)
+	}
+	for parentID := range children {
+		sort.Slice(children[parentID], func(i, j int) bool {
+			return children[parentID][i].Timestamp.Before(children[parentID][j].Timestamp)
+		})
+	}
+	return children
+}
+
+// getCodexSpanSubtree returns a Codex row root and its grouped descendant spans.
+func (s *DuckDBStore) getCodexSpanSubtree(ctx context.Context, rootSpanID string) ([]api.Span, error) {
+	var rootTraceID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT TraceId
+		FROM (
+			SELECT TraceId,
+				ROW_NUMBER() OVER (
+					PARTITION BY ServiceName, TraceId, SpanId
+					ORDER BY Timestamp DESC
+				) AS rn
+			FROM otel_traces
+			WHERE SpanId = ? AND ServiceName = ?
+		)
+		WHERE rn = 1
+		LIMIT 1
+	`, rootSpanID, codexServiceName).Scan(&rootTraceID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("finding codex operation root: %w", err)
+	}
+
+	traceSpans, err := s.loadDedupedCodexTraceSpans(ctx, rootTraceID)
+	if err != nil {
+		return nil, err
+	}
+
+	var root api.Span
+	rootFound := false
+	for _, span := range traceSpans {
+		if span.SpanID == rootSpanID {
+			root = span
+			rootFound = true
+			break
+		}
+	}
+	if !rootFound {
+		return nil, nil
+	}
+
+	return collectCodexOperationSpans(root, traceSpans, buildCodexChildren(traceSpans)), nil
 }
 
 // scanSpans executes a query and scans the results into api.Span slice
@@ -521,83 +522,50 @@ func (s *DuckDBStore) getServicesLocked(ctx context.Context) ([]string, error) {
 	return services, nil
 }
 
-func (s *DuckDBStore) GetRecentTraces(ctx context.Context, limit int) (*api.TracesResponse, error) {
+func (s *DuckDBStore) getServicesInRangeLocked(ctx context.Context, from, to time.Time) ([]string, error) {
+	fromStr := formatTimeForDB(from)
+	toStr := formatTimeForDB(to)
+
+	query := `
+		SELECT DISTINCT ServiceName
+		FROM (
+			SELECT ServiceName FROM otel_traces WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
+			UNION
+			SELECT ServiceName FROM otel_logs WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
+			UNION
+			SELECT ServiceName FROM otel_metrics WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
+		)
+		ORDER BY ServiceName
+	`
+
+	rows, err := s.db.QueryContext(ctx, query, fromStr, toStr, fromStr, toStr, fromStr, toStr)
+	if err != nil {
+		return nil, fmt.Errorf("querying services in range: %w", err)
+	}
+	defer rows.Close()
+
+	var services []string
+	for rows.Next() {
+		var service string
+		if err := rows.Scan(&service); err != nil {
+			return nil, fmt.Errorf("scanning service: %w", err)
+		}
+		services = append(services, service)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating services: %w", err)
+	}
+
+	return services, nil
+}
+
+func (s *DuckDBStore) GetRecentTraces(ctx context.Context, limit int, from, to time.Time) (*api.TracesResponse, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	const codexService = "codex_cli_rs"
-
-	// Query non-Codex traces
-	nonCodexQuery := `
-		SELECT
-			TraceId,
-			FIRST(SpanName ORDER BY Timestamp ASC) as RootSpan,
-			FIRST(ServiceName ORDER BY Timestamp ASC) as ServiceName,
-			MIN(Timestamp) as StartTime,
-			CAST((MAX(epoch_ms(Timestamp) + Duration/1000000) - MIN(epoch_ms(Timestamp))) * 1000000 AS BIGINT) as Duration,
-			COUNT(*) as SpanCount,
-			CASE WHEN SUM(CASE WHEN StatusCode = 'ERROR' THEN 1 ELSE 0 END) > 0 THEN 'ERROR'
-			     WHEN SUM(CASE WHEN StatusCode = 'OK' THEN 1 ELSE 0 END) > 0 THEN 'OK'
-			     ELSE 'UNSET' END as Status
-		FROM otel_traces
-		WHERE ServiceName != '` + codexService + `'
-		GROUP BY TraceId
-		ORDER BY StartTime DESC
-		LIMIT ?
-	`
-
-	rows, err := s.db.QueryContext(ctx, nonCodexQuery, limit)
+	traces, _, err := s.queryRawTraceOverviews(ctx, "", "", from, to, limit, 0, false)
 	if err != nil {
-		return nil, fmt.Errorf("querying recent non-codex traces: %w", err)
-	}
-
-	var traces []api.TraceOverview
-	for rows.Next() {
-		var t api.TraceOverview
-		if err := rows.Scan(&t.TraceID, &t.RootSpan, &t.ServiceName, &t.StartTime, &t.Duration, &t.SpanCount, &t.Status); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("scanning trace: %w", err)
-		}
-		traces = append(traces, t)
-	}
-	rows.Close()
-
-	// Query Codex virtual traces (first-level spans) - simplified query
-	codexQuery := `
-		SELECT
-			t.SpanId as TraceId,
-			t.SpanName as RootSpan,
-			t.ServiceName,
-			t.Timestamp as StartTime,
-			t.Duration,
-			1 as SpanCount,
-			COALESCE(t.StatusCode, 'UNSET') as Status
-		FROM otel_traces t
-		WHERE t.ServiceName = '` + codexService + `'
-		  AND NOT EXISTS (
-			SELECT 1 FROM otel_traces p
-			WHERE p.SpanId = t.ParentSpanId AND p.ServiceName = '` + codexService + `'
-		  )
-		ORDER BY t.Timestamp DESC
-		LIMIT ?
-	`
-
-	rows, err = s.db.QueryContext(ctx, codexQuery, limit)
-	if err == nil {
-		for rows.Next() {
-			var t api.TraceOverview
-			if err := rows.Scan(&t.TraceID, &t.RootSpan, &t.ServiceName, &t.StartTime, &t.Duration, &t.SpanCount, &t.Status); err != nil {
-				break
-			}
-			traces = append(traces, t)
-		}
-		rows.Close()
-	}
-
-	// Sort combined results and limit
-	sortTracesByStartTime(traces)
-	if len(traces) > limit {
-		traces = traces[:limit]
+		return nil, err
 	}
 
 	return &api.TracesResponse{
@@ -613,12 +581,10 @@ func (s *DuckDBStore) GetStats(ctx context.Context) (*api.StatsResponse, error) 
 
 	stats := &api.StatsResponse{}
 
-	// Combined query to get all counts in a single round-trip
-	// This reduces 5 queries to 1
 	statsQuery := `
 		SELECT
 			(SELECT COUNT(*) FROM otel_traces) as span_count,
-			(SELECT COUNT(DISTINCT TraceId) FROM otel_traces) as trace_count,
+			(SELECT COUNT(DISTINCT TraceId) FROM otel_traces) as raw_trace_count,
 			(SELECT COUNT(*) FROM otel_logs) as log_count,
 			(SELECT COUNT(*) FROM otel_metrics) as metric_count,
 			(SELECT COUNT(*) FROM otel_traces WHERE StatusCode = 'ERROR') as error_count
@@ -627,13 +593,16 @@ func (s *DuckDBStore) GetStats(ctx context.Context) (*api.StatsResponse, error) 
 	var errorCount int64
 	if err := s.db.QueryRowContext(ctx, statsQuery).Scan(
 		&stats.SpanCount,
-		&stats.TraceCount,
+		&stats.RawTraceCount,
 		&stats.LogCount,
 		&stats.MetricCount,
 		&errorCount,
 	); err != nil {
 		return nil, fmt.Errorf("getting stats: %w", err)
 	}
+
+	stats.TraceCount = stats.RawTraceCount
+	stats.CodexOperationCount = 0
 
 	// Get services (still needs separate query due to multiple rows)
 	services, err := s.getServicesLocked(ctx)

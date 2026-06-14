@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -262,7 +264,7 @@ func TestGetTraceSpans(t *testing.T) {
 	}
 	store.InsertSpans(ctx, spans)
 
-	traceSpans, err := store.GetTraceSpans(ctx, "trace-001")
+	traceSpans, err := store.GetTraceSpans(ctx, "trace-001", api.TraceKindOTelTrace)
 	if err != nil {
 		t.Fatalf("GetTraceSpans failed: %v", err)
 	}
@@ -276,13 +278,165 @@ func TestGetTraceSpans_NotFound(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	spans, err := store.GetTraceSpans(context.Background(), "nonexistent-trace")
+	spans, err := store.GetTraceSpans(context.Background(), "nonexistent-trace", api.TraceKindOTelTrace)
 	if err != nil {
 		t.Fatalf("GetTraceSpans failed: %v", err)
 	}
 
 	if len(spans) != 0 {
 		t.Errorf("expected 0 spans for nonexistent trace, got %d", len(spans))
+	}
+}
+
+func TestQueryTraces_CodexUsesRawTraceRows(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now()
+
+	spans := []api.Span{
+		{TraceID: "codex-trace", SpanID: "session-root", ServiceName: "codex_cli_rs", SpanName: "codex_session", Timestamp: now, Duration: int64(time.Minute), StatusCode: "OK"},
+		{TraceID: "codex-trace", SpanID: "turn-1", ParentSpanID: "session-root", ServiceName: "codex_cli_rs", SpanName: "run_turn", Timestamp: now.Add(time.Second), Duration: int64(10 * time.Second), StatusCode: "OK"},
+		{TraceID: "codex-trace", SpanID: "tool-1", ParentSpanID: "turn-1", ServiceName: "codex_cli_rs", SpanName: "tool_shell", Timestamp: now.Add(2 * time.Second), Duration: int64(20 * time.Second), StatusCode: "ERROR", SpanAttributes: map[string]string{"tool": "shell"}},
+		{TraceID: "codex-trace", SpanID: "turn-2", ParentSpanID: "session-root", ServiceName: "codex_cli_rs", SpanName: "run_turn", Timestamp: now.Add(30 * time.Second), Duration: int64(5 * time.Second), StatusCode: "OK"},
+	}
+	if err := store.InsertSpans(ctx, spans); err != nil {
+		t.Fatalf("InsertSpans failed: %v", err)
+	}
+
+	resp, err := store.QueryTraces(ctx, "codex_cli_rs", "", now.Add(-time.Minute), now.Add(time.Hour), 10, 0)
+	if err != nil {
+		t.Fatalf("QueryTraces failed: %v", err)
+	}
+
+	if resp.Total != 1 {
+		t.Fatalf("expected 1 raw codex trace, got %d", resp.Total)
+	}
+	if len(resp.Traces) != 1 {
+		t.Fatalf("expected 1 trace row, got %d", len(resp.Traces))
+	}
+
+	trace := resp.Traces[0]
+	if trace.Kind != api.TraceKindOTelTrace {
+		t.Errorf("expected raw trace kind, got %q", trace.Kind)
+	}
+	if trace.ID != "codex-trace" || trace.TraceID != "codex-trace" {
+		t.Errorf("expected codex trace id, got id=%q traceId=%q", trace.ID, trace.TraceID)
+	}
+	if trace.RootSpanID != "session-root" {
+		t.Errorf("expected session-root as raw trace root, got %q", trace.RootSpanID)
+	}
+	if trace.GroupLevel != "" {
+		t.Errorf("expected no codex group level for raw trace row, got %q", trace.GroupLevel)
+	}
+	if trace.SpanCount != 4 {
+		t.Errorf("expected raw codex trace to include 4 spans, got %d", trace.SpanCount)
+	}
+	if trace.Status != "ERROR" {
+		t.Errorf("expected raw codex trace aggregated status ERROR, got %q", trace.Status)
+	}
+
+	traceSpans, err := store.GetTraceSpans(ctx, "codex-trace", api.TraceKindOTelTrace)
+	if err != nil {
+		t.Fatalf("GetTraceSpans failed: %v", err)
+	}
+	if len(traceSpans) != 4 {
+		t.Errorf("expected 4 spans for raw codex trace, got %d", len(traceSpans))
+	}
+}
+
+func TestQueryTraces_CodexSearchReturnsRawTrace(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now()
+
+	spans := []api.Span{
+		{TraceID: "codex-trace", SpanID: "session-root", ServiceName: "codex_cli_rs", SpanName: "codex_session", Timestamp: now, Duration: int64(time.Minute)},
+		{TraceID: "codex-trace", SpanID: "turn-1", ParentSpanID: "session-root", ServiceName: "codex_cli_rs", SpanName: "run_turn", Timestamp: now.Add(time.Second)},
+		{TraceID: "codex-trace", SpanID: "child-1", ParentSpanID: "turn-1", ServiceName: "codex_cli_rs", SpanName: "tool_exec", Timestamp: now.Add(2 * time.Second), SpanAttributes: map[string]string{"command": "ripgrep"}},
+		{TraceID: "codex-trace", SpanID: "turn-2", ParentSpanID: "session-root", ServiceName: "codex_cli_rs", SpanName: "run_turn", Timestamp: now.Add(3 * time.Second)},
+	}
+	if err := store.InsertSpans(ctx, spans); err != nil {
+		t.Fatalf("InsertSpans failed: %v", err)
+	}
+
+	resp, err := store.QueryTraces(ctx, "codex_cli_rs", "ripgrep", now.Add(-time.Minute), now.Add(time.Hour), 10, 0)
+	if err != nil {
+		t.Fatalf("QueryTraces failed: %v", err)
+	}
+
+	if resp.Total != 1 {
+		t.Fatalf("expected 1 matching raw codex trace, got %d", resp.Total)
+	}
+	if resp.Traces[0].Kind != api.TraceKindOTelTrace {
+		t.Errorf("expected raw trace kind, got %q", resp.Traces[0].Kind)
+	}
+	if resp.Traces[0].RootSpanID != "session-root" {
+		t.Errorf("expected search to return raw trace root, got %q", resp.Traces[0].RootSpanID)
+	}
+}
+
+func TestQueryTraces_CodexSearchMatchesSpanInsideTimeRange(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now()
+
+	spans := []api.Span{
+		{TraceID: "codex-trace", SpanID: "session-root", ServiceName: "codex_cli_rs", SpanName: "codex_session", Timestamp: now.Add(-2 * time.Hour)},
+		{TraceID: "codex-trace", SpanID: "matching-child", ParentSpanID: "session-root", ServiceName: "codex_cli_rs", SpanName: "inside-window-hit", Timestamp: now},
+	}
+	if err := store.InsertSpans(ctx, spans); err != nil {
+		t.Fatalf("InsertSpans failed: %v", err)
+	}
+
+	resp, err := store.QueryTraces(ctx, "codex_cli_rs", "inside-window-hit", now.Add(-time.Minute), now.Add(time.Minute), 10, 0)
+	if err != nil {
+		t.Fatalf("QueryTraces failed: %v", err)
+	}
+
+	if resp.Total != 1 {
+		t.Fatalf("expected matching span in time range to return trace, got total %d", resp.Total)
+	}
+	if resp.Traces[0].RootSpanID != "matching-child" {
+		t.Errorf("expected visible in-range span to become page root, got %q", resp.Traces[0].RootSpanID)
+	}
+}
+
+func TestQueryTraces_MixedCodexAndNonCodexPagination(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now()
+
+	spans := []api.Span{
+		{TraceID: "regular-old", SpanID: "regular-old-root", ServiceName: "service-a", SpanName: "root", Timestamp: now.Add(time.Minute)},
+		{TraceID: "codex-trace", SpanID: "session-root", ServiceName: "codex_cli_rs", SpanName: "codex_session", Timestamp: now.Add(2 * time.Minute)},
+		{TraceID: "codex-trace", SpanID: "codex-middle", ParentSpanID: "session-root", ServiceName: "codex_cli_rs", SpanName: "run_turn", Timestamp: now.Add(3 * time.Minute)},
+		{TraceID: "regular-new", SpanID: "regular-new-root", ServiceName: "service-a", SpanName: "root", Timestamp: now.Add(4 * time.Minute)},
+	}
+	if err := store.InsertSpans(ctx, spans); err != nil {
+		t.Fatalf("InsertSpans failed: %v", err)
+	}
+
+	resp, err := store.QueryTraces(ctx, "", "", now.Add(-time.Minute), now.Add(time.Hour), 2, 1)
+	if err != nil {
+		t.Fatalf("QueryTraces failed: %v", err)
+	}
+
+	if resp.Total != 3 {
+		t.Fatalf("expected mixed total 3, got %d", resp.Total)
+	}
+	if len(resp.Traces) != 2 {
+		t.Fatalf("expected 2 mixed traces, got %d", len(resp.Traces))
+	}
+	if resp.Traces[0].RootSpanID != "session-root" || resp.Traces[1].RootSpanID != "regular-old-root" {
+		t.Errorf("expected mixed page session-root, regular-old-root; got %q, %q", resp.Traces[0].RootSpanID, resp.Traces[1].RootSpanID)
 	}
 }
 
@@ -653,6 +807,43 @@ func TestQueryMetrics_WithFilters(t *testing.T) {
 	}
 }
 
+func TestGetBreakdownValues_ValidatesAttributeKeys(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now()
+	value := 1.0
+	metrics := []api.MetricDataPoint{
+		{
+			Timestamp:   now,
+			ServiceName: "svc-a",
+			MetricName:  "token_usage",
+			MetricType:  "sum",
+			Value:       &value,
+			Attributes: map[string]string{
+				"gen_ai.token.type": "input",
+				"type":              "fallback",
+			},
+		},
+	}
+	if err := store.InsertMetrics(ctx, metrics); err != nil {
+		t.Fatalf("InsertMetrics failed: %v", err)
+	}
+
+	values, err := store.GetBreakdownValues(ctx, "token_usage", "gen_ai.token.type", "")
+	if err != nil {
+		t.Fatalf("GetBreakdownValues failed: %v", err)
+	}
+	if len(values) != 1 || values[0] != "input" {
+		t.Fatalf("expected dotted attribute value input, got %#v", values)
+	}
+
+	if _, err := store.GetBreakdownValues(ctx, "token_usage", "type') OR 1=1--", ""); !errors.Is(err, ErrInvalidAttributeKey) {
+		t.Fatalf("expected ErrInvalidAttributeKey, got %v", err)
+	}
+}
+
 func TestGetMetricNames(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
@@ -846,6 +1037,306 @@ func TestQueryMetricSeries_WithAggregation(t *testing.T) {
 	}
 }
 
+func TestQueryMetricSeries_AggregateRespectsTimeRange(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Minute)
+
+	metrics := []api.MetricDataPoint{
+		{Timestamp: now.Add(-2 * time.Hour), ServiceName: "svc-a", MetricName: "total_requests", MetricType: "sum", Value: ptrFloat64(10.0)},
+		{Timestamp: now.Add(-90 * time.Minute), ServiceName: "svc-a", MetricName: "total_requests", MetricType: "sum", Value: ptrFloat64(15.0)},
+		{Timestamp: now.Add(-30 * time.Second), ServiceName: "svc-a", MetricName: "total_requests", MetricType: "sum", Value: ptrFloat64(7.0)},
+	}
+	if err := store.InsertMetrics(ctx, metrics); err != nil {
+		t.Fatalf("InsertMetrics failed: %v", err)
+	}
+
+	resp, err := store.QueryMetricSeries(ctx, "total_requests", "", now.Add(-time.Minute), now, 60, true)
+	if err != nil {
+		t.Fatalf("QueryMetricSeries with aggregation failed: %v", err)
+	}
+
+	if len(resp.Series) != 1 {
+		t.Fatalf("expected 1 aggregated series, got %d", len(resp.Series))
+	}
+	if got := resp.Series[0].DataPoints[0][1]; got != 7.0 {
+		t.Errorf("expected timeframe aggregate 7, got %v", got)
+	}
+}
+
+func TestQueryBatchMetricSeries_AggregateRespectsTimeRange(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Minute)
+
+	metrics := []api.MetricDataPoint{
+		{Timestamp: now.Add(-2 * time.Hour), ServiceName: "svc-a", MetricName: "batch_total_requests", MetricType: "sum", Value: ptrFloat64(20.0)},
+		{Timestamp: now.Add(-90 * time.Minute), ServiceName: "svc-a", MetricName: "batch_total_requests", MetricType: "sum", Value: ptrFloat64(5.0)},
+		{Timestamp: now.Add(-30 * time.Second), ServiceName: "svc-a", MetricName: "batch_total_requests", MetricType: "sum", Value: ptrFloat64(3.0)},
+	}
+	if err := store.InsertMetrics(ctx, metrics); err != nil {
+		t.Fatalf("InsertMetrics failed: %v", err)
+	}
+
+	resp := store.QueryBatchMetricSeries(ctx, []api.MetricQuery{
+		{ID: "total", Name: "batch_total_requests", Aggregate: true},
+	}, now.Add(-time.Minute), now, 60)
+
+	if len(resp.Results) != 1 {
+		t.Fatalf("expected 1 batch result, got %d", len(resp.Results))
+	}
+	if !resp.Results[0].Success {
+		t.Fatalf("expected successful batch result, got %q", resp.Results[0].Error)
+	}
+	if len(resp.Results[0].Series) != 1 {
+		t.Fatalf("expected 1 aggregated series, got %d", len(resp.Results[0].Series))
+	}
+	if got := resp.Results[0].Series[0].DataPoints[0][1]; got != 3.0 {
+		t.Errorf("expected timeframe aggregate 3, got %v", got)
+	}
+}
+
+func TestQueryMetricSeries_CodexUsageSumsHistoricalCumulativeRows(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Minute)
+	cumulativeTemp := int32(2)
+	isMonotonic := true
+
+	metrics := []api.MetricDataPoint{
+		{
+			Timestamp:              now,
+			ServiceName:            "codex_cli_rs",
+			MetricName:             "codex_cli_rs.token.usage",
+			MetricType:             "sum",
+			Value:                  ptrFloat64(100),
+			AggregationTemporality: &cumulativeTemp,
+			IsMonotonic:            &isMonotonic,
+			Attributes:             map[string]string{"type": "input", "model": "gpt-5.5"},
+		},
+		{
+			Timestamp:              now.Add(10 * time.Second),
+			ServiceName:            "codex_cli_rs",
+			MetricName:             "codex_cli_rs.token.usage",
+			MetricType:             "sum",
+			Value:                  ptrFloat64(90),
+			AggregationTemporality: &cumulativeTemp,
+			IsMonotonic:            &isMonotonic,
+			Attributes:             map[string]string{"type": "input", "model": "gpt-5.5"},
+		},
+		{
+			Timestamp:              now.Add(20 * time.Second),
+			ServiceName:            "codex_cli_rs",
+			MetricName:             "codex_cli_rs.token.usage",
+			MetricType:             "sum",
+			Value:                  ptrFloat64(300),
+			AggregationTemporality: &cumulativeTemp,
+			IsMonotonic:            &isMonotonic,
+			Attributes:             map[string]string{"type": "input", "model": "gpt-5.5"},
+		},
+	}
+	if err := store.InsertMetrics(ctx, metrics); err != nil {
+		t.Fatalf("InsertMetrics failed: %v", err)
+	}
+
+	resp, err := store.QueryMetricSeries(ctx, "codex_cli_rs.token.usage", "", now.Add(-time.Minute), now.Add(time.Minute), 60, true)
+	if err != nil {
+		t.Fatalf("QueryMetricSeries failed: %v", err)
+	}
+
+	if len(resp.Series) != 1 {
+		t.Fatalf("expected 1 aggregated Codex series, got %d", len(resp.Series))
+	}
+	series := resp.Series[0]
+	if got := series.DataPoints[0][1]; got != 490 {
+		t.Errorf("expected Codex aggregate to sum historical cumulative rows to 490, got %v", got)
+	}
+	if series.Labels["type"] != "input" {
+		t.Errorf("expected type label input, got %q", series.Labels["type"])
+	}
+	if series.Labels["model"] != "gpt-5.5" {
+		t.Errorf("expected model label gpt-5.5, got %q", series.Labels["model"])
+	}
+}
+
+func TestQueryMetricSeries_CodexUsageBucketsSumHistoricalCumulativeRows(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Minute)
+	cumulativeTemp := int32(2)
+	isMonotonic := true
+
+	metrics := []api.MetricDataPoint{
+		{
+			Timestamp:              now.Add(5 * time.Second),
+			ServiceName:            "codex_cli_rs",
+			MetricName:             "codex_cli_rs.cost.usage",
+			MetricType:             "sum",
+			Value:                  ptrFloat64(0.20),
+			AggregationTemporality: &cumulativeTemp,
+			IsMonotonic:            &isMonotonic,
+			Attributes:             map[string]string{"model": "gpt-5.5"},
+		},
+		{
+			Timestamp:              now.Add(20 * time.Second),
+			ServiceName:            "codex_cli_rs",
+			MetricName:             "codex_cli_rs.cost.usage",
+			MetricType:             "sum",
+			Value:                  ptrFloat64(0.10),
+			AggregationTemporality: &cumulativeTemp,
+			IsMonotonic:            &isMonotonic,
+			Attributes:             map[string]string{"model": "gpt-5.5"},
+		},
+	}
+	if err := store.InsertMetrics(ctx, metrics); err != nil {
+		t.Fatalf("InsertMetrics failed: %v", err)
+	}
+
+	resp, err := store.QueryMetricSeries(ctx, "codex_cli_rs.cost.usage", "", now, now.Add(time.Minute), 60, false)
+	if err != nil {
+		t.Fatalf("QueryMetricSeries failed: %v", err)
+	}
+
+	if len(resp.Series) != 1 {
+		t.Fatalf("expected 1 Codex cost series, got %d", len(resp.Series))
+	}
+	if got := resp.Series[0].DataPoints[0][1]; !floatClose(got, 0.30) {
+		t.Errorf("expected Codex bucket to sum historical cumulative rows to 0.30, got %v", got)
+	}
+}
+
+func TestQueryBatchMetricSeries_CodexAggregatePreservesModelLabels(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Minute)
+	cumulativeTemp := int32(2)
+	isMonotonic := true
+
+	metrics := []api.MetricDataPoint{
+		{
+			Timestamp:              now,
+			ServiceName:            "codex_cli_rs",
+			MetricName:             "codex_cli_rs.cost.usage",
+			MetricType:             "sum",
+			Value:                  ptrFloat64(0.20),
+			AggregationTemporality: &cumulativeTemp,
+			IsMonotonic:            &isMonotonic,
+			Attributes:             map[string]string{"model": "gpt-5.5"},
+		},
+		{
+			Timestamp:              now.Add(10 * time.Second),
+			ServiceName:            "codex_cli_rs",
+			MetricName:             "codex_cli_rs.cost.usage",
+			MetricType:             "sum",
+			Value:                  ptrFloat64(0.10),
+			AggregationTemporality: &cumulativeTemp,
+			IsMonotonic:            &isMonotonic,
+			Attributes:             map[string]string{"model": "gpt-5.5"},
+		},
+		{
+			Timestamp:              now,
+			ServiceName:            "codex_cli_rs",
+			MetricName:             "codex_cli_rs.cost.usage",
+			MetricType:             "sum",
+			Value:                  ptrFloat64(0.05),
+			AggregationTemporality: &cumulativeTemp,
+			IsMonotonic:            &isMonotonic,
+			Attributes:             map[string]string{"model": "gpt-5-mini"},
+		},
+	}
+	if err := store.InsertMetrics(ctx, metrics); err != nil {
+		t.Fatalf("InsertMetrics failed: %v", err)
+	}
+
+	resp := store.QueryBatchMetricSeries(ctx, []api.MetricQuery{
+		{ID: "codex-cost", Name: "codex_cli_rs.cost.usage", Aggregate: true},
+	}, now.Add(-time.Minute), now.Add(time.Minute), 60)
+
+	if len(resp.Results) != 1 {
+		t.Fatalf("expected 1 batch result, got %d", len(resp.Results))
+	}
+	if !resp.Results[0].Success {
+		t.Fatalf("expected successful batch result, got %q", resp.Results[0].Error)
+	}
+
+	valuesByModel := make(map[string]float64)
+	for _, series := range resp.Results[0].Series {
+		valuesByModel[series.Labels["model"]] = series.DataPoints[0][1]
+	}
+
+	if got := valuesByModel["gpt-5.5"]; !floatClose(got, 0.30) {
+		t.Errorf("expected gpt-5.5 aggregate 0.30, got %v", got)
+	}
+	if got := valuesByModel["gpt-5-mini"]; got != 0.05 {
+		t.Errorf("expected gpt-5-mini aggregate 0.05, got %v", got)
+	}
+}
+
+func TestQueryMetricSeries_TrueCumulativeMetricStillUsesMaxMinusMin(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Minute)
+	cumulativeTemp := int32(2)
+	isMonotonic := true
+
+	metrics := []api.MetricDataPoint{
+		{
+			Timestamp:              now,
+			ServiceName:            "svc",
+			MetricName:             "true_cumulative_counter",
+			MetricType:             "sum",
+			Value:                  ptrFloat64(100),
+			AggregationTemporality: &cumulativeTemp,
+			IsMonotonic:            &isMonotonic,
+		},
+		{
+			Timestamp:              now.Add(10 * time.Second),
+			ServiceName:            "svc",
+			MetricName:             "true_cumulative_counter",
+			MetricType:             "sum",
+			Value:                  ptrFloat64(150),
+			AggregationTemporality: &cumulativeTemp,
+			IsMonotonic:            &isMonotonic,
+		},
+		{
+			Timestamp:              now.Add(20 * time.Second),
+			ServiceName:            "svc",
+			MetricName:             "true_cumulative_counter",
+			MetricType:             "sum",
+			Value:                  ptrFloat64(170),
+			AggregationTemporality: &cumulativeTemp,
+			IsMonotonic:            &isMonotonic,
+		},
+	}
+	if err := store.InsertMetrics(ctx, metrics); err != nil {
+		t.Fatalf("InsertMetrics failed: %v", err)
+	}
+
+	resp, err := store.QueryMetricSeries(ctx, "true_cumulative_counter", "", now.Add(-time.Minute), now.Add(time.Minute), 60, true)
+	if err != nil {
+		t.Fatalf("QueryMetricSeries failed: %v", err)
+	}
+
+	if len(resp.Series) != 1 {
+		t.Fatalf("expected 1 cumulative series, got %d", len(resp.Series))
+	}
+	if got := resp.Series[0].DataPoints[0][1]; got != 70 {
+		t.Errorf("expected true cumulative aggregate max-min 70, got %v", got)
+	}
+}
+
 func TestQueryMetricSeries_WithServiceFilter(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
@@ -926,7 +1417,7 @@ func TestGetLatestMetricValue(t *testing.T) {
 			MetricName:  "counter",
 			MetricType:  "sum",
 			Value:       ptrFloat64(150.0),
-			Attributes:  map[string]string{"region": "us-east"},
+			Attributes:  map[string]string{"region": "us-east", "gen_ai.token.type": "input"},
 		},
 	}
 	store.InsertMetrics(ctx, metrics)
@@ -939,6 +1430,19 @@ func TestGetLatestMetricValue(t *testing.T) {
 
 	if value != 150.0 {
 		t.Errorf("expected value 150.0, got %f", value)
+	}
+
+	value, found = store.GetLatestMetricValue(ctx, "counter", "test-service", map[string]string{"gen_ai.token.type": "input"})
+	if !found {
+		t.Fatal("expected to find latest metric value by dotted attribute")
+	}
+	if value != 150.0 {
+		t.Errorf("expected dotted attribute value 150.0, got %f", value)
+	}
+
+	value, found = store.GetLatestMetricValue(ctx, "counter", "test-service", map[string]string{"region') OR 1=1--": "us-east"})
+	if found {
+		t.Errorf("expected invalid attribute lookup to be ignored, got value %f", value)
 	}
 }
 
@@ -1023,7 +1527,7 @@ func TestGetRecentTraces(t *testing.T) {
 	}
 	store.InsertSpans(ctx, spans)
 
-	resp, err := store.GetRecentTraces(ctx, 10)
+	resp, err := store.GetRecentTraces(ctx, 10, now.Add(-time.Hour), now.Add(time.Hour))
 	if err != nil {
 		t.Fatalf("GetRecentTraces failed: %v", err)
 	}
@@ -1042,7 +1546,8 @@ func TestGetRecentTraces_Empty(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	resp, err := store.GetRecentTraces(context.Background(), 10)
+	now := time.Now()
+	resp, err := store.GetRecentTraces(context.Background(), 10, now.Add(-time.Hour), now.Add(time.Hour))
 	if err != nil {
 		t.Fatalf("GetRecentTraces failed: %v", err)
 	}
@@ -1074,7 +1579,7 @@ func TestGetRecentTraces_Limit(t *testing.T) {
 		store.InsertSpans(ctx, spans)
 	}
 
-	resp, err := store.GetRecentTraces(ctx, 3)
+	resp, err := store.GetRecentTraces(ctx, 3, now.Add(-time.Hour), now.Add(time.Hour))
 	if err != nil {
 		t.Fatalf("GetRecentTraces failed: %v", err)
 	}
@@ -1099,7 +1604,7 @@ func TestGetRecentTraces_ExcludesCodexService(t *testing.T) {
 	}
 	store.InsertSpans(ctx, spans)
 
-	resp, err := store.GetRecentTraces(ctx, 10)
+	resp, err := store.GetRecentTraces(ctx, 10, now.Add(-time.Hour), now.Add(time.Hour))
 	if err != nil {
 		t.Fatalf("GetRecentTraces failed: %v", err)
 	}
@@ -1108,6 +1613,104 @@ func TestGetRecentTraces_ExcludesCodexService(t *testing.T) {
 	// The exact behavior depends on implementation - just verify it doesn't error
 	if resp == nil {
 		t.Error("expected non-nil response")
+	}
+}
+
+func TestGetRecentTraces_IncludesCodexRawTraceRows(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now()
+
+	spans := []api.Span{
+		{TraceID: "codex-trace", SpanID: "session-root", ServiceName: "codex_cli_rs", SpanName: "codex_session", Timestamp: now},
+		{TraceID: "codex-trace", SpanID: "turn-1", ParentSpanID: "session-root", ServiceName: "codex_cli_rs", SpanName: "run_turn", Timestamp: now.Add(time.Second), StatusCode: "OK"},
+		{TraceID: "codex-trace", SpanID: "tool-1", ParentSpanID: "turn-1", ServiceName: "codex_cli_rs", SpanName: "tool", Timestamp: now.Add(2 * time.Second), StatusCode: "ERROR"},
+	}
+	if err := store.InsertSpans(ctx, spans); err != nil {
+		t.Fatalf("InsertSpans failed: %v", err)
+	}
+
+	resp, err := store.GetRecentTraces(ctx, 10, now.Add(-time.Hour), now.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("GetRecentTraces failed: %v", err)
+	}
+
+	if len(resp.Traces) != 1 {
+		t.Fatalf("expected 1 recent codex trace, got %d", len(resp.Traces))
+	}
+	if resp.Traces[0].Kind != api.TraceKindOTelTrace {
+		t.Errorf("expected raw trace kind, got %q", resp.Traces[0].Kind)
+	}
+	if resp.Traces[0].RootSpanID != "session-root" {
+		t.Errorf("expected session-root as root span, got %q", resp.Traces[0].RootSpanID)
+	}
+	if resp.Traces[0].SpanCount != 3 {
+		t.Errorf("expected raw span count 3, got %d", resp.Traces[0].SpanCount)
+	}
+	if resp.Traces[0].Status != "ERROR" {
+		t.Errorf("expected aggregated status ERROR, got %q", resp.Traces[0].Status)
+	}
+}
+
+func TestGetStats_CountsCodexAsRawTraces(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now()
+
+	spans := []api.Span{
+		{TraceID: "regular-trace", SpanID: "regular-root", ServiceName: "service-a", SpanName: "root", Timestamp: now},
+		{TraceID: "codex-trace", SpanID: "session-root", ServiceName: "codex_cli_rs", SpanName: "codex_session", Timestamp: now},
+		{TraceID: "codex-trace", SpanID: "turn-1", ParentSpanID: "session-root", ServiceName: "codex_cli_rs", SpanName: "run_turn", Timestamp: now.Add(time.Second)},
+		{TraceID: "codex-trace", SpanID: "turn-2", ParentSpanID: "session-root", ServiceName: "codex_cli_rs", SpanName: "run_turn", Timestamp: now.Add(2 * time.Second)},
+	}
+	if err := store.InsertSpans(ctx, spans); err != nil {
+		t.Fatalf("InsertSpans failed: %v", err)
+	}
+
+	stats, err := store.GetStats(ctx)
+	if err != nil {
+		t.Fatalf("GetStats failed: %v", err)
+	}
+
+	if stats.RawTraceCount != 2 {
+		t.Errorf("expected 2 raw traces, got %d", stats.RawTraceCount)
+	}
+	if stats.CodexOperationCount != 0 {
+		t.Errorf("expected no codex operation count, got %d", stats.CodexOperationCount)
+	}
+	if stats.TraceCount != 2 {
+		t.Errorf("expected 2 displayed raw traces, got %d", stats.TraceCount)
+	}
+}
+
+func TestInsertSpans_SkipsDuplicateSpanIdentity(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now()
+
+	span := api.Span{
+		TraceID:     "trace-1",
+		SpanID:      "span-1",
+		ServiceName: "service-a",
+		SpanName:    "root",
+		Timestamp:   now,
+	}
+	if err := store.InsertSpans(ctx, []api.Span{span, span}); err != nil {
+		t.Fatalf("InsertSpans failed: %v", err)
+	}
+
+	var count int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM otel_traces").Scan(&count); err != nil {
+		t.Fatalf("counting spans failed: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 stored span after duplicate insert, got %d", count)
 	}
 }
 
@@ -1141,4 +1744,8 @@ func TestGetMetricNames_WithServiceFilter(t *testing.T) {
 
 func ptrFloat64(v float64) *float64 {
 	return &v
+}
+
+func floatClose(a, b float64) bool {
+	return math.Abs(a-b) < 1e-9
 }

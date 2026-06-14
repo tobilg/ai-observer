@@ -36,7 +36,7 @@ func parseDeleteFlags(args []string) (*DeleteFlags, error) {
 	flags := &DeleteFlags{}
 	fs.StringVar(&flags.From, "from", "", "Start date (YYYY-MM-DD, required)")
 	fs.StringVar(&flags.To, "to", "", "End date (YYYY-MM-DD, required)")
-	fs.StringVar(&flags.Service, "service", "", "Filter by tool (claude-code, codex, gemini)")
+	fs.StringVar(&flags.Service, "service", "", "Filter by tool/service (claude-code, codex, gemini, copilot-chat, github-copilot)")
 	fs.BoolVar(&flags.Yes, "yes", false, "Skip confirmation prompts")
 
 	fs.Usage = func() {
@@ -107,7 +107,7 @@ func runDelete(args []string) error {
 	if serviceName != "" {
 		normalized := tools.NormalizeServiceName(serviceName)
 		if normalized == "" {
-			return fmt.Errorf("unknown tool/service: %s\nSupported tools: claude-code, codex, gemini", serviceName)
+			return fmt.Errorf("unknown tool/service: %s\nSupported tools/services: claude-code, codex, gemini, copilot-chat, github-copilot", serviceName)
 		}
 		serviceName = normalized
 	}

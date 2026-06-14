@@ -83,6 +83,11 @@ const indexTraces = `
 CREATE INDEX IF NOT EXISTS idx_traces_timestamp ON otel_traces(Timestamp);
 CREATE INDEX IF NOT EXISTS idx_traces_trace_id ON otel_traces(TraceId);
 CREATE INDEX IF NOT EXISTS idx_traces_service_name ON otel_traces(ServiceName);
+CREATE INDEX IF NOT EXISTS idx_traces_service_timestamp ON otel_traces(ServiceName, Timestamp);
+CREATE INDEX IF NOT EXISTS idx_traces_trace_timestamp ON otel_traces(TraceId, Timestamp);
+CREATE INDEX IF NOT EXISTS idx_traces_service_trace_span ON otel_traces(ServiceName, TraceId, SpanId);
+CREATE INDEX IF NOT EXISTS idx_traces_trace_span ON otel_traces(TraceId, SpanId);
+CREATE INDEX IF NOT EXISTS idx_traces_service_span_name ON otel_traces(ServiceName, SpanName);
 `
 
 const indexLogs = `
@@ -90,6 +95,9 @@ CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON otel_logs(Timestamp);
 CREATE INDEX IF NOT EXISTS idx_logs_severity ON otel_logs(SeverityNumber);
 CREATE INDEX IF NOT EXISTS idx_logs_trace_id ON otel_logs(TraceId);
 CREATE INDEX IF NOT EXISTS idx_logs_service_name ON otel_logs(ServiceName);
+CREATE INDEX IF NOT EXISTS idx_logs_service_timestamp ON otel_logs(ServiceName, Timestamp);
+CREATE INDEX IF NOT EXISTS idx_logs_trace_timestamp ON otel_logs(TraceId, Timestamp);
+CREATE INDEX IF NOT EXISTS idx_logs_severity_timestamp ON otel_logs(SeverityText, Timestamp);
 `
 
 const indexMetrics = `
@@ -97,6 +105,9 @@ CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON otel_metrics(Timestamp);
 CREATE INDEX IF NOT EXISTS idx_metrics_name ON otel_metrics(MetricName);
 CREATE INDEX IF NOT EXISTS idx_metrics_type ON otel_metrics(MetricType);
 CREATE INDEX IF NOT EXISTS idx_metrics_service_name ON otel_metrics(ServiceName);
+CREATE INDEX IF NOT EXISTS idx_metrics_name_service_timestamp ON otel_metrics(MetricName, ServiceName, Timestamp);
+CREATE INDEX IF NOT EXISTS idx_metrics_service_timestamp ON otel_metrics(ServiceName, Timestamp);
+CREATE INDEX IF NOT EXISTS idx_metrics_name_timestamp ON otel_metrics(MetricName, Timestamp);
 `
 
 const schemaDashboards = `

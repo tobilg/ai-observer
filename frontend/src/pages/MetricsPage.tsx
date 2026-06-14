@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { DateRangePicker } from '@/components/ui/date-range-picker'
 import { Layers, BarChart3 } from 'lucide-react'
 import { api } from '@/lib/api'
+import { isAbortError } from '@/lib/errors'
 import type { TimeSeries } from '@/types/metrics'
 import { MetricBarChart, CHART_COLORS } from '@/components/charts'
 import { useTelemetryStore } from '@/stores/telemetryStore'
@@ -29,6 +30,10 @@ import { formatIntervalSeconds } from '@/lib/utils'
 import { useTimeSelection } from '@/hooks/useTimeSelection'
 
 const TIME_SELECTION_STORAGE_KEY = 'ai-observer-metrics-timeselection'
+
+function isSharedGenAIMetric(metricName: string): boolean {
+  return metricName.startsWith('gen_ai.')
+}
 
 export function MetricsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -79,6 +84,7 @@ export function MetricsPage() {
     if (normalized.includes('claude')) return 'claude_code'
     if (normalized.includes('gemini')) return 'gemini_cli'
     if (normalized.includes('codex')) return 'codex_cli_rs'
+    if (normalized.includes('copilot')) return 'github_copilot'
     return null
   }, [])
 
@@ -106,7 +112,7 @@ export function MetricsPage() {
         const names = namesData.names ?? []
         setMetricNames(names)
       } catch (err) {
-        if (err instanceof Error && err.name === 'AbortError') {
+        if (isAbortError(err)) {
           return // Ignore abort errors
         }
         console.error('Failed to fetch metric names:', err)
@@ -128,6 +134,9 @@ export function MetricsPage() {
     // Check if current metric belongs to the selected service's source
     if (selectedMetric) {
       const meta = getMetricMetadata(selectedMetric)
+      if (isSharedGenAIMetric(selectedMetric) && (filterSource === 'gemini_cli' || filterSource === 'github_copilot')) {
+        return
+      }
       if (meta.source !== filterSource && meta.source !== 'unknown') {
         setSelectedMetric('')
       }
@@ -205,7 +214,7 @@ export function MetricsPage() {
         }, { signal: abortController.signal })
         setSeries(data.series ?? [])
       } catch (err) {
-        if (err instanceof Error && err.name === 'AbortError') {
+        if (isAbortError(err)) {
           return // Ignore abort errors
         }
         console.error('Failed to fetch metric series:', err)
@@ -233,6 +242,7 @@ export function MetricsPage() {
       claude_code: [],
       gemini_cli: [],
       codex_cli_rs: [],
+      github_copilot: [],
       unknown: [],
       other: [],
     }
@@ -243,7 +253,11 @@ export function MetricsPage() {
     // Start with catalog metrics (filtered by source if service selected)
     const allMetricNames = new Set<string>()
     for (const m of METRIC_CATALOG) {
-      if (!filterSource || m.source === filterSource) {
+      if (
+        !filterSource ||
+        m.source === filterSource ||
+        (isSharedGenAIMetric(m.name) && (filterSource === 'gemini_cli' || filterSource === 'github_copilot'))
+      ) {
         allMetricNames.add(m.name)
       }
     }
@@ -256,10 +270,11 @@ export function MetricsPage() {
     // Group by source
     for (const name of allMetricNames) {
       const meta = getMetricMetadata(name)
-      if (meta.source === 'unknown') {
+      const source = filterSource && isSharedGenAIMetric(name) ? filterSource : meta.source
+      if (source === 'unknown') {
         groups.other.push(name)
       } else {
-        groups[meta.source].push(name)
+        groups[source].push(name)
       }
     }
 
@@ -445,6 +460,13 @@ export function MetricsPage() {
                 {groupedMetrics.codex_cli_rs.length > 0 && (
                   <optgroup label={getSourceDisplayName('codex_cli_rs')}>
                     {groupedMetrics.codex_cli_rs.map((name) => (
+                      <option key={name} value={name}>{getMetricMetadata(name).displayName}</option>
+                    ))}
+                  </optgroup>
+                )}
+                {groupedMetrics.github_copilot.length > 0 && (
+                  <optgroup label={getSourceDisplayName('github_copilot')}>
+                    {groupedMetrics.github_copilot.map((name) => (
                       <option key={name} value={name}>{getMetricMetadata(name).displayName}</option>
                     ))}
                   </optgroup>

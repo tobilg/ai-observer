@@ -70,6 +70,8 @@ func TestParseSourceArg(t *testing.T) {
 		{"claude-code", SourceClaude, false},
 		{"codex", SourceCodex, false},
 		{"gemini", SourceGemini, false},
+		{"copilot-chat", SourceCopilotVSCode, false},
+		{"github-copilot", SourceCopilotCLI, false},
 		{"all", SourceAll, false},
 		{"CLAUDE-CODE", SourceClaude, false}, // case insensitive
 		{"invalid", "", true},
@@ -104,6 +106,8 @@ func TestOptionsServiceName(t *testing.T) {
 		{SourceClaude, "claude-code"},
 		{SourceCodex, "codex_cli_rs"},
 		{SourceGemini, "gemini_cli"},
+		{SourceCopilotVSCode, "copilot-chat"},
+		{SourceCopilotCLI, "github-copilot"},
 		{SourceAll, ""},
 	}
 
@@ -115,6 +119,16 @@ func TestOptionsServiceName(t *testing.T) {
 				t.Errorf("expected %q, got %q", tt.expected, result)
 			}
 		})
+	}
+}
+
+func TestRunFromFilesRejectsCopilot(t *testing.T) {
+	err := runFromFiles(context.Background(), Options{Source: SourceCopilotVSCode})
+	if err == nil {
+		t.Fatal("expected error for Copilot from-files export")
+	}
+	if err.Error() != "from-files export is not supported for copilot-chat because GitHub Copilot is OTLP-only" {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -380,15 +394,17 @@ func TestGetDateRange(t *testing.T) {
 
 func TestValidSources(t *testing.T) {
 	sources := ValidSources()
-	if len(sources) != 4 {
-		t.Errorf("expected 4 valid sources, got %d", len(sources))
+	if len(sources) != 6 {
+		t.Errorf("expected 6 valid sources, got %d", len(sources))
 	}
 
 	expected := map[string]bool{
-		"claude-code": true,
-		"codex":  true,
-		"gemini": true,
-		"all":    true,
+		"claude-code":    true,
+		"codex":          true,
+		"gemini":         true,
+		"copilot-chat":   true,
+		"github-copilot": true,
+		"all":            true,
 	}
 
 	for _, s := range sources {

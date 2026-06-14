@@ -48,3 +48,4 @@ data/*.duckdb.wal
 backend/internal/frontend/dist/
 
 .DS_Store
+.tmp

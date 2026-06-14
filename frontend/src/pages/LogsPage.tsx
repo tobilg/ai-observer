@@ -8,6 +8,7 @@ import { Select } from '@/components/ui/select'
 import { DateRangePicker } from '@/components/ui/date-range-picker'
 import { DataPagination } from '@/components/ui/data-pagination'
 import { api } from '@/lib/api'
+import { isAbortError } from '@/lib/errors'
 import { formatTimestamp, getSeverityColor, cn } from '@/lib/utils'
 import { getServiceDisplayName } from '@/lib/metricMetadata'
 import type { LogRecord } from '@/types/logs'
@@ -92,7 +93,7 @@ export function LogsPage() {
         setLogs(data.logs ?? [])
         setTotal(data.total ?? 0)
       } catch (err) {
-        if (err instanceof Error && err.name === 'AbortError') {
+        if (isAbortError(err)) {
           return // Ignore abort errors
         }
         console.error('Failed to fetch logs:', err)

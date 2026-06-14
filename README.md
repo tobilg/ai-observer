@@ -530,14 +530,16 @@ REST API for querying stored telemetry data. Unless otherwise specified, `from`/
 |--------|----------|-------------|
 | `GET` | `/api/traces` | List traces with filtering and pagination |
 | `GET` | `/api/traces/recent` | Get most recent traces |
-| `GET` | `/api/traces/{traceId}` | Get a specific trace |
-| `GET` | `/api/traces/{traceId}/spans` | Get all spans for a trace |
+| `GET` | `/api/traces/{id}?kind={kind}` | Get spans for a trace row |
+| `GET` | `/api/traces/{id}/spans?kind={kind}` | Get all spans for a trace row |
 
 **Query parameters for `/api/traces`:**
 - `service` — Filter by service name
 - `search` — Full-text search
 - `from`, `to` — Time range (ISO 8601)
 - `limit`, `offset` — Pagination
+
+Trace list rows include `id`, `kind`, `traceId`, and `rootSpanId`. For normal services, `kind` is `otel_trace` and `id` is the real OTLP trace ID. For Codex CLI, `kind` is `codex_operation`, `traceId` is the real session trace ID, and `id`/`rootSpanId` identify the operation root span.
 
 </details>
 
@@ -776,19 +778,19 @@ Codex CLI uses a **single trace per session**—all operations within a CLI sess
 ```
 TraceID (session-level)
 └── run_task
-    ├── run_turn (conversation turn 1)
-    │   ├── try_run_turn
+    ├── run_sampling_request / run_turn (agent turn 1)
+    │   ├── try_run_sampling_request / try_run_turn
     │   ├── receiving_stream
     │   │   ├── reasoning / function_call
     │   │   └── receiving
     │   └── ...
-    ├── run_turn (conversation turn 2)
+    ├── run_sampling_request / run_turn (agent turn 2)
     └── ...
 ```
 
 This means long CLI sessions produce traces with thousands of spans spanning hours, rather than many short traces.
 
-**AI Observer Trace Handling**: To improve usability, AI Observer treats each first-level child span (direct children of the session root) as a separate "virtual trace" in the dashboard. This splits long sessions into manageable units. However, since spans may arrive out of order, you may briefly see intermediate states where a span appears as its own trace before its parent arrives—once the parent span is received, the child automatically merges into the parent's trace on the next query refresh.
+**AI Observer Trace Handling**: To improve usability, AI Observer displays Codex sessions as turn-level operation rows in the trace list. Each row keeps the real Codex session `traceId`, uses the selected turn root `spanId` as its row `id`, and expands to the grouped turn spans. `run_sampling_request` spans are preferred for current Codex versions, with legacy fallbacks such as `run_turn` and `run_task`. When a `turn_id` attribute is available, same-turn sibling spans and their descendants are grouped into the same row. Search, duration, status, and span count are computed across the grouped turn.
 
 </details>
 

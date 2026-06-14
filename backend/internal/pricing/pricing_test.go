@@ -1,6 +1,7 @@
 package pricing
 
 import (
+	"math"
 	"testing"
 )
 
@@ -147,6 +148,148 @@ func TestGeminiPricingLoaded(t *testing.T) {
 	}
 }
 
+func TestCopilotPricingLoaded(t *testing.T) {
+	if registry.copilot == nil {
+		t.Fatal("GitHub Copilot provider not loaded")
+	}
+
+	models := []string{
+		"gpt-5.4",
+		"claude-sonnet-4.5",
+		"claude-haiku-4-5-20251001",
+		"gemini-3.1-pro",
+		"mai-code-1-flash",
+	}
+
+	for _, model := range models {
+		pricing := GetCopilotPricing(model)
+		if pricing == nil {
+			t.Errorf("GitHub Copilot model %q not found", model)
+			continue
+		}
+		if pricing.InputCostPerToken <= 0 {
+			t.Errorf("GitHub Copilot model %q has invalid input cost: %v", model, pricing.InputCostPerToken)
+		}
+		if pricing.OutputCostPerToken <= 0 {
+			t.Errorf("GitHub Copilot model %q has invalid output cost: %v", model, pricing.OutputCostPerToken)
+		}
+	}
+}
+
+func TestGitHubModelsCatalogLoaded(t *testing.T) {
+	catalog, err := loadGitHubModelsCatalog("data/github_models_catalog.json")
+	if err != nil {
+		t.Fatalf("Failed to load GitHub Models catalog: %v", err)
+	}
+	if catalog.Source != GitHubModelsCatalogURL {
+		t.Errorf("Expected catalog source %q, got %q", GitHubModelsCatalogURL, catalog.Source)
+	}
+	if catalog.APIVersion != GitHubModelsCatalogAPIVersion {
+		t.Errorf("Expected catalog API version %q, got %q", GitHubModelsCatalogAPIVersion, catalog.APIVersion)
+	}
+	if len(catalog.Models) != 37 {
+		t.Fatalf("Expected 37 GitHub Models catalog entries, got %d", len(catalog.Models))
+	}
+
+	for _, entry := range catalog.Models {
+		if aliases := GenerateGitHubModelAliases(entry); len(aliases) == 0 {
+			t.Errorf("Expected aliases for GitHub Models catalog entry %q", entry.ID)
+		}
+	}
+}
+
+func TestGenerateGitHubModelAliases(t *testing.T) {
+	tests := []struct {
+		name     string
+		entry    GitHubModelsCatalogEntry
+		expected []string
+	}{
+		{
+			name: "OpenAI dated model",
+			entry: GitHubModelsCatalogEntry{
+				ID:        "openai/gpt-4o-mini",
+				Name:      "OpenAI GPT-4o mini",
+				Publisher: "OpenAI",
+				Version:   "2024-07-18",
+			},
+			expected: []string{
+				"gpt-4o-mini",
+				"gpt-4o-mini-2024-07-18",
+				"gpt-4o-mini-20240718",
+				"openai-gpt-4o-mini",
+			},
+		},
+		{
+			name: "preview display name",
+			entry: GitHubModelsCatalogEntry{
+				ID:        "openai/gpt-5-chat",
+				Name:      "OpenAI gpt-5-chat (preview)",
+				Publisher: "OpenAI",
+				Version:   "2025-10-03",
+			},
+			expected: []string{
+				"gpt-5-chat",
+				"gpt-5-chat-preview",
+				"gpt-5-chat-2025-10-03",
+				"gpt-5-chat-20251003",
+			},
+		},
+		{
+			name: "numeric version",
+			entry: GitHubModelsCatalogEntry{
+				ID:        "microsoft/phi-4",
+				Name:      "Phi-4",
+				Publisher: "Microsoft",
+				Version:   "8",
+			},
+			expected: []string{
+				"phi-4",
+				"phi-4-8",
+				"phi-4-v8",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		aliases := GenerateGitHubModelAliases(tc.entry)
+		for _, expected := range tc.expected {
+			if !stringSliceContains(aliases, expected) {
+				t.Errorf("%s: expected alias %q in %v", tc.name, expected, aliases)
+			}
+		}
+	}
+}
+
+func TestCopilotGitHubModelsCatalogAliasLookup(t *testing.T) {
+	tests := []struct {
+		model    string
+		hasCost  bool
+		minInput float64
+	}{
+		{model: "openai/gpt-5-mini-2025-08-07", hasCost: true, minInput: 0.25 * mTokToToken},
+		{model: "gpt-4o-mini-2024-07-18", hasCost: true, minInput: 0.15 * mTokToToken},
+		{model: "OpenAI GPT-4o mini 20240718", hasCost: true, minInput: 0.15 * mTokToToken},
+		{model: "microsoft/phi-4-v8", hasCost: false},
+	}
+
+	for _, tc := range tests {
+		pricing := GetCopilotPricing(tc.model)
+		if !tc.hasCost {
+			if pricing != nil {
+				t.Errorf("Expected no Copilot pricing for %q, got %+v", tc.model, pricing)
+			}
+			continue
+		}
+		if pricing == nil {
+			t.Errorf("Expected Copilot pricing for %q", tc.model)
+			continue
+		}
+		if math.Abs(pricing.InputCostPerToken-tc.minInput) > 0.000000000001 {
+			t.Errorf("Expected input cost %v for %q, got %v", tc.minInput, tc.model, pricing.InputCostPerToken)
+		}
+	}
+}
+
 func TestCalculateClaudeCost(t *testing.T) {
 	usage := ClaudeTokenUsage{
 		InputTokens:              1000,
@@ -180,6 +323,43 @@ func TestCalculateCodexCost(t *testing.T) {
 	expected := 0.0061375
 	if *cost < expected*0.99 || *cost > expected*1.01 {
 		t.Errorf("Expected cost ~%v, got %v", expected, *cost)
+	}
+}
+
+func TestCalculateCopilotCost(t *testing.T) {
+	usage := CopilotTokenUsage{
+		InputTokens:     1000,
+		OutputTokens:    500,
+		CacheReadTokens: 100,
+	}
+
+	cost := CalculateCopilotCost("gpt-5-mini", usage)
+	if cost == nil {
+		t.Fatal("Failed to calculate GitHub Copilot cost")
+	}
+
+	// Expected: (1000-100) * 0.25e-6 + 100 * 0.025e-6 + 500 * 2e-6
+	expected := 0.0012275
+	if math.Abs(*cost-expected) > 0.0000001 {
+		t.Errorf("Expected cost %v, got %v", expected, *cost)
+	}
+}
+
+func TestCalculateCopilotCostLongContext(t *testing.T) {
+	usage := CopilotTokenUsage{
+		InputTokens:  300000,
+		OutputTokens: 1000,
+	}
+
+	cost := CalculateCopilotCost("gpt-5.4", usage)
+	if cost == nil {
+		t.Fatal("Failed to calculate GitHub Copilot long-context cost")
+	}
+
+	// Expected long-context rate: 300000 * 5e-6 + 1000 * 22.5e-6
+	expected := 1.5225
+	if math.Abs(*cost-expected) > 0.0000001 {
+		t.Errorf("Expected cost %v, got %v", expected, *cost)
 	}
 }
 
@@ -240,6 +420,28 @@ func TestNormalizeClaudeModel(t *testing.T) {
 		result := NormalizeClaudeModel(tc.input)
 		if result != tc.expected {
 			t.Errorf("NormalizeClaudeModel(%q) = %q, expected %q", tc.input, result, tc.expected)
+		}
+	}
+}
+
+func TestNormalizeCopilotModel(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"GPT-5.4", "gpt-5.4"},
+		{"OpenAI/GPT-5.4", "gpt-5.4"},
+		{"Claude Sonnet 4.5", "claude-sonnet-4.5"},
+		{"Claude Haiku 4.5 20251001", "claude-haiku-4.5-20251001"},
+		{"google/gemini_3.1_pro", "gemini-3.1-pro"},
+		{"mistral-ai/codestral_2501", "codestral-2501"},
+		{"deepseek/deepseek r1", "deepseek-r1"},
+	}
+
+	for _, tc := range tests {
+		result := NormalizeCopilotModel(tc.input)
+		if result != tc.expected {
+			t.Errorf("NormalizeCopilotModel(%q) = %q, expected %q", tc.input, result, tc.expected)
 		}
 	}
 }
@@ -347,4 +549,21 @@ func TestListModels(t *testing.T) {
 			t.Error("Gemini ListModels returned empty list")
 		}
 	}
+
+	// GitHub Copilot
+	if registry.copilot != nil {
+		models := registry.copilot.ListModels()
+		if len(models) == 0 {
+			t.Error("GitHub Copilot ListModels returned empty list")
+		}
+	}
+}
+
+func stringSliceContains(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }

@@ -12,6 +12,10 @@ import (
 	"github.com/tobilg/ai-observer/internal/logger"
 )
 
+func isCodexPerEventUsageMetric(metricName string) bool {
+	return metricName == "codex_cli_rs.token.usage" || metricName == "codex_cli_rs.cost.usage"
+}
+
 func (s *DuckDBStore) InsertMetrics(ctx context.Context, metrics []api.MetricDataPoint) error {
 	if len(metrics) == 0 {
 		return nil
@@ -146,7 +150,8 @@ func (s *DuckDBStore) QueryMetrics(ctx context.Context, service, metricName, met
 		return nil, fmt.Errorf("counting metrics: %w", err)
 	}
 
-	query += fmt.Sprintf(" ORDER BY Timestamp DESC LIMIT %d OFFSET %d", limit, offset)
+	query += " ORDER BY Timestamp DESC"
+	query, args = appendLimitOffset(query, args, limit, offset)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -261,15 +266,20 @@ func (s *DuckDBStore) GetBreakdownValues(ctx context.Context, metricName, attrib
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	attributePath, err := metricAttributeJSONPath(attribute)
+	if err != nil {
+		return nil, err
+	}
+
 	// Build query to get distinct values for the specified attribute
 	// Uses the MetricName index first, then extracts JSON attribute values
 	// Use json_extract_string for reliable JSON text extraction
 	query := fmt.Sprintf(`
-		SELECT DISTINCT json_extract_string(Attributes, '$.%s') as attr_value
+		SELECT DISTINCT json_extract_string(Attributes, '%s') as attr_value
 		FROM otel_metrics
 		WHERE MetricName = ?
-			AND json_extract_string(Attributes, '$.%s') IS NOT NULL
-	`, attribute, attribute)
+			AND json_extract_string(Attributes, '%s') IS NOT NULL
+	`, attributePath, attributePath)
 	args := []interface{}{metricName}
 
 	if service != "" {
@@ -304,6 +314,8 @@ func (s *DuckDBStore) QueryMetricSeries(ctx context.Context, metricName, service
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	intervalSeconds = normalizeIntervalSeconds(intervalSeconds)
+
 	// Format times as strings to avoid timezone issues with DuckDB's TIMESTAMP type
 	fromStr := formatTimeForDB(from)
 	toStr := formatTimeForDB(to)
@@ -326,7 +338,7 @@ func (s *DuckDBStore) QueryMetricSeries(ctx context.Context, metricName, service
 	}
 
 	// OTLP AggregationTemporality: 0=UNSPECIFIED, 1=DELTA, 2=CUMULATIVE
-	isCumulative := aggregationTemporality.Valid && aggregationTemporality.Int32 == 2
+	isCumulative := aggregationTemporality.Valid && aggregationTemporality.Int32 == 2 && !isCodexPerEventUsageMetric(metricName)
 
 	// Determine aggregation function based on metric type and mode
 	// Use COALESCE(Value, Sum) to handle both gauge/sum (Value) and histogram (Sum) metrics
@@ -385,7 +397,8 @@ func (s *DuckDBStore) QueryMetricSeries(ctx context.Context, metricName, service
 		query = fmt.Sprintf(`
 			SELECT
 				ServiceName,
-				COALESCE(Attributes->>'type', Attributes->>'gen_ai.token.type', 'default') as attr_type,
+				COALESCE(NULLIF(Attributes->>'type', ''), NULLIF(Attributes->>'gen_ai.token.type', ''), 'default') as attr_type,
+				COALESCE(NULLIF(Attributes->>'model', ''), 'default') as attr_model,
 				%s as agg_value
 			FROM otel_metrics
 			WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
@@ -398,7 +411,7 @@ func (s *DuckDBStore) QueryMetricSeries(ctx context.Context, metricName, service
 			args = append(args, service)
 		}
 
-		query += " GROUP BY ServiceName, attr_type"
+		query += " GROUP BY ServiceName, attr_type, attr_model"
 	} else {
 		// Construct interval string from seconds (e.g., "60 seconds")
 		intervalStr := fmt.Sprintf("%d seconds", intervalSeconds)
@@ -478,16 +491,20 @@ func (s *DuckDBStore) QueryMetricSeries(ctx context.Context, metricName, service
 		for rows.Next() {
 			var serviceName string
 			var attrType string
+			var attrModel string
 			var value float64
 
-			if err := rows.Scan(&serviceName, &attrType, &value); err != nil {
+			if err := rows.Scan(&serviceName, &attrType, &attrModel, &value); err != nil {
 				return nil, fmt.Errorf("scanning metric aggregate: %w", err)
 			}
 
-			key := serviceName + ":" + attrType
+			key := serviceName + ":" + attrType + ":" + attrModel
 			labels := map[string]string{"service": serviceName}
 			if attrType != "default" {
 				labels["type"] = attrType
+			}
+			if attrModel != "default" {
+				labels["model"] = attrModel
 			}
 			seriesMap[key] = &api.TimeSeries{
 				Name:       metricName,
@@ -552,6 +569,7 @@ func (s *DuckDBStore) QueryBatchMetricSeries(ctx context.Context, queries []api.
 	if len(queries) == 0 {
 		return &api.BatchMetricSeriesResponse{Results: []api.MetricQueryResult{}}
 	}
+	intervalSeconds = normalizeIntervalSeconds(intervalSeconds)
 
 	// Pre-fetch metric types for all unique metric names (batched)
 	metricTypes := s.batchGetMetricTypes(ctx, queries)
@@ -665,12 +683,14 @@ func (s *DuckDBStore) queryMetricSeriesInternal(ctx context.Context, metricName,
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	intervalSeconds = normalizeIntervalSeconds(intervalSeconds)
+
 	// Format times as strings to avoid timezone issues with DuckDB's TIMESTAMP type
 	fromStr := formatTimeForDB(from)
 	toStr := formatTimeForDB(to)
 
 	// OTLP AggregationTemporality: 0=UNSPECIFIED, 1=DELTA, 2=CUMULATIVE
-	isCumulative := typeInfo.aggregationTemporality.Valid && typeInfo.aggregationTemporality.Int32 == 2
+	isCumulative := typeInfo.aggregationTemporality.Valid && typeInfo.aggregationTemporality.Int32 == 2 && !isCodexPerEventUsageMetric(metricName)
 
 	// Determine aggregation function based on metric type and mode
 	// Use COALESCE(Value, Sum) to handle both gauge/sum (Value) and histogram (Sum) metrics
@@ -719,7 +739,8 @@ func (s *DuckDBStore) queryMetricSeriesInternal(ctx context.Context, metricName,
 		query = fmt.Sprintf(`
 			SELECT
 				ServiceName,
-				COALESCE(Attributes->>'type', Attributes->>'gen_ai.token.type', 'default') as attr_type,
+				COALESCE(NULLIF(Attributes->>'type', ''), NULLIF(Attributes->>'gen_ai.token.type', ''), 'default') as attr_type,
+				COALESCE(NULLIF(Attributes->>'model', ''), 'default') as attr_model,
 				%s as agg_value
 			FROM otel_metrics
 			WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
@@ -732,7 +753,7 @@ func (s *DuckDBStore) queryMetricSeriesInternal(ctx context.Context, metricName,
 			args = append(args, service)
 		}
 
-		query += " GROUP BY ServiceName, attr_type"
+		query += " GROUP BY ServiceName, attr_type, attr_model"
 	} else {
 		// Construct interval string from seconds (e.g., "60 seconds")
 		intervalStr := fmt.Sprintf("%d seconds", intervalSeconds)
@@ -811,16 +832,20 @@ func (s *DuckDBStore) queryMetricSeriesInternal(ctx context.Context, metricName,
 		for rows.Next() {
 			var serviceName string
 			var attrType string
+			var attrModel string
 			var value float64
 
-			if err := rows.Scan(&serviceName, &attrType, &value); err != nil {
+			if err := rows.Scan(&serviceName, &attrType, &attrModel, &value); err != nil {
 				return nil, fmt.Errorf("scanning metric aggregate: %w", err)
 			}
 
-			key := serviceName + ":" + attrType
+			key := serviceName + ":" + attrType + ":" + attrModel
 			labels := map[string]string{"service": serviceName}
 			if attrType != "default" {
 				labels["type"] = attrType
+			}
+			if attrModel != "default" {
+				labels["model"] = attrModel
 			}
 			seriesMap[key] = &api.TimeSeries{
 				Name:       metricName,
@@ -949,7 +974,12 @@ func (s *DuckDBStore) GetLatestMetricValue(ctx context.Context, metricName, serv
 
 	// Add attribute filters using json_extract_string for reliable extraction
 	for k, v := range attributes {
-		query += fmt.Sprintf(" AND CAST(json_extract_string(Attributes, '$.%s') AS VARCHAR) = ?", k)
+		attributePath, err := metricAttributeJSONPath(k)
+		if err != nil {
+			logger.Debug("GetLatestMetricValue: invalid attribute key", "metric", metricName, "service", serviceName, "attribute", k)
+			return 0, false
+		}
+		query += fmt.Sprintf(" AND CAST(json_extract_string(Attributes, '%s') AS VARCHAR) = ?", attributePath)
 		args = append(args, v)
 	}
 

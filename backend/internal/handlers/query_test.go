@@ -86,6 +86,41 @@ func TestGetStats(t *testing.T) {
 	}
 }
 
+func TestGetStatsIgnoresTimeRange(t *testing.T) {
+	h, cleanup := setupTestHandlers(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	if err := h.store.InsertSpans(ctx, []api.Span{{
+		TraceID:     "outside-request-range",
+		SpanID:      "span-1",
+		ServiceName: "svc",
+		SpanName:    "root",
+		Timestamp:   time.Now(),
+		StatusCode:  "OK",
+	}}); err != nil {
+		t.Fatalf("failed to insert test span: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/stats?from=2000-01-01T00:00:00Z&to=2000-01-02T00:00:00Z", nil)
+	rec := httptest.NewRecorder()
+
+	h.GetStats(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rec.Code)
+	}
+
+	var stats api.StatsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&stats); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if stats.TraceCount != 1 {
+		t.Errorf("expected all-time trace count 1, got %d", stats.TraceCount)
+	}
+}
+
 func TestListServices(t *testing.T) {
 	h, cleanup := setupTestHandlers(t)
 	defer cleanup()
@@ -161,7 +196,7 @@ func TestGetTrace(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/api/traces/"+tt.traceID, nil)
+			req := httptest.NewRequest(http.MethodGet, "/api/traces/"+tt.traceID+"?kind="+api.TraceKindOTelTrace, nil)
 			// Set up chi URL params
 			rctx := chi.NewRouteContext()
 			rctx.URLParams.Add("traceId", tt.traceID)
@@ -184,6 +219,23 @@ func TestGetTrace_MissingTraceID(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/traces/", nil)
 	// Empty route context (no traceId)
 	rctx := chi.NewRouteContext()
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	rec := httptest.NewRecorder()
+	h.GetTrace(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", rec.Code)
+	}
+}
+
+func TestGetTrace_MissingKind(t *testing.T) {
+	h, cleanup := setupTestHandlers(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/traces/trace-123", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("traceId", "trace-123")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rec := httptest.NewRecorder()
@@ -542,7 +594,9 @@ func TestGetBreakdownValues(t *testing.T) {
 		{"missing name parameter", "/api/metrics/breakdown-values?attribute=type", http.StatusBadRequest},
 		{"missing attribute parameter", "/api/metrics/breakdown-values?name=test_metric", http.StatusBadRequest},
 		{"valid parameters", "/api/metrics/breakdown-values?name=test_metric&attribute=type", http.StatusOK},
+		{"valid dotted attribute", "/api/metrics/breakdown-values?name=test_metric&attribute=gen_ai.token.type", http.StatusOK},
 		{"with optional service", "/api/metrics/breakdown-values?name=test_metric&attribute=type&service=test-service", http.StatusOK},
+		{"invalid attribute", "/api/metrics/breakdown-values?name=test_metric&attribute=type%27)%20OR%201%3D1--", http.StatusBadRequest},
 	}
 
 	for _, tt := range tests {

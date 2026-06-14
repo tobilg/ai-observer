@@ -34,7 +34,7 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
     content: [
       {
         type: 'paragraph',
-        text: 'AI Observer is a unified observability dashboard for monitoring AI coding assistants. It collects and displays telemetry data from Claude Code, Gemini CLI, and OpenAI Codex CLI, giving you real-time visibility into token usage, costs, API performance, and session activity.',
+        text: 'AI Observer is a unified observability dashboard for monitoring AI coding assistants. It collects and displays telemetry data from Claude Code, Gemini CLI, OpenAI Codex CLI, and GitHub Copilot, giving you real-time visibility into token usage, costs, API performance, and session activity.',
       },
       {
         type: 'heading',
@@ -345,7 +345,7 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       },
       {
         type: 'note',
-        text: 'Codex CLI traces: Codex CLI uses a single trace per session, so long sessions produce traces with many spans. AI Observer splits these into manageable units in the trace list.',
+        text: 'Codex CLI traces: Codex CLI can use a single trace for a long session. AI Observer shows Codex as raw OTLP trace rows in the trace list for consistent filtering and faster queries; open the trace detail to inspect every span in that session trace.',
       },
     ],
   },
@@ -389,6 +389,10 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       {
         type: 'note',
         text: 'Codex CLI metrics include: Token Usage, Cost (derived from log events)',
+      },
+      {
+        type: 'note',
+        text: 'GitHub Copilot metrics include: Sessions, Token Usage, Cost, Tool Calls, Agent Turns, Edit Outcomes, Lines of Code, and Cloud PR events',
       },
       {
         type: 'paragraph',
@@ -528,6 +532,7 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
     subsections: [
       { id: 'telemetry-claude', title: 'Claude Code' },
       { id: 'telemetry-gemini', title: 'Gemini CLI' },
+      { id: 'telemetry-copilot', title: 'GitHub Copilot' },
       { id: 'telemetry-codex', title: 'Codex CLI' },
     ],
     content: [
@@ -621,6 +626,53 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
             { cells: ['gemini_cli.api.request.count.delta', 'API Requests', 'API requests per interval'] },
             { cells: ['gemini_cli.file.operation.count.delta', 'File Operations', 'File operations per interval'] },
             { cells: ['gen_ai.client.token.usage.delta', 'GenAI Token Usage', 'Token consumption per interval'] },
+          ],
+        },
+      },
+      {
+        type: 'heading',
+        level: 3,
+        text: 'GitHub Copilot Metrics',
+      },
+      {
+        type: 'paragraph',
+        text: 'GitHub Copilot exports OTLP telemetry from the VS Code extension and CLI. AI Observer stores the raw OTLP data and derives token and cost metrics from chat spans.',
+      },
+      {
+        type: 'note',
+        text: 'Service names: copilot-chat identifies the GitHub Copilot VS Code Extension, and github-copilot identifies GitHub Copilot CLI. They remain separate services for filtering and stored telemetry, but the frontend groups their metrics under one GitHub Copilot provider family because they share the same metric catalog and pricing model.',
+      },
+      {
+        type: 'note',
+        text: 'Model aliases: Copilot cost derivation uses a snapshot of the GitHub Models catalog API to match emitted model IDs, display names, and dated versions such as gpt-4o-mini-2024-07-18. The catalog does not include prices, so AI Observer emits cost rows only when a catalog alias can be matched to known Copilot or source-provider pricing.',
+      },
+      {
+        type: 'table',
+        table: {
+          headers: ['Metric Name', 'Display Name', 'Unit', 'Description'],
+          rows: [
+            { cells: ['github_copilot.token.usage', 'Token Usage', 'tokens', 'Derived token usage by type and model'] },
+            { cells: ['github_copilot.cost.usage', 'Cost', 'USD', 'Estimated cost derived from token usage and model pricing'] },
+            { cells: ['gen_ai.client.operation.duration', 'GenAI Op Duration', 'seconds', 'Generic AI operation duration (OTel convention)'] },
+            { cells: ['gen_ai.client.token.usage', 'GenAI Token Usage', 'tokens', 'Generic AI token usage (OTel convention)'] },
+            { cells: ['copilot_chat.tool.call.count', 'Tool Calls', 'count', 'Number of Copilot tool calls'] },
+            { cells: ['copilot_chat.tool.call.duration', 'Tool Duration', 'seconds', 'Tool call execution time'] },
+            { cells: ['copilot_chat.agent.invocation.duration', 'Agent Invocation Duration', 'seconds', 'Agent invocation execution time'] },
+            { cells: ['copilot_chat.agent.turn.count', 'Agent Turns', 'count', 'Number of agent turns'] },
+            { cells: ['copilot_chat.session.count', 'Sessions', 'count', 'Number of Copilot chat sessions'] },
+            { cells: ['copilot_chat.time_to_first_token', 'Time to First Token', 'seconds', 'Time until the first response token'] },
+            { cells: ['copilot_chat.edit.acceptance.count', 'Edit Acceptance', 'count', 'Accepted or rejected edit count'] },
+            { cells: ['copilot_chat.chat_edit.outcome.count', 'Chat Edit Outcomes', 'count', 'Chat edit outcome count'] },
+            { cells: ['copilot_chat.lines_of_code.count', 'Lines of Code', 'count', 'Lines of code changed'] },
+            { cells: ['copilot_chat.edit.survival.four_gram', 'Edit Survival (Four-Gram)', 'ratio', 'Edit survival ratio using four-gram matching'] },
+            { cells: ['copilot_chat.edit.survival.no_revert', 'Edit Survival (No Revert)', 'ratio', 'Edit survival ratio based on non-reverted edits'] },
+            { cells: ['copilot_chat.user.action.count', 'User Actions', 'count', 'User action count'] },
+            { cells: ['copilot_chat.user.feedback.count', 'User Feedback', 'count', 'User feedback count'] },
+            { cells: ['copilot_chat.agent.edit_response.count', 'Agent Edit Responses', 'count', 'Agent edit response count'] },
+            { cells: ['copilot_chat.agent.summarization.count', 'Agent Summarizations', 'count', 'Agent summarization count'] },
+            { cells: ['copilot_chat.pull_request.count', 'Pull Requests', 'count', 'Pull request event count'] },
+            { cells: ['copilot_chat.cloud.session.count', 'Cloud Sessions', 'count', 'Cloud session count'] },
+            { cells: ['copilot_chat.cloud.pr_ready.count', 'Cloud PR Ready', 'count', 'Cloud pull requests marked ready'] },
           ],
         },
       },

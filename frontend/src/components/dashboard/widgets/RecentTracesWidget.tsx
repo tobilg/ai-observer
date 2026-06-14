@@ -11,11 +11,22 @@ interface RecentTracesWidgetProps {
   traces: TraceOverview[]
 }
 
+function getTraceKind(trace: TraceOverview) {
+  return trace.kind ?? 'otel_trace'
+}
+
+function getTraceRequestId(trace: TraceOverview) {
+  if (getTraceKind(trace) === 'codex_operation') {
+    return trace.id || trace.rootSpanId || trace.traceId
+  }
+  return trace.traceId || trace.id || trace.rootSpanId
+}
+
 export function RecentTracesWidget({ title, traces }: RecentTracesWidgetProps) {
   const navigate = useNavigate()
 
-  const handleTraceClick = (traceId: string) => {
-    navigate(`/traces/${traceId}`)
+  const handleTraceClick = (trace: TraceOverview) => {
+    navigate(`/traces/${getTraceKind(trace)}/${getTraceRequestId(trace)}`)
   }
 
   return (
@@ -32,15 +43,15 @@ export function RecentTracesWidget({ title, traces }: RecentTracesWidgetProps) {
             {traces.length ? (
               traces.slice(0, 10).map((trace, i) => (
                 <div
-                  key={`${trace.traceId}-${i}`}
+                  key={`${trace.kind}-${trace.id}-${i}`}
                   className="flex items-center justify-between py-2 px-2 -mx-2 border-b last:border-0 cursor-pointer rounded-md hover:bg-accent transition-colors"
-                  onClick={() => handleTraceClick(trace.traceId)}
+                  onClick={() => handleTraceClick(trace)}
                   role="button"
                   tabIndex={0}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault()
-                      handleTraceClick(trace.traceId)
+                      handleTraceClick(trace)
                     }
                   }}
                 >

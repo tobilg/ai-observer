@@ -2,11 +2,23 @@ package api
 
 import "time"
 
-// Trace represents a trace overview for listing
+const (
+	TraceKindOTelTrace      = "otel_trace"
+	TraceKindCodexOperation = "codex_operation"
+
+	TraceGroupLevelCodexTurn      = "codex_turn"
+	TraceGroupLevelCodexOperation = "codex_operation"
+)
+
+// Trace represents a trace or derived trace-like overview for listing
 type TraceOverview struct {
+	ID          string    `json:"id"`
+	Kind        string    `json:"kind"`
 	TraceID     string    `json:"traceId"`
+	RootSpanID  string    `json:"rootSpanId"`
 	RootSpan    string    `json:"rootSpan"`
 	ServiceName string    `json:"serviceName"`
+	GroupLevel  string    `json:"groupLevel,omitempty"`
 	StartTime   time.Time `json:"startTime"`
 	Duration    int64     `json:"duration"`
 	SpanCount   int       `json:"spanCount"`
@@ -162,13 +174,15 @@ type MetricQueryResult struct {
 }
 
 type StatsResponse struct {
-	TraceCount   int64    `json:"traceCount"`
-	SpanCount    int64    `json:"spanCount"`
-	LogCount     int64    `json:"logCount"`
-	MetricCount  int64    `json:"metricCount"`
-	ServiceCount int      `json:"serviceCount"`
-	Services     []string `json:"services"`
-	ErrorRate    float64  `json:"errorRate"`
+	TraceCount          int64    `json:"traceCount"`
+	RawTraceCount       int64    `json:"rawTraceCount"`
+	CodexOperationCount int64    `json:"codexOperationCount"`
+	SpanCount           int64    `json:"spanCount"`
+	LogCount            int64    `json:"logCount"`
+	MetricCount         int64    `json:"metricCount"`
+	ServiceCount        int      `json:"serviceCount"`
+	Services            []string `json:"services"`
+	ErrorRate           float64  `json:"errorRate"`
 }
 
 type ServicesResponse struct {

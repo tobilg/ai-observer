@@ -84,3 +84,28 @@ func TestServiceNameFor(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeServiceName(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"claude-code", "claude-code"},
+		{"codex", "codex_cli_rs"},
+		{"codex_cli_rs", "codex_cli_rs"},
+		{"gemini", "gemini_cli"},
+		{"gemini_cli", "gemini_cli"},
+		{"copilot-chat", "copilot-chat"},
+		{"github-copilot", "github-copilot"},
+		{"invalid", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := NormalizeServiceName(tt.input)
+			if result != tt.expected {
+				t.Errorf("expected %q, got %q", tt.expected, result)
+			}
+		})
+	}
+}

@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from 'react'
 import { api } from '@/lib/api'
+import { isAbortError } from '@/lib/errors'
 import { useDashboardStore } from '@/stores/dashboardStore'
 import { WIDGET_TYPES, isAbsoluteTimeSelection } from '@/types/dashboard'
 import { useTelemetryStore } from '@/stores/telemetryStore'
@@ -131,7 +132,7 @@ export function MetricDataProvider({ children }: MetricDataProviderProps) {
         }
         setResults(newResults)
       } catch (error) {
-        if (error instanceof Error && error.name === 'AbortError') {
+        if (isAbortError(error)) {
           return
         }
         console.error('Failed to fetch batch metrics:', error)

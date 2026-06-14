@@ -35,7 +35,7 @@ function App() {
                   <TracesPage />
                 </ErrorBoundary>
               } />
-              <Route path="traces/:traceId" element={
+              <Route path="traces/:kind/:id" element={
                 <ErrorBoundary>
                   <TraceDetailPage />
                 </ErrorBoundary>

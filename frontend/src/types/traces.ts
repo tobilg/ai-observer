@@ -1,7 +1,14 @@
+export type TraceKind = 'otel_trace' | 'codex_operation'
+export type TraceGroupLevel = 'codex_turn' | 'codex_operation' | 'trace'
+
 export interface TraceOverview {
+  id: string
+  kind: TraceKind
   traceId: string
+  rootSpanId: string
   rootSpan: string
   serviceName: string
+  groupLevel?: TraceGroupLevel
   startTime: string
   duration: number
   spanCount: number

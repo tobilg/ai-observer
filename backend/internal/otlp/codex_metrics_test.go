@@ -36,6 +36,16 @@ func TestExtractCodexMetrics_ResponseCompleted(t *testing.T) {
 	tokenMetrics := make(map[string]float64)
 	var costMetric *float64
 	for _, m := range metrics {
+		if m.MetricType != "sum" {
+			t.Errorf("Expected Codex metric %s to use sum type, got %s", m.MetricName, m.MetricType)
+		}
+		if m.AggregationTemporality != nil {
+			t.Errorf("Expected Codex metric %s to be stored as per-event without temporality, got %d", m.MetricName, *m.AggregationTemporality)
+		}
+		if m.IsMonotonic != nil {
+			t.Errorf("Expected Codex metric %s to be stored as per-event without monotonic flag, got %v", m.MetricName, *m.IsMonotonic)
+		}
+
 		if m.MetricName == CodexTokenUsageMetric {
 			tokenType := m.Attributes["type"]
 			if m.Value != nil {

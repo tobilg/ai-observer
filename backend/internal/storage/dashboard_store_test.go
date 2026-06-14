@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"errors"
+	"path/filepath"
 	"testing"
 
 	"github.com/tobilg/ai-observer/internal/api"
@@ -438,6 +440,21 @@ func TestCreateWidget(t *testing.T) {
 	}
 }
 
+func TestCreateWidget_NonexistentDashboard(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	_, err := store.CreateWidget(ctx, "missing-dashboard", &api.CreateWidgetRequest{
+		WidgetType: "stats",
+		Title:      "Orphan Widget",
+	})
+	if !errors.Is(err, ErrDashboardNotFound) {
+		t.Fatalf("expected ErrDashboardNotFound, got %v", err)
+	}
+}
+
 func TestCreateWidget_DefaultSpans(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
@@ -516,6 +533,32 @@ func TestGetWidgetsForDashboard(t *testing.T) {
 	}
 }
 
+func TestGetDashboardWithWidgets_EmptyWidgetsReturnsEmptySlice(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	dashboard, err := store.CreateDashboard(ctx, &api.CreateDashboardRequest{Name: "Empty Dashboard"})
+	if err != nil {
+		t.Fatalf("failed to create dashboard: %v", err)
+	}
+
+	result, err := store.GetDashboardWithWidgets(ctx, dashboard.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected dashboard, got nil")
+	}
+	if result.Widgets == nil {
+		t.Fatal("expected empty widget slice, got nil")
+	}
+	if len(result.Widgets) != 0 {
+		t.Fatalf("expected 0 widgets, got %d", len(result.Widgets))
+	}
+}
+
 func TestUpdateWidget(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
@@ -575,6 +618,37 @@ func TestUpdateWidget(t *testing.T) {
 	}
 	if updated.Config.Service != "new-service" {
 		t.Errorf("expected service 'new-service', got %q", updated.Config.Service)
+	}
+}
+
+func TestUpdateWidget_WrongDashboard(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	dashboard, err := store.CreateDashboard(ctx, &api.CreateDashboardRequest{Name: "Widget Dashboard"})
+	if err != nil {
+		t.Fatalf("failed to create dashboard: %v", err)
+	}
+	otherDashboard, err := store.CreateDashboard(ctx, &api.CreateDashboardRequest{Name: "Other Dashboard"})
+	if err != nil {
+		t.Fatalf("failed to create other dashboard: %v", err)
+	}
+
+	widget, err := store.CreateWidget(ctx, dashboard.ID, &api.CreateWidgetRequest{
+		WidgetType: "stats",
+		Title:      "Original Title",
+	})
+	if err != nil {
+		t.Fatalf("failed to create widget: %v", err)
+	}
+
+	_, err = store.UpdateWidget(ctx, otherDashboard.ID, widget.ID, &api.UpdateWidgetRequest{
+		Title: "Wrong Dashboard",
+	})
+	if !errors.Is(err, ErrWidgetNotFound) {
+		t.Fatalf("expected ErrWidgetNotFound, got %v", err)
 	}
 }
 
@@ -640,6 +714,37 @@ func TestUpdateWidgetPositions(t *testing.T) {
 	}
 }
 
+func TestUpdateWidgetPositions_NotFound(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	dashboard, err := store.CreateDashboard(ctx, &api.CreateDashboardRequest{Name: "Widget Dashboard"})
+	if err != nil {
+		t.Fatalf("failed to create dashboard: %v", err)
+	}
+
+	err = store.UpdateWidgetPositions(ctx, dashboard.ID, []api.WidgetPosition{
+		{ID: "missing-widget", GridColumn: 1, GridRow: 1},
+	})
+	if !errors.Is(err, ErrWidgetNotFound) {
+		t.Fatalf("expected ErrWidgetNotFound, got %v", err)
+	}
+}
+
+func TestUpdateWidgetPositions_NonexistentDashboard(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	err := store.UpdateWidgetPositions(ctx, "missing-dashboard", []api.WidgetPosition{})
+	if !errors.Is(err, ErrDashboardNotFound) {
+		t.Fatalf("expected ErrDashboardNotFound, got %v", err)
+	}
+}
+
 func TestUpdateWidgetPositions_Empty(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
@@ -686,6 +791,76 @@ func TestDeleteWidget(t *testing.T) {
 	}
 	if len(widgets) != 0 {
 		t.Errorf("expected 0 widgets after delete, got %d", len(widgets))
+	}
+}
+
+func TestDashboardWidgetsPersistAfterReopen(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "dashboards.duckdb")
+
+	store, err := NewDuckDBStore(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+
+	dashboard, err := store.CreateDashboard(ctx, &api.CreateDashboardRequest{
+		Name:        "Persistent Dashboard",
+		Description: "Survives reopen",
+		IsDefault:   true,
+	})
+	if err != nil {
+		t.Fatalf("failed to create dashboard: %v", err)
+	}
+
+	createdWidget, err := store.CreateWidget(ctx, dashboard.ID, &api.CreateWidgetRequest{
+		WidgetType: "metric_chart",
+		Title:      "Persistent Widget",
+		GridColumn: 1,
+		GridRow:    2,
+		ColSpan:    2,
+		RowSpan:    1,
+		Config: api.WidgetConfig{
+			Service:    "copilot-chat",
+			MetricName: "github_copilot.token.usage",
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create widget: %v", err)
+	}
+
+	if err := store.Close(); err != nil {
+		t.Fatalf("failed to close store: %v", err)
+	}
+
+	reopened, err := NewDuckDBStore(dbPath)
+	if err != nil {
+		t.Fatalf("failed to reopen store: %v", err)
+	}
+	defer reopened.Close()
+
+	result, err := reopened.GetDashboardWithWidgets(ctx, dashboard.ID)
+	if err != nil {
+		t.Fatalf("failed to load dashboard after reopen: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected dashboard after reopen, got nil")
+	}
+	if len(result.Widgets) != 1 {
+		t.Fatalf("expected 1 widget after reopen, got %d", len(result.Widgets))
+	}
+
+	widget := result.Widgets[0]
+	if widget.ID != createdWidget.ID {
+		t.Errorf("expected widget ID %q, got %q", createdWidget.ID, widget.ID)
+	}
+	if widget.DashboardID != dashboard.ID {
+		t.Errorf("expected dashboard ID %q, got %q", dashboard.ID, widget.DashboardID)
+	}
+	if widget.Config.Service != "copilot-chat" {
+		t.Errorf("expected service copilot-chat, got %q", widget.Config.Service)
+	}
+	if widget.Config.MetricName != "github_copilot.token.usage" {
+		t.Errorf("expected metric github_copilot.token.usage, got %q", widget.Config.MetricName)
 	}
 }
 

@@ -325,6 +325,28 @@ func TestCreateWidget(t *testing.T) {
 	}
 }
 
+func TestCreateWidget_DashboardNotFound(t *testing.T) {
+	h, cleanup := setupTestHandlers(t)
+	defer cleanup()
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"widgetType": "stats",
+		"title":      "Missing Dashboard Widget",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/dashboards/missing-dashboard/widgets", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "missing-dashboard")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	rec := httptest.NewRecorder()
+	h.CreateWidget(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestDeleteWidget(t *testing.T) {
 	h, cleanup := setupTestHandlers(t)
 	defer cleanup()
@@ -343,6 +365,26 @@ func TestDeleteWidget(t *testing.T) {
 
 	if rec.Code != http.StatusNoContent {
 		t.Errorf("expected status 204, got %d", rec.Code)
+	}
+}
+
+func TestDeleteWidget_NotFound(t *testing.T) {
+	h, cleanup := setupTestHandlers(t)
+	defer cleanup()
+
+	dashboard := createTestDashboard(t, h, "Widget Dashboard")
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/dashboards/"+dashboard.ID+"/widgets/missing-widget", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", dashboard.ID)
+	rctx.URLParams.Add("widgetId", "missing-widget")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	rec := httptest.NewRecorder()
+	h.DeleteWidget(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -403,6 +445,53 @@ func TestUpdateWidgetPositions(t *testing.T) {
 				t.Errorf("expected status %d, got %d: %s", tt.wantStatus, rec.Code, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestUpdateWidgetPositions_NotFound(t *testing.T) {
+	h, cleanup := setupTestHandlers(t)
+	defer cleanup()
+
+	dashboard := createTestDashboard(t, h, "Widget Dashboard")
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"positions": []map[string]interface{}{
+			{"id": "missing-widget", "gridColumn": 1, "gridRow": 1},
+		},
+	})
+	req := httptest.NewRequest(http.MethodPut, "/api/dashboards/"+dashboard.ID+"/widgets/positions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", dashboard.ID)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	rec := httptest.NewRecorder()
+	h.UpdateWidgetPositions(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateWidget_NotFound(t *testing.T) {
+	h, cleanup := setupTestHandlers(t)
+	defer cleanup()
+
+	dashboard := createTestDashboard(t, h, "Widget Dashboard")
+
+	body, _ := json.Marshal(map[string]interface{}{"title": "Updated"})
+	req := httptest.NewRequest(http.MethodPut, "/api/dashboards/"+dashboard.ID+"/widgets/missing-widget", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", dashboard.ID)
+	rctx.URLParams.Add("widgetId", "missing-widget")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	rec := httptest.NewRecorder()
+	h.UpdateWidget(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

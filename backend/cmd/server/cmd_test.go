@@ -215,6 +215,15 @@ func TestPrintSetupInstructions(t *testing.T) {
 				"exporter",
 			},
 		},
+		{
+			"github-copilot",
+			[]string{
+				"GitHub Copilot Setup",
+				"github.copilot.chat.otel.enabled",
+				"github.copilot.chat.otel.captureContent",
+				"COPILOT_OTEL_CAPTURE_CONTENT",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -262,6 +271,13 @@ func TestRunSetup(t *testing.T) {
 		err := runSetup([]string{"codex"})
 		if err != nil {
 			t.Errorf("runSetup(codex) failed: %v", err)
+		}
+	})
+
+	t.Run("github-copilot", func(t *testing.T) {
+		err := runSetup([]string{"github-copilot"})
+		if err != nil {
+			t.Errorf("runSetup(github-copilot) failed: %v", err)
 		}
 	})
 

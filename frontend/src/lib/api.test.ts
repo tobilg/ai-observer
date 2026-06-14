@@ -25,6 +25,8 @@ describe('api', () => {
     it('fetches stats from /api/stats', async () => {
       const mockStats = {
         traceCount: 100,
+        rawTraceCount: 100,
+        codexOperationCount: 0,
         spanCount: 500,
         logCount: 200,
         metricCount: 1000,
@@ -106,9 +108,9 @@ describe('api', () => {
       const mockSpans = { spans: [] }
       mockFetchResponse(mockSpans)
 
-      const result = await api.getTrace('trace-123')
+      const result = await api.getTrace('trace-123', 'otel_trace')
 
-      expect(global.fetch).toHaveBeenCalledWith('/api/traces/trace-123', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+      expect(global.fetch).toHaveBeenCalledWith('/api/traces/trace-123?kind=otel_trace', expect.objectContaining({ signal: expect.any(AbortSignal) }))
       expect(result).toEqual(mockSpans)
     })
   })
@@ -118,9 +120,9 @@ describe('api', () => {
       const mockSpans = { spans: [] }
       mockFetchResponse(mockSpans)
 
-      const result = await api.getTraceSpans('trace-456')
+      const result = await api.getTraceSpans('trace-456', 'otel_trace')
 
-      expect(global.fetch).toHaveBeenCalledWith('/api/traces/trace-456/spans', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+      expect(global.fetch).toHaveBeenCalledWith('/api/traces/trace-456/spans?kind=otel_trace', expect.objectContaining({ signal: expect.any(AbortSignal) }))
       expect(result).toEqual(mockSpans)
     })
   })
@@ -291,6 +293,21 @@ describe('api', () => {
 
       expect(global.fetch).toHaveBeenCalledWith('/api/traces/recent?limit=25', expect.objectContaining({ signal: expect.any(AbortSignal) }))
       expect(result).toEqual(mockTraces)
+    })
+
+    it('fetches recent traces with time range', async () => {
+      const mockTraces = { traces: [], total: 0, hasMore: false }
+      mockFetchResponse(mockTraces)
+
+      await api.getRecentTraces(10, {
+        from: '2024-01-01T00:00:00Z',
+        to: '2024-01-02T00:00:00Z',
+      })
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        '/api/traces/recent?limit=10&from=2024-01-01T00%3A00%3A00Z&to=2024-01-02T00%3A00%3A00Z',
+        expect.objectContaining({ signal: expect.any(AbortSignal) })
+      )
     })
   })
 
@@ -563,7 +580,7 @@ describe('api', () => {
     it('throws on 404', async () => {
       mockFetchResponse({}, false, 404)
 
-      await expect(api.getTrace('non-existent')).rejects.toThrow(
+      await expect(api.getTrace('non-existent', 'otel_trace')).rejects.toThrow(
         'HTTP error! status: 404'
       )
     })

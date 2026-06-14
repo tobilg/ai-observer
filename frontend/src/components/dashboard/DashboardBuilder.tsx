@@ -10,6 +10,7 @@ import { DashboardToolbar } from './DashboardToolbar'
 import { AddWidgetPanel } from './AddWidgetPanel'
 import { MetricDataProvider } from '@/contexts/MetricDataContext'
 import { EditableText } from '@/components/ui/editable-text'
+import { isAbsoluteTimeSelection } from '@/types/dashboard'
 
 interface DashboardBuilderProps {
   dashboardId?: string
@@ -17,7 +18,19 @@ interface DashboardBuilderProps {
 
 export function DashboardBuilder({ dashboardId }: DashboardBuilderProps) {
   const navigate = useNavigate()
-  const { loading, error, dashboard, loadDefaultDashboard, loadDashboard, isEditMode, updateDashboardDetails } = useDashboardStore()
+  const {
+    loading,
+    error,
+    dashboard,
+    loadDefaultDashboard,
+    loadDashboard,
+    isEditMode,
+    updateDashboardDetails,
+    timeSelection,
+    fromTime,
+    toTime,
+    isAbsoluteRange,
+  } = useDashboardStore()
   const [stats, setStats] = useState<StatsResponse | null>(null)
   const [recentTraces, setRecentTraces] = useState<TraceOverview[]>([])
 
@@ -42,16 +55,36 @@ export function DashboardBuilder({ dashboardId }: DashboardBuilderProps) {
   // Fetch data function
   const fetchData = useCallback(async () => {
     try {
+      let fetchFrom: Date
+      let fetchTo: Date
+
+      if (isAbsoluteRange) {
+        fetchFrom = fromTime
+        fetchTo = toTime
+      } else {
+        const now = new Date()
+        const durationSeconds = isAbsoluteTimeSelection(timeSelection)
+          ? (toTime.getTime() - fromTime.getTime()) / 1000
+          : timeSelection.timeframe.durationSeconds
+        fetchFrom = new Date(now.getTime() - durationSeconds * 1000)
+        fetchTo = now
+      }
+
+      const timeParams = {
+        from: fetchFrom.toISOString(),
+        to: fetchTo.toISOString(),
+      }
+
       const [statsData, tracesData] = await Promise.all([
         api.getStats(),
-        api.getRecentTraces(10),
+        api.getRecentTraces(10, timeParams),
       ])
       setStats(statsData)
       setRecentTraces(tracesData.traces ?? [])
     } catch (err) {
       console.error('Failed to fetch data:', err)
     }
-  }, [])
+  }, [timeSelection, fromTime, toTime, isAbsoluteRange])
 
   // Initial fetch and polling
   useEffect(() => {

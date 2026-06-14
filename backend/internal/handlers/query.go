@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/tobilg/ai-observer/internal/api"
+	"github.com/tobilg/ai-observer/internal/storage"
 	"github.com/tobilg/ai-observer/internal/websocket"
 )
 
@@ -28,15 +30,25 @@ func (h *Handlers) QueryTraces(w http.ResponseWriter, r *http.Request) {
 	api.WriteJSON(w, http.StatusOK, resp)
 }
 
-// GetTrace handles GET /api/traces/{traceId}
+// GetTrace handles GET /api/traces/{id}
 func (h *Handlers) GetTrace(w http.ResponseWriter, r *http.Request) {
-	traceID := chi.URLParam(r, "traceId")
-	if traceID == "" {
-		api.WriteError(w, http.StatusBadRequest, "traceId is required")
+	id := chi.URLParam(r, "traceId")
+	if id == "" {
+		api.WriteError(w, http.StatusBadRequest, "trace id is required")
 		return
 	}
 
-	spans, err := h.store.GetTraceSpans(r.Context(), traceID)
+	kind := r.URL.Query().Get("kind")
+	if kind == "" {
+		api.WriteError(w, http.StatusBadRequest, "kind is required")
+		return
+	}
+	if kind != api.TraceKindOTelTrace && kind != api.TraceKindCodexOperation {
+		api.WriteError(w, http.StatusBadRequest, "unsupported trace kind")
+		return
+	}
+
+	spans, err := h.store.GetTraceSpans(r.Context(), id, kind)
 	if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -50,7 +62,7 @@ func (h *Handlers) GetTrace(w http.ResponseWriter, r *http.Request) {
 	api.WriteJSON(w, http.StatusOK, api.SpansResponse{Spans: spans})
 }
 
-// GetTraceSpans handles GET /api/traces/{traceId}/spans
+// GetTraceSpans handles GET /api/traces/{id}/spans?kind={kind}
 func (h *Handlers) GetTraceSpans(w http.ResponseWriter, r *http.Request) {
 	h.GetTrace(w, r) // Same implementation
 }
@@ -61,8 +73,9 @@ func (h *Handlers) QueryRecentTraces(w http.ResponseWriter, r *http.Request) {
 	if limit > 100 {
 		limit = 100
 	}
+	from, to := parseTimeRange(r)
 
-	resp, err := h.store.GetRecentTraces(r.Context(), limit)
+	resp, err := h.store.GetRecentTraces(r.Context(), limit, from, to)
 	if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -119,6 +132,10 @@ func (h *Handlers) GetBreakdownValues(w http.ResponseWriter, r *http.Request) {
 
 	values, err := h.store.GetBreakdownValues(r.Context(), metricName, attribute, service)
 	if err != nil {
+		if errors.Is(err, storage.ErrInvalidAttributeKey) {
+			api.WriteError(w, http.StatusBadRequest, "invalid attribute parameter")
+			return
+		}
 		api.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

@@ -1,0 +1,159 @@
+{
+  "provider": "github_copilot",
+  "lastUpdated": "2026-06-14T00:00:00Z",
+  "models": {
+    "gpt-5-mini": {
+      "aliases": ["gpt-5 mini"],
+      "inputCostPerMTok": 0.25,
+      "outputCostPerMTok": 2,
+      "cacheReadCostPerMTok": 0.025
+    },
+    "gpt-5.3-codex": {
+      "aliases": ["gpt-5.3 codex", "gpt-5-3-codex"],
+      "inputCostPerMTok": 1.75,
+      "outputCostPerMTok": 14,
+      "cacheReadCostPerMTok": 0.175
+    },
+    "gpt-5.4": {
+      "aliases": ["gpt-5-4"],
+      "inputCostPerMTok": 2.5,
+      "outputCostPerMTok": 15,
+      "cacheReadCostPerMTok": 0.25,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 5,
+        "outputCostPerMTok": 22.5,
+        "cacheReadCostPerMTok": 0.5
+      }
+    },
+    "gpt-5.4-mini": {
+      "aliases": ["gpt-5.4 mini", "gpt-5-4-mini"],
+      "inputCostPerMTok": 0.75,
+      "outputCostPerMTok": 4.5,
+      "cacheReadCostPerMTok": 0.075
+    },
+    "gpt-5.4-nano": {
+      "aliases": ["gpt-5.4 nano", "gpt-5-4-nano"],
+      "inputCostPerMTok": 0.2,
+      "outputCostPerMTok": 1.25,
+      "cacheReadCostPerMTok": 0.02
+    },
+    "gpt-5.5": {
+      "aliases": ["gpt-5-5"],
+      "inputCostPerMTok": 5,
+      "outputCostPerMTok": 30,
+      "cacheReadCostPerMTok": 0.5,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 10,
+        "outputCostPerMTok": 45,
+        "cacheReadCostPerMTok": 1
+      }
+    },
+    "claude-haiku-4.5": {
+      "aliases": ["claude haiku 4.5", "claude-haiku-4-5", "claude-haiku-4.5-20251001", "claude-haiku-4-5-20251001"],
+      "inputCostPerMTok": 1,
+      "outputCostPerMTok": 5,
+      "cacheReadCostPerMTok": 0.1,
+      "cacheWriteCostPerMTok": 1.25
+    },
+    "claude-sonnet-4": {
+      "aliases": ["claude sonnet 4"],
+      "inputCostPerMTok": 3,
+      "outputCostPerMTok": 15,
+      "cacheReadCostPerMTok": 0.3,
+      "cacheWriteCostPerMTok": 3.75
+    },
+    "claude-sonnet-4.5": {
+      "aliases": ["claude sonnet 4.5", "claude-sonnet-4-5"],
+      "inputCostPerMTok": 3,
+      "outputCostPerMTok": 15,
+      "cacheReadCostPerMTok": 0.3,
+      "cacheWriteCostPerMTok": 3.75
+    },
+    "claude-sonnet-4.6": {
+      "aliases": ["claude sonnet 4.6", "claude-sonnet-4-6"],
+      "inputCostPerMTok": 3,
+      "outputCostPerMTok": 15,
+      "cacheReadCostPerMTok": 0.3,
+      "cacheWriteCostPerMTok": 3.75
+    },
+    "claude-opus-4.5": {
+      "aliases": ["claude opus 4.5", "claude-opus-4-5"],
+      "inputCostPerMTok": 5,
+      "outputCostPerMTok": 25,
+      "cacheReadCostPerMTok": 0.5,
+      "cacheWriteCostPerMTok": 6.25
+    },
+    "claude-opus-4.6": {
+      "aliases": ["claude opus 4.6", "claude-opus-4-6"],
+      "inputCostPerMTok": 5,
+      "outputCostPerMTok": 25,
+      "cacheReadCostPerMTok": 0.5,
+      "cacheWriteCostPerMTok": 6.25
+    },
+    "claude-opus-4.7": {
+      "aliases": ["claude opus 4.7", "claude-opus-4-7"],
+      "inputCostPerMTok": 5,
+      "outputCostPerMTok": 25,
+      "cacheReadCostPerMTok": 0.5,
+      "cacheWriteCostPerMTok": 6.25
+    },
+    "claude-opus-4.8": {
+      "aliases": ["claude opus 4.8", "claude-opus-4-8"],
+      "inputCostPerMTok": 5,
+      "outputCostPerMTok": 25,
+      "cacheReadCostPerMTok": 0.5,
+      "cacheWriteCostPerMTok": 6.25
+    },
+    "claude-fable-5": {
+      "aliases": ["claude fable 5"],
+      "inputCostPerMTok": 10,
+      "outputCostPerMTok": 50,
+      "cacheReadCostPerMTok": 1,
+      "cacheWriteCostPerMTok": 12.5
+    },
+    "gemini-2.5-pro": {
+      "aliases": ["gemini 2.5 pro", "gemini-2-5-pro"],
+      "inputCostPerMTok": 1.25,
+      "outputCostPerMTok": 10,
+      "cacheReadCostPerMTok": 0.125
+    },
+    "gemini-3-flash": {
+      "aliases": ["gemini 3 flash", "gemini-3-flash-preview"],
+      "inputCostPerMTok": 0.5,
+      "outputCostPerMTok": 3,
+      "cacheReadCostPerMTok": 0.05
+    },
+    "gemini-3.1-pro": {
+      "aliases": ["gemini 3.1 pro", "gemini-3-1-pro", "gemini-3.1-pro-preview"],
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 12,
+      "cacheReadCostPerMTok": 0.2,
+      "longContext": {
+        "thresholdInputTokens": 200000,
+        "inputCostPerMTok": 4,
+        "outputCostPerMTok": 18,
+        "cacheReadCostPerMTok": 0.4
+      }
+    },
+    "gemini-3.5-flash": {
+      "aliases": ["gemini 3.5 flash", "gemini-3-5-flash"],
+      "inputCostPerMTok": 1.5,
+      "outputCostPerMTok": 9,
+      "cacheReadCostPerMTok": 0.15
+    },
+    "raptor-mini": {
+      "aliases": ["raptor mini"],
+      "inputCostPerMTok": 0.25,
+      "outputCostPerMTok": 2,
+      "cacheReadCostPerMTok": 0.025
+    },
+    "mai-code-1-flash": {
+      "aliases": ["mai-code-1-flash", "mai code 1 flash"],
+      "inputCostPerMTok": 0.75,
+      "outputCostPerMTok": 4.5,
+      "cacheReadCostPerMTok": 0.075
+    }
+  }
+}

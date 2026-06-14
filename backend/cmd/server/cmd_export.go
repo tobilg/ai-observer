@@ -49,12 +49,14 @@ func parseExportFlags(args []string) (*ExportFlags, error) {
 	fs.Usage = func() {
 		fmt.Print(`Export telemetry data to Parquet files
 
-Usage: ai-observer export [claude-code|codex|gemini|all] --output <directory> [options]
+Usage: ai-observer export [claude-code|codex|gemini|copilot-chat|github-copilot|all] --output <directory> [options]
 
 Arguments:
   claude-code  Export Claude Code data
   codex        Export Codex CLI data
   gemini       Export Gemini CLI data
+  copilot-chat Export GitHub Copilot VS Code Extension data
+  github-copilot Export GitHub Copilot CLI data
   all          Export all data
 
 Options:
@@ -77,7 +79,7 @@ func runExport(args []string) error {
 	}
 
 	if flags.Source == "" {
-		return fmt.Errorf("source argument is required\nUsage: ai-observer export [claude-code|codex|gemini|all] --output <directory>")
+		return fmt.Errorf("source argument is required\nUsage: ai-observer export [claude-code|codex|gemini|copilot-chat|github-copilot|all] --output <directory>")
 	}
 
 	if flags.Output == "" {

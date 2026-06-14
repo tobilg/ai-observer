@@ -1,7 +1,8 @@
-import type { TracesResponse, SpansResponse } from '@/types/traces'
+import type { TracesResponse, SpansResponse, TraceKind } from '@/types/traces'
 import type { MetricsResponse, TimeSeriesResponse, MetricNamesResponse, TimeSeries } from '@/types/metrics'
 import type { LogsResponse, LogLevelsResponse } from '@/types/logs'
 import type { SessionsResponse, TranscriptResponse } from '@/types/sessions'
+import { isAbortError } from '@/lib/errors'
 import type {
   Dashboard,
   DashboardWithWidgets,
@@ -116,6 +117,8 @@ export interface BatchMetricSeriesResponse {
 
 interface StatsResponse {
   traceCount: number
+  rawTraceCount: number
+  codexOperationCount: number
   spanCount: number
   logCount: number
   metricCount: number
@@ -187,7 +190,7 @@ async function fetchJSON<T>(url: string, options?: FetchOptions): Promise<T> {
       return response.json()
     } catch (error) {
       // Don't retry if aborted by user
-      if (error instanceof Error && error.name === 'AbortError') {
+      if (isAbortError(error)) {
         throw error
       }
 
@@ -235,8 +238,8 @@ function buildQueryString(params: Record<string, string | number | undefined>): 
 
 export const api = {
   // Stats
-  async getStats(): Promise<StatsResponse> {
-    return fetchJSON(`${API_BASE}/stats`)
+  async getStats(options?: FetchOptions): Promise<StatsResponse> {
+    return fetchJSON(`${API_BASE}/stats`, options)
   },
 
   // Services
@@ -257,16 +260,21 @@ export const api = {
     return fetchJSON(`${API_BASE}/traces${query}`, options)
   },
 
-  async getTrace(traceId: string, options?: FetchOptions): Promise<SpansResponse> {
-    return fetchJSON(`${API_BASE}/traces/${traceId}`, options)
+  async getTrace(id: string, kind: TraceKind, options?: FetchOptions): Promise<SpansResponse> {
+    return fetchJSON(`${API_BASE}/traces/${id}?kind=${kind}`, options)
   },
 
-  async getTraceSpans(traceId: string, options?: FetchOptions): Promise<SpansResponse> {
-    return fetchJSON(`${API_BASE}/traces/${traceId}/spans`, options)
+  async getTraceSpans(id: string, kind: TraceKind, options?: FetchOptions): Promise<SpansResponse> {
+    return fetchJSON(`${API_BASE}/traces/${id}/spans?kind=${kind}`, options)
   },
 
-  async getRecentTraces(limit: number = 10, options?: FetchOptions): Promise<TracesResponse> {
-    return fetchJSON(`${API_BASE}/traces/recent?limit=${limit}`, options)
+  async getRecentTraces(limit: number = 10, params: Pick<QueryParams, 'from' | 'to'> = {}, options?: FetchOptions): Promise<TracesResponse> {
+    const query = buildQueryString({
+      limit,
+      from: params.from,
+      to: params.to,
+    })
+    return fetchJSON(`${API_BASE}/traces/recent${query}`, options)
   },
 
   // Metrics
