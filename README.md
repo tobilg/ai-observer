@@ -2,7 +2,7 @@
 
 > Unified local observability for AI coding assistants
 
-**AI Observer** is a self-hosted, single-binary, OpenTelemetry-compatible observability backend designed specifically for monitoring local AI coding tools like Claude Code, Gemini CLI, and OpenAI Codex CLI.
+**AI Observer** is a self-hosted, single-binary, OpenTelemetry-compatible observability backend designed specifically for monitoring local AI coding tools like Claude Code, Gemini CLI, OpenAI Codex CLI, and GitHub Copilot.
 
 Track token usage, costs, API latency, error rates, and session activity across all your AI coding assistants in one unified dashboard—with real-time updates and zero external dependencies.
 
@@ -17,12 +17,12 @@ AI coding assistants are becoming essential development tools, but understanding
 
 ## Features
 
-- **Multi-tool support** — Works with Claude Code, Gemini CLI, and OpenAI Codex CLI
+- **Multi-tool support** — Works with Claude Code, Gemini CLI, OpenAI Codex CLI, and GitHub Copilot
 - **Real-time dashboard** — Live updates via WebSocket as telemetry arrives
-- **Customizable widgets** — Drag-and-drop dashboard builder with multiple widget types
-- **File watcher mode** — Watch local session files in real-time, no OTLP configuration needed
-- **Historical import** — Import past sessions from local JSONL/JSON files with cost calculation
-- **Cost tracking** — Embedded pricing data for 67+ models across Claude, Codex, and Gemini
+- **Persistent dashboards** — Drag-and-drop dashboard builder with saved widgets and multiple widget types
+- **File watcher mode** — Watch Claude, Codex, and Gemini session files in real-time, no OTLP configuration needed
+- **Historical import** — Import past Claude, Codex, and Gemini sessions from local JSONL/JSON files with cost calculation
+- **Cost tracking** — Embedded pricing data across Claude, Codex/OpenAI, Gemini, and GitHub Copilot model aliases
 - **Fast analytics** — DuckDB-powered storage for instant queries on large datasets
 - **Single binary** — One ~54MB executable with embedded frontend—no external dependencies
 - **Multi-arch Docker** — Ready-to-run ~97MB images for `linux/amd64` and `linux/arm64`
@@ -33,7 +33,7 @@ AI coding assistants are becoming essential development tools, but understanding
 - [Import Command](docs/import.md) — Import historical session data from local AI tool files
 - [Export Command](docs/export.md) — Export telemetry data to Parquet files for archiving and sharing
 - [Watch Command](#watch-command) — Watch local session files and import incrementally in real-time
-- [Pricing System](docs/pricing.md) — Cost calculation for Claude, Codex, and Gemini models
+- [Pricing System](docs/pricing.md) — Cost calculation for Claude, Codex/OpenAI, Gemini, and GitHub Copilot models
 
 ## Screenshots
 
@@ -160,7 +160,10 @@ ai-observer --version
 # Show setup instructions for Claude Code
 ai-observer setup claude-code
 
-# Import data from all AI tools
+# Show setup instructions for GitHub Copilot
+ai-observer setup github-copilot
+
+# Import data from all file-backed AI tools
 ai-observer import all
 
 # Export data to Parquet files
@@ -205,7 +208,7 @@ Override with environment variables: `AI_OBSERVER_CLAUDE_PATH`, `AI_OBSERVER_COD
 **Examples:**
 
 ```bash
-# Import from all tools
+# Import from all file-backed tools
 ai-observer import all
 
 # Import Claude data from specific date range
@@ -222,7 +225,7 @@ See [docs/import.md](docs/import.md) for detailed documentation and [docs/pricin
 
 ### Watch Command
 
-Watch local session files in real-time and import new data incrementally as it's written. This is an alternative to configuring OTLP exporters — just start the watcher and it picks up data from the tools' native log files.
+Watch local session files in real-time and import new data incrementally as it's written. This is an alternative to configuring OTLP exporters for Claude Code, Codex CLI, and Gemini CLI — just start the watcher and it picks up data from those tools' native log files.
 
 ```bash
 ai-observer watch [claude-code|codex|gemini|all] [options]
@@ -252,11 +255,12 @@ Directories that don't exist yet are polled every 30 seconds and automatically a
 **File locations** are the same as the import command — override with `AI_OBSERVER_CLAUDE_PATH`, `AI_OBSERVER_CODEX_PATH`, `AI_OBSERVER_GEMINI_PATH`.
 
 > **Note:** Watch mode and OTLP ingestion (`serve`) are mutually exclusive. Running both simultaneously would produce duplicate data. Use `watch` for file-based ingestion or `serve` for OTLP — not both.
+> GitHub Copilot is OTLP-only in AI Observer; use `serve` and the Copilot OTLP settings below.
 
 **Examples:**
 
 ```bash
-# Watch all tools for new data
+# Watch all file-backed tools for new data
 ai-observer watch all
 
 # Watch only Claude Code sessions
@@ -274,7 +278,7 @@ ai-observer watch gemini
 Export telemetry data to portable Parquet files with an optional DuckDB views database.
 
 ```bash
-ai-observer export [claude-code|codex|gemini|all] --output <directory> [options]
+ai-observer export [claude-code|codex|gemini|copilot-chat|github-copilot|all] --output <directory> [options]
 ```
 
 | Option | Description |
@@ -303,6 +307,9 @@ ai-observer export all --output ./export
 # Export Claude data with date filter
 ai-observer export claude-code --output ./export --from 2025-01-01 --to 2025-01-15
 
+# Export GitHub Copilot VS Code Extension telemetry
+ai-observer export copilot-chat --output ./export
+
 # Export to ZIP archive
 ai-observer export all --output ./export --zip
 
@@ -312,6 +319,8 @@ ai-observer export claude-code --output ./export --from-files
 # Dry run to preview export
 ai-observer export all --output ./export --dry-run
 ```
+
+> `--from-files` is only available for local file sources (`claude-code`, `codex`, `gemini`, `all`). GitHub Copilot is OTLP-only and exports from the DuckDB database.
 
 See [docs/export.md](docs/export.md) for detailed documentation.
 
@@ -420,87 +429,99 @@ trace_exporter = { otlp-http = { endpoint = "http://localhost:4318/v1/traces", p
 
 </details>
 
+<details>
+<summary><strong>GitHub Copilot</strong></summary>
+
+GitHub Copilot can export OTLP telemetry from the VS Code extension and CLI. AI Observer stores the raw telemetry and derives token and cost metrics from chat spans.
+
+**VS Code settings:**
+
+```json
+{
+  "github.copilot.chat.otel.enabled": true,
+  "github.copilot.chat.otel.exporterType": "otlp-http",
+  "github.copilot.chat.otel.otlpEndpoint": "http://localhost:4318",
+  "github.copilot.chat.otel.captureContent": true
+}
+```
+
+**Environment variables:**
+
+```bash
+export COPILOT_OTEL_ENABLED=true
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export COPILOT_OTEL_CAPTURE_CONTENT=true
+```
+
+Service names:
+
+| Service | Source |
+|---------|--------|
+| `copilot-chat` | GitHub Copilot VS Code Extension |
+| `github-copilot` | GitHub Copilot CLI |
+
+> Content capture can include prompts, code, tool arguments, and tool results. Only enable it in trusted local environments.
+
+</details>
+
 ## Architecture
 
 **OTLP mode** (`ai-observer` or `ai-observer serve`):
 
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   Claude Code   │     │   Gemini CLI    │     │   Codex CLI     │
-└────────┬────────┘     └────────┬────────┘     └────────┬────────┘
-         │                       │                       │
-         │ OTLP/HTTP             │ OTLP/HTTP             │ OTLP/HTTP
-         │ (traces, metrics,     │ (traces, metrics,     │ (logs)
-         │  logs)                │  logs)                │
-         └───────────────────────┼───────────────────────┘
-                                 │
-                                 ▼
-                    ┌────────────────────────┐
-                    │     AI Observer        │
-                    │  ┌──────────────────┐  │
-                    │  │   OTLP Ingestion │  │  ← Port 4318
-                    │  │   (HTTP/Proto)   │  │
-                    │  └────────┬─────────┘  │
-                    │           │            │
-                    │  ┌────────▼─────────┐  │
-                    │  │     DuckDB       │  │
-                    │  │   (Analytics)    │  │
-                    │  └────────┬─────────┘  │
-                    │           │            │
-                    │  ┌────────▼─────────┐  │
-                    │  │   REST API +     │  │  ← Port 8080
-                    │  │   WebSocket Hub  │  │
-                    │  └────────┬─────────┘  │
-                    │           │            │
-                    │  ┌────────▼─────────┐  │
-                    │  │  React Dashboard │  │
-                    │  │   (embedded)     │  │
-                    │  └──────────────────┘  │
-                    └────────────────────────┘
+```mermaid
+flowchart TB
+    claude[Claude Code<br/>traces, metrics, logs]
+    gemini[Gemini CLI<br/>traces, metrics, logs]
+    codex[OpenAI Codex CLI<br/>logs, traces]
+    copilot[GitHub Copilot<br/>VS Code + CLI<br/>traces, metrics, logs]
+
+    subgraph observer[AI Observer]
+        ingest[OTLP Ingestion<br/>HTTP/JSON + HTTP/Protobuf<br/>Port 4318]
+        derived[Derived Metrics<br/>tokens, costs, deltas]
+        db[(DuckDB<br/>local analytics)]
+        api[REST API + WebSocket Hub<br/>Port 8080]
+        ui[React Dashboard<br/>embedded frontend]
+    end
+
+    claude -->|OTLP/HTTP| ingest
+    gemini -->|OTLP/HTTP| ingest
+    codex -->|OTLP/HTTP| ingest
+    copilot -->|OTLP/HTTP| ingest
+    ingest --> derived
+    ingest --> db
+    derived --> db
+    db --> api
+    api --> ui
 ```
 
 **File watcher mode** (`ai-observer watch all`):
 
-```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   Claude Code   │     │   Gemini CLI     │     │   Codex CLI     │
-│  ~/.claude/     │     │  ~/.gemini/      │     │  ~/.codex/      │
-│  projects/      │     │  tmp/            │     │  sessions/      │
-│    *.jsonl      │     │   session-*.json │     │    *.jsonl      │
-└────────┬────────┘     └────────┬─────────┘     └────────┬────────┘
-         │                       │                       │
-         │ fsnotify              │ fsnotify              │ fsnotify
-         │ (file changes)        │ (file changes)        │ (file changes)
-         └───────────────────────┼───────────────────────┘
-                                 │
-                                 ▼
-                    ┌────────────────────────┐
-                    │     AI Observer        │
-                    │  ┌──────────────────┐  │
-                    │  │  File Watcher    │  │  ← Incremental
-                    │  │  (per-file       │  │    parsing
-                    │  │   debounce)      │  │
-                    │  └────────┬─────────┘  │
-                    │           │            │
-                    │  ┌────────▼─────────┐  │
-                    │  │     DuckDB       │  │
-                    │  │   (Analytics)    │  │
-                    │  └────────┬─────────┘  │
-                    │           │            │
-                    │  ┌────────▼─────────┐  │
-                    │  │   REST API +     │  │  ← Port 8080
-                    │  │   WebSocket Hub  │  │
-                    │  └────────┬─────────┘  │
-                    │           │            │
-                    │  ┌────────▼─────────┐  │
-                    │  │  React Dashboard │  │
-                    │  │   (embedded)     │  │
-                    │  └──────────────────┘  │
-                    └────────────────────────┘
+```mermaid
+flowchart TB
+    claudeFiles[Claude Code<br/>~/.claude/projects/**/*.jsonl]
+    geminiFiles[Gemini CLI<br/>~/.gemini/tmp/**/session-*.json]
+    codexFiles[OpenAI Codex CLI<br/>~/.codex/sessions/*.jsonl]
+
+    subgraph observer[AI Observer]
+        watcher[File Watcher<br/>fsnotify + polling<br/>incremental parsing]
+        db[(DuckDB<br/>local analytics)]
+        api[REST API + WebSocket Hub<br/>Port 8080]
+        ui[React Dashboard<br/>embedded frontend]
+    end
+
+    claudeFiles -->|file changes| watcher
+    geminiFiles -->|file changes| watcher
+    codexFiles -->|file changes| watcher
+    watcher --> db
+    db --> api
+    api --> ui
 ```
 
+GitHub Copilot is not shown in watcher mode because AI Observer currently receives Copilot telemetry through OTLP only.
+
 **Tech Stack**:
-- **Backend**: Go 1.24+, chi router, DuckDB, gorilla/websocket
+- **Backend**: Go 1.26+, chi router, DuckDB 1.5.3, gorilla/websocket
 - **Frontend**: React 19, TypeScript, Vite, Tailwind CSS v4, Zustand, Recharts
 
 ## API Reference
@@ -539,7 +560,7 @@ REST API for querying stored telemetry data. Unless otherwise specified, `from`/
 - `from`, `to` — Time range (ISO 8601)
 - `limit`, `offset` — Pagination
 
-Trace list rows include `id`, `kind`, `traceId`, and `rootSpanId`. For normal services, `kind` is `otel_trace` and `id` is the real OTLP trace ID. For Codex CLI, `kind` is `codex_operation`, `traceId` is the real session trace ID, and `id`/`rootSpanId` identify the operation root span.
+Trace list rows include `id`, `kind`, `traceId`, and `rootSpanId`. Use the `id` and `kind` values from a trace row when requesting details. Most rows, including GitHub Copilot and raw Codex session traces, use `kind=otel_trace` with `id` set to the OTLP trace ID. Codex operation rows, where present, use `kind=codex_operation` with `id`/`rootSpanId` set to the operation root span ID.
 
 </details>
 
@@ -745,6 +766,60 @@ AI Observer computes delta metrics from cumulative counters to show per-interval
 </details>
 
 <details>
+<summary><strong>GitHub Copilot Metrics, Logs & Traces</strong></summary>
+
+GitHub Copilot exports OTLP telemetry from the VS Code extension and CLI. AI Observer stores the raw telemetry and derives token and cost metrics from GenAI chat spans.
+
+### Services
+
+| Service Name | Display Name |
+|--------------|--------------|
+| `copilot-chat` | GitHub Copilot VS Code Extension |
+| `github-copilot` | GitHub Copilot CLI |
+
+These are stored as separate services for filtering and exports. In the frontend metric catalog they are grouped under the GitHub Copilot provider because they share metric metadata and pricing logic.
+
+### Derived Metrics
+
+| Metric | Display Name | Type | Description |
+|--------|--------------|------|-------------|
+| `github_copilot.token.usage` | Token Usage | Counter | Tokens by type and model (`input`, `output`, `cache_read`, `cache_creation`, `reasoning`) |
+| `github_copilot.cost.usage` | Cost | Counter | Estimated cost in USD by model |
+
+Cost derivation uses GitHub Copilot pricing data plus aliases generated from the GitHub Models catalog snapshot. If a model cannot be matched to known pricing, AI Observer still stores token usage but does not emit a cost row for that span.
+
+### Native Metrics
+
+| Metric | Display Name | Type | Description |
+|--------|--------------|------|-------------|
+| `gen_ai.client.token.usage` | GenAI Token Usage | Histogram | Generic token usage from the OpenTelemetry semantic convention |
+| `gen_ai.client.operation.duration` | GenAI Operation Duration | Histogram | Generic GenAI operation duration |
+| `copilot_chat.tool.call.count` | Tool Calls | Counter | Tool call count by tool and status |
+| `copilot_chat.tool.call.duration` | Tool Duration | Histogram | Tool call execution time |
+| `copilot_chat.agent.invocation.duration` | Agent Invocation Duration | Histogram | Agent invocation execution time |
+| `copilot_chat.agent.turn.count` | Agent Turns | Counter | Agent turn count |
+| `copilot_chat.session.count` | Sessions | Counter | Copilot chat session count |
+| `copilot_chat.time_to_first_token` | Time to First Token | Histogram | Time until the first response token |
+| `copilot_chat.edit.acceptance.count` | Edit Acceptance | Counter | Accepted or rejected edits |
+| `copilot_chat.chat_edit.outcome.count` | Chat Edit Outcomes | Counter | Chat edit outcomes |
+| `copilot_chat.lines_of_code.count` | Lines of Code | Counter | Lines of code changed |
+| `copilot_chat.edit.survival.four_gram` | Edit Survival (Four-Gram) | Gauge | Edit survival ratio using four-gram matching |
+| `copilot_chat.edit.survival.no_revert` | Edit Survival (No Revert) | Gauge | Edit survival ratio based on non-reverted edits |
+| `copilot_chat.user.action.count` | User Actions | Counter | User action count |
+| `copilot_chat.user.feedback.count` | User Feedback | Counter | User feedback count |
+| `copilot_chat.agent.edit_response.count` | Agent Edit Responses | Counter | Agent edit response count |
+| `copilot_chat.agent.summarization.count` | Agent Summarizations | Counter | Agent summarization count |
+| `copilot_chat.pull_request.count` | Pull Requests | Counter | Pull request event count |
+| `copilot_chat.cloud.session.count` | Cloud Sessions | Counter | Cloud session count |
+| `copilot_chat.cloud.pr_ready.count` | Cloud PR Ready | Counter | Cloud pull requests marked ready |
+
+### Logs and Traces
+
+Copilot spans are stored as normal OTLP traces and can be opened from the Traces page. When Copilot emits GenAI log records, AI Observer recognizes `gen_ai.conversation.id`, model attributes, tool call arguments, and tool results for session and transcript views.
+
+</details>
+
+<details>
 <summary><strong>OpenAI Codex CLI Metrics & Events</strong></summary>
 
 Codex CLI exports logs and traces directly. AI Observer derives metrics from these log events.
@@ -775,22 +850,32 @@ AI Observer computes these metrics from Codex CLI log events:
 
 Codex CLI uses a **single trace per session**—all operations within a CLI session share the same trace ID with spans nested hierarchically:
 
-```
-TraceID (session-level)
-└── run_task
-    ├── run_sampling_request / run_turn (agent turn 1)
-    │   ├── try_run_sampling_request / try_run_turn
-    │   ├── receiving_stream
-    │   │   ├── reasoning / function_call
-    │   │   └── receiving
-    │   └── ...
-    ├── run_sampling_request / run_turn (agent turn 2)
-    └── ...
+```mermaid
+flowchart TB
+    trace[Trace ID<br/>session-level]
+    task[run_task]
+    turn1[run_sampling_request / run_turn<br/>agent turn 1]
+    try1[try_run_sampling_request / try_run_turn]
+    stream1[receiving_stream]
+    reasoning[reasoning / function_call]
+    receiving[receiving]
+    turn2[run_sampling_request / run_turn<br/>agent turn 2]
+    more[...]
+
+    trace --> task
+    task --> turn1
+    turn1 --> try1
+    turn1 --> stream1
+    stream1 --> reasoning
+    stream1 --> receiving
+    turn1 --> more
+    task --> turn2
+    task --> more
 ```
 
 This means long CLI sessions produce traces with thousands of spans spanning hours, rather than many short traces.
 
-**AI Observer Trace Handling**: To improve usability, AI Observer displays Codex sessions as turn-level operation rows in the trace list. Each row keeps the real Codex session `traceId`, uses the selected turn root `spanId` as its row `id`, and expands to the grouped turn spans. `run_sampling_request` spans are preferred for current Codex versions, with legacy fallbacks such as `run_turn` and `run_task`. When a `turn_id` attribute is available, same-turn sibling spans and their descendants are grouped into the same row. Search, duration, status, and span count are computed across the grouped turn.
+**AI Observer Trace Handling**: AI Observer lists Codex sessions as raw OTLP trace rows for fast trace queries. Trace detail can still request Codex operation grouping with `kind=codex_operation`: the selected operation root `spanId` becomes the row `id`, and the detail response expands to the grouped turn spans. `run_sampling_request` spans are preferred for current Codex versions, with legacy fallbacks such as `run_turn` and `run_task`. When a `turn_id` attribute is available, same-turn sibling spans and their descendants are grouped into the same operation.
 
 </details>
 
@@ -844,6 +929,36 @@ Local JSON session files store messages with per-response token counts. All oper
 | `gemini_cli.agent.duration` | Yes | — | — |
 | All other Gemini metrics | Yes | — | — |
 | Transcript logs | — | Yes | Yes |
+
+### GitHub Copilot
+
+GitHub Copilot telemetry is OTLP-only in AI Observer. There is no local file watcher or historical file import parser for Copilot data.
+
+| Metric | OTLP (`serve`) | Watch (`watch`) | Import (`import`) |
+|--------|:-:|:-:|:-:|
+| `github_copilot.token.usage` | Yes (derived from spans) | — | — |
+| `github_copilot.cost.usage` | Yes (derived from spans) | — | — |
+| `gen_ai.client.token.usage` | Yes | — | — |
+| `gen_ai.client.operation.duration` | Yes | — | — |
+| `copilot_chat.tool.call.count` | Yes | — | — |
+| `copilot_chat.tool.call.duration` | Yes | — | — |
+| `copilot_chat.agent.invocation.duration` | Yes | — | — |
+| `copilot_chat.agent.turn.count` | Yes | — | — |
+| `copilot_chat.session.count` | Yes | — | — |
+| `copilot_chat.time_to_first_token` | Yes | — | — |
+| `copilot_chat.edit.acceptance.count` | Yes | — | — |
+| `copilot_chat.chat_edit.outcome.count` | Yes | — | — |
+| `copilot_chat.lines_of_code.count` | Yes | — | — |
+| `copilot_chat.edit.survival.*` | Yes | — | — |
+| `copilot_chat.user.action.count` | Yes | — | — |
+| `copilot_chat.user.feedback.count` | Yes | — | — |
+| `copilot_chat.agent.edit_response.count` | Yes | — | — |
+| `copilot_chat.agent.summarization.count` | Yes | — | — |
+| `copilot_chat.pull_request.count` | Yes | — | — |
+| `copilot_chat.cloud.session.count` | Yes | — | — |
+| `copilot_chat.cloud.pr_ready.count` | Yes | — | — |
+| Traces / spans | Yes | — | — |
+| Transcript logs | Yes, when emitted as OTLP logs | — | — |
 
 > **Summary:** OTLP mode provides the richest telemetry — all metrics, traces, and events emitted by each tool's built-in instrumentation. Watch and import modes provide token usage, cost metrics, and full session transcripts parsed from local files. Operational metrics (lines of code, active time, API latency, git activity, etc.) only exist in the OTel telemetry stream and cannot be reconstructed from local files.
 
@@ -925,9 +1040,9 @@ make frontend-dev   # terminal 2: Vite dev server on http://localhost:5173
 
 ### Prerequisites
 
-- Go 1.24+
-- Node.js 20+
-- pnpm
+- Go 1.26+
+- Node.js 22+
+- pnpm 10+
 - Make
 
 ### Commands
@@ -942,32 +1057,56 @@ make clean        # Clean build artifacts
 
 ### Project Structure
 
-```
-ai-observer/
-├── backend/
-│   ├── cmd/server/       # Main entry point
-│   ├── internal/
-│   │   ├── api/          # API types and helpers
-│   │   ├── deleter/      # Data deletion logic
-│   │   ├── exporter/     # Parquet export and views database
-│   │   ├── handlers/     # HTTP handlers
-│   │   ├── importer/     # Historical data import (Claude, Codex, Gemini)
-│   │   ├── otlp/         # OTLP decoders (proto/JSON)
-│   │   ├── pricing/      # Embedded pricing data and cost calculation
-│   │   ├── server/       # Server setup and routing
-│   │   ├── storage/      # DuckDB storage layer
-│   │   ├── watcher/      # File watcher for incremental import
-│   │   └── websocket/    # Real-time updates
-│   └── pkg/compression/  # GZIP decompression
-├── frontend/
-│   ├── src/
-│   │   ├── components/   # React components
-│   │   ├── pages/        # Page components
-│   │   ├── stores/       # Zustand stores
-│   │   └── lib/          # Utilities
-│   └── ...
-├── docs/                 # Documentation
-└── Makefile
+```mermaid
+flowchart TB
+    root[ai-observer]
+    backend[backend]
+    cmd[cmd/server<br/>main entry point]
+    internal[internal]
+    api[api<br/>API types and helpers]
+    deleter[deleter<br/>data deletion logic]
+    exporter[exporter<br/>Parquet export and views database]
+    handlers[handlers<br/>HTTP handlers]
+    importer[importer<br/>historical import for Claude, Codex, Gemini]
+    otlp[otlp<br/>OTLP decoders and derived telemetry]
+    pricing[pricing<br/>embedded pricing and cost calculation]
+    server[server<br/>server setup and routing]
+    storage[storage<br/>DuckDB storage layer]
+    watcher[watcher<br/>incremental file ingestion]
+    websocket[websocket<br/>real-time updates]
+    compression[pkg/compression<br/>GZIP decompression]
+    frontend[frontend]
+    src[src]
+    components[components<br/>React components]
+    pages[pages<br/>page components]
+    stores[stores<br/>Zustand stores]
+    lib[lib<br/>utilities]
+    docs[docs<br/>documentation]
+    makefile[Makefile]
+
+    root --> backend
+    backend --> cmd
+    backend --> internal
+    internal --> api
+    internal --> deleter
+    internal --> exporter
+    internal --> handlers
+    internal --> importer
+    internal --> otlp
+    internal --> pricing
+    internal --> server
+    internal --> storage
+    internal --> watcher
+    internal --> websocket
+    backend --> compression
+    root --> frontend
+    frontend --> src
+    src --> components
+    src --> pages
+    src --> stores
+    src --> lib
+    root --> docs
+    root --> makefile
 ```
 
 ## CI/CD
