@@ -846,6 +846,133 @@ func TestImportUnregisteredParser(t *testing.T) {
 	}
 }
 
+// TestClaudeParserGitBranchAndPR tests that gitBranch and pr-link metadata are captured.
+func TestClaudeParserGitBranchAndPR(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "claude-meta-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cwd := "/home/user/my-repo"
+
+	// Raw JSONL lines mixing entry types
+	lines := []string{
+		// user entry with gitBranch
+		`{"type":"user","timestamp":"2025-01-02T10:00:00.000Z","sessionId":"s1","gitBranch":"feat/my-branch","cwd":"` + cwd + `","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}`,
+		// pr-link entry (no message field)
+		`{"type":"pr-link","sessionId":"s1","prNumber":42,"prUrl":"https://github.com/org/repo/pull/42","prRepository":"org/repo","timestamp":"2025-01-02T10:00:30.000Z"}`,
+		// assistant entry with usage
+		`{"type":"assistant","timestamp":"2025-01-02T10:01:00.000Z","sessionId":"s1","requestId":"r1","gitBranch":"feat/my-branch","message":{"id":"m1","model":"claude-sonnet-4-20250514","role":"assistant","usage":{"input_tokens":100,"output_tokens":50},"content":[{"type":"text","text":"done"}]}}`,
+	}
+
+	testFile := filepath.Join(tmpDir, "s1.jsonl")
+	if err := os.WriteFile(testFile, []byte(joinLines(lines)), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	os.Setenv("AI_OBSERVER_CLAUDE_PATH", tmpDir)
+	defer os.Unsetenv("AI_OBSERVER_CLAUDE_PATH")
+
+	parser := NewClaudeParser()
+	ctx := context.Background()
+	result, err := parser.ParseFile(ctx, testFile)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+
+	// Verify git_branch and repository appear on existing token metrics.
+	foundTokenMetric := false
+	for _, m := range result.Metrics {
+		if m.MetricName != ClaudeTokenUsageMetric {
+			continue
+		}
+		foundTokenMetric = true
+		if m.Attributes["git_branch"] != "feat/my-branch" {
+			t.Errorf("expected git_branch on token metric, got %q", m.Attributes["git_branch"])
+		}
+		if m.Attributes["repository"] != "org/repo" {
+			t.Errorf("expected repository on token metric, got %q", m.Attributes["repository"])
+		}
+	}
+	if !foundTokenMetric {
+		t.Fatal("expected token metric")
+	}
+
+	// Verify repository metadata appears in transcript and API request logs.
+	foundTranscript := false
+	foundAPIRequest := false
+	for _, log := range result.Logs {
+		switch log.LogAttributes["event.name"] {
+		case "transcript.message":
+			foundTranscript = true
+			if log.LogAttributes["pr_number"] != "42" {
+				t.Errorf("expected pr_number=42 in log attributes, got %q", log.LogAttributes["pr_number"])
+			}
+		case "claude_code.api_request":
+			foundAPIRequest = true
+			if log.LogAttributes["git_branch"] != "feat/my-branch" {
+				t.Errorf("expected git_branch on API request log, got %q", log.LogAttributes["git_branch"])
+			}
+			if log.LogAttributes["repository"] != "org/repo" {
+				t.Errorf("expected repository on API request log, got %q", log.LogAttributes["repository"])
+			}
+		}
+	}
+	if !foundTranscript {
+		t.Fatal("expected transcript log")
+	}
+	if !foundAPIRequest {
+		t.Fatal("expected API request log")
+	}
+}
+
+// TestCollectSessionMeta tests the session metadata collection first pass
+func TestCollectSessionMeta(t *testing.T) {
+	parser := NewClaudeParser()
+
+	lines := []string{
+		`{"type":"user","timestamp":"2025-01-01T00:00:00Z","gitBranch":"main","cwd":"/home/user/project"}`,
+		`{"type":"pr-link","prNumber":7,"prUrl":"https://github.com/a/b/pull/7","prRepository":"a/b","timestamp":"2025-01-01T00:01:00Z"}`,
+		// duplicate pr-link should not overwrite the first
+		`{"type":"pr-link","prNumber":8,"prUrl":"https://github.com/a/b/pull/8","prRepository":"a/b","timestamp":"2025-01-01T00:02:00Z"}`,
+	}
+
+	meta := parser.collectSessionMeta(lines)
+
+	if meta.GitBranch != "main" {
+		t.Errorf("expected GitBranch=main, got %q", meta.GitBranch)
+	}
+	if meta.Cwd != "/home/user/project" {
+		t.Errorf("expected Cwd, got %q", meta.Cwd)
+	}
+	if meta.PRNumber != 7 {
+		t.Errorf("expected PRNumber=7 (first pr-link), got %d", meta.PRNumber)
+	}
+	if meta.PRRepository != "a/b" {
+		t.Errorf("expected PRRepository=a/b, got %q", meta.PRRepository)
+	}
+}
+
+// TestExtractRepository tests repository name derivation
+func TestExtractRepository(t *testing.T) {
+	tests := []struct {
+		meta     claudeSessionMeta
+		expected string
+	}{
+		{claudeSessionMeta{PRRepository: "org/repo"}, "org/repo"},
+		{claudeSessionMeta{Cwd: "/home/user/my-project"}, "my-project"},
+		{claudeSessionMeta{PRRepository: "org/repo", Cwd: "/home/user/other"}, "org/repo"}, // PR takes precedence
+		{claudeSessionMeta{}, ""},
+	}
+	for _, tc := range tests {
+		got := extractRepository(tc.meta)
+		if got != tc.expected {
+			t.Errorf("extractRepository(%+v) = %q, want %q", tc.meta, got, tc.expected)
+		}
+	}
+}
+
 // Helper functions
 func floatPtr(f float64) *float64 {
 	return &f
