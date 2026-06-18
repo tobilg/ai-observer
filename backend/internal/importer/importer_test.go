@@ -846,6 +846,374 @@ func TestImportUnregisteredParser(t *testing.T) {
 	}
 }
 
+// TestClaudeParserGitBranchAndPR tests that gitBranch, pr-link, and file-edit data are captured
+func TestClaudeParserGitBranchAndPR(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "claude-meta-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cwd := "/home/user/my-repo"
+
+	// Raw JSONL lines mixing entry types
+	lines := []string{
+		// user entry with gitBranch
+		`{"type":"user","timestamp":"2025-01-02T10:00:00.000Z","sessionId":"s1","gitBranch":"feat/my-branch","cwd":"` + cwd + `","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}`,
+		// pr-link entry (no message field)
+		`{"type":"pr-link","sessionId":"s1","prNumber":42,"prUrl":"https://github.com/org/repo/pull/42","prRepository":"org/repo","timestamp":"2025-01-02T10:00:30.000Z"}`,
+		// assistant entry with usage and an Edit tool call
+		`{"type":"assistant","timestamp":"2025-01-02T10:01:00.000Z","sessionId":"s1","requestId":"r1","gitBranch":"feat/my-branch","message":{"id":"m1","model":"claude-sonnet-4-20250514","role":"assistant","usage":{"input_tokens":100,"output_tokens":50},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/home/user/my-repo/main.go","old_string":"line1\nline2","new_string":"line1\nline2\nline3"}}]}}`,
+		// assistant entry with a Write tool call
+		`{"type":"assistant","timestamp":"2025-01-02T10:02:00.000Z","sessionId":"s1","requestId":"r2","gitBranch":"feat/my-branch","message":{"id":"m2","model":"claude-sonnet-4-20250514","role":"assistant","usage":{"input_tokens":50,"output_tokens":20},"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/home/user/my-repo/README.md","content":"# Title\nLine two\nLine three\n"}}]}}`,
+	}
+
+	testFile := filepath.Join(tmpDir, "s1.jsonl")
+	if err := os.WriteFile(testFile, []byte(joinLines(lines)), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	os.Setenv("AI_OBSERVER_CLAUDE_PATH", tmpDir)
+	defer os.Unsetenv("AI_OBSERVER_CLAUDE_PATH")
+
+	parser := NewClaudeParser()
+	ctx := context.Background()
+	result, err := parser.ParseFile(ctx, testFile)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+
+	// Verify PR metric was emitted
+	var prMetrics []api.MetricDataPoint
+	var locMetrics []api.MetricDataPoint
+	for _, m := range result.Metrics {
+		switch m.MetricName {
+		case claudePullRequestMetric:
+			prMetrics = append(prMetrics, m)
+		case claudeLinesOfCodeMetric:
+			locMetrics = append(locMetrics, m)
+		}
+	}
+
+	if len(prMetrics) != 1 {
+		t.Errorf("expected 1 PR metric, got %d", len(prMetrics))
+	} else {
+		pr := prMetrics[0]
+		if pr.Attributes["pr_number"] != "42" {
+			t.Errorf("expected pr_number=42, got %s", pr.Attributes["pr_number"])
+		}
+		if pr.Attributes["repository"] != "org/repo" {
+			t.Errorf("expected repository=org/repo, got %s", pr.Attributes["repository"])
+		}
+		if pr.Attributes["git_branch"] != "feat/my-branch" {
+			t.Errorf("expected git_branch=feat/my-branch, got %s", pr.Attributes["git_branch"])
+		}
+	}
+
+	// Verify lines_of_code metrics:
+	// Edit: old_string has 2 lines (removed), new_string has 3 lines (added)
+	// Write: content has 4 lines (added, counting trailing newline as +1 line)
+	var locByType = map[string]float64{}
+	var locFileTypes = map[string]bool{}
+	for _, m := range locMetrics {
+		locByType[m.Attributes["type"]] += *m.Value
+		locFileTypes[m.Attributes["file_type"]] = true
+	}
+	if locByType["removed"] != 2 {
+		t.Errorf("expected 2 lines removed, got %v", locByType["removed"])
+	}
+	if locByType["added"] != 7 { // 3 from Edit + 4 from Write
+		t.Errorf("expected 7 lines added, got %v", locByType["added"])
+	}
+	if !locFileTypes[".go"] {
+		t.Error("expected .go file type in loc metrics")
+	}
+	if !locFileTypes[".md"] {
+		t.Error("expected .md file type in loc metrics")
+	}
+
+	// Verify git_branch on token metrics
+	for _, m := range result.Metrics {
+		if m.MetricName == ClaudeTokenUsageMetric {
+			if m.Attributes["git_branch"] != "feat/my-branch" {
+				t.Errorf("expected git_branch on token metric, got %q", m.Attributes["git_branch"])
+			}
+			if m.Attributes["repository"] != "org/repo" {
+				t.Errorf("expected repository on token metric, got %q", m.Attributes["repository"])
+			}
+			break
+		}
+	}
+
+	// Verify pr_number appears in transcript log attributes
+	for _, log := range result.Logs {
+		if log.LogAttributes["event.name"] == "transcript.message" {
+			if log.LogAttributes["pr_number"] != "42" {
+				t.Errorf("expected pr_number=42 in log attributes, got %q", log.LogAttributes["pr_number"])
+			}
+			break
+		}
+	}
+}
+
+// TestClaudeParserSessionCommitActiveTime tests session, commit, and active time metric generation
+func TestClaudeParserSessionCommitActiveTime(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "claude-sca-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	lines := []string{
+		// user entry (session starts)
+		`{"type":"user","timestamp":"2025-01-02T10:00:00.000Z","sessionId":"s2","gitBranch":"main","cwd":"/home/user/proj","message":{"role":"user","content":[{"type":"text","text":"do stuff"}]}}`,
+		// assistant with a git commit bash call
+		`{"type":"assistant","timestamp":"2025-01-02T10:01:00.000Z","sessionId":"s2","requestId":"r1","gitBranch":"main","message":{"id":"m1","model":"claude-sonnet-4-20250514","role":"assistant","usage":{"input_tokens":100,"output_tokens":50},"content":[{"type":"tool_use","name":"Bash","input":{"command":"git add . && git commit -m \"feat: add thing\""}}]}}`,
+		// another assistant with two git commits in separate tool calls
+		`{"type":"assistant","timestamp":"2025-01-02T10:02:00.000Z","sessionId":"s2","requestId":"r2","gitBranch":"main","message":{"id":"m2","model":"claude-sonnet-4-20250514","role":"assistant","usage":{"input_tokens":50,"output_tokens":20},"content":[{"type":"tool_use","name":"Bash","input":{"command":"git commit -m \"fix: typo\""}},{"type":"tool_use","name":"Bash","input":{"command":"echo hello"}}]}}`,
+		// system/turn_duration entries
+		`{"type":"system","subtype":"turn_duration","durationMs":30000,"timestamp":"2025-01-02T10:01:30.000Z","sessionId":"s2","gitBranch":"main","cwd":"/home/user/proj"}`,
+		`{"type":"system","subtype":"turn_duration","durationMs":15000,"timestamp":"2025-01-02T10:02:15.000Z","sessionId":"s2","gitBranch":"main","cwd":"/home/user/proj"}`,
+	}
+
+	testFile := filepath.Join(tmpDir, "s2.jsonl")
+	if err := os.WriteFile(testFile, []byte(joinLines(lines)), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	os.Setenv("AI_OBSERVER_CLAUDE_PATH", tmpDir)
+	defer os.Unsetenv("AI_OBSERVER_CLAUDE_PATH")
+
+	parser := NewClaudeParser()
+	ctx := context.Background()
+	result, err := parser.ParseFile(ctx, testFile)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+
+	counts := map[string]int{}
+	var totalActiveSecs float64
+	for _, m := range result.Metrics {
+		counts[m.MetricName]++
+		if m.MetricName == claudeActiveTimeMetric && m.Value != nil {
+			totalActiveSecs += *m.Value
+		}
+	}
+
+	// One session metric per file
+	if counts[claudeSessionMetric] != 1 {
+		t.Errorf("expected 1 session metric, got %d", counts[claudeSessionMetric])
+	}
+
+	// Two commits: one from r1, one from r2 (the echo call is not a commit)
+	if counts[claudeCommitMetric] != 2 {
+		t.Errorf("expected 2 commit metrics, got %d", counts[claudeCommitMetric])
+	}
+
+	// Two turn_duration entries -> two active_time metrics, total 45s
+	if counts[claudeActiveTimeMetric] != 2 {
+		t.Errorf("expected 2 active_time metrics, got %d", counts[claudeActiveTimeMetric])
+	}
+	if totalActiveSecs != 45.0 {
+		t.Errorf("expected 45s total active time, got %v", totalActiveSecs)
+	}
+
+	// All metrics should have git_branch and repository set
+	for _, m := range result.Metrics {
+		if m.MetricName == claudeSessionMetric || m.MetricName == claudeCommitMetric || m.MetricName == claudeActiveTimeMetric {
+			if m.Attributes["git_branch"] != "main" {
+				t.Errorf("%s: expected git_branch=main, got %q", m.MetricName, m.Attributes["git_branch"])
+			}
+			if m.Attributes["repository"] != "proj" {
+				t.Errorf("%s: expected repository=proj, got %q", m.MetricName, m.Attributes["repository"])
+			}
+		}
+	}
+}
+
+// TestClaudeParserMultiEdit tests that MultiEdit tool calls produce lines_of_code metrics
+func TestClaudeParserMultiEdit(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "claude-multiedit-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	multiEditInput := `{"file_path":"/home/user/proj/app.go","edits":[{"old_string":"line1\nline2","new_string":"line1\nline2\nline3"},{"old_string":"foo","new_string":""}]}`
+	lines := []string{
+		`{"type":"user","timestamp":"2025-01-02T10:00:00.000Z","sessionId":"s3","cwd":"/home/user/proj","message":{"role":"user","content":[{"type":"text","text":"edit"}]}}`,
+		`{"type":"assistant","timestamp":"2025-01-02T10:01:00.000Z","sessionId":"s3","requestId":"r1","message":{"id":"m1","model":"claude-sonnet-4-20250514","role":"assistant","usage":{"input_tokens":50,"output_tokens":20},"content":[{"type":"tool_use","name":"MultiEdit","input":` + multiEditInput + `}]}}`,
+	}
+
+	testFile := filepath.Join(tmpDir, "s3.jsonl")
+	if err := os.WriteFile(testFile, []byte(joinLines(lines)), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	os.Setenv("AI_OBSERVER_CLAUDE_PATH", tmpDir)
+	defer os.Unsetenv("AI_OBSERVER_CLAUDE_PATH")
+
+	parser := NewClaudeParser()
+	result, err := parser.ParseFile(context.Background(), testFile)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+
+	var added, removed float64
+	for _, m := range result.Metrics {
+		if m.MetricName != claudeLinesOfCodeMetric {
+			continue
+		}
+		switch m.Attributes["type"] {
+		case "added":
+			added += *m.Value
+		case "removed":
+			removed += *m.Value
+		}
+		if m.Attributes["file_type"] != ".go" {
+			t.Errorf("expected file_type=.go, got %q", m.Attributes["file_type"])
+		}
+	}
+	// edit[0]: old=2 lines removed, new=3 lines added
+	// edit[1]: old=1 line removed, new=0 lines added (empty new_string)
+	if removed != 3 {
+		t.Errorf("expected 3 lines removed, got %v", removed)
+	}
+	if added != 3 {
+		t.Errorf("expected 3 lines added, got %v", added)
+	}
+}
+
+// TestClaudeParserSessionMetric tests that exactly one session metric is emitted per file
+// and that duplicate pr-link entries produce only one PR metric
+func TestClaudeParserSessionMetric(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "claude-session-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	lines := []string{
+		`{"type":"user","timestamp":"2025-01-02T10:00:00.000Z","sessionId":"s4","gitBranch":"main","cwd":"/home/user/proj","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}`,
+		// same PR linked twice - only one PR metric should be emitted
+		`{"type":"pr-link","sessionId":"s4","prNumber":99,"prUrl":"https://github.com/org/repo/pull/99","prRepository":"org/repo","timestamp":"2025-01-02T10:00:05.000Z"}`,
+		`{"type":"pr-link","sessionId":"s4","prNumber":99,"prUrl":"https://github.com/org/repo/pull/99","prRepository":"org/repo","timestamp":"2025-01-02T10:00:10.000Z"}`,
+		`{"type":"assistant","timestamp":"2025-01-02T10:01:00.000Z","sessionId":"s4","requestId":"r1","message":{"id":"m1","model":"claude-sonnet-4-20250514","role":"assistant","usage":{"input_tokens":100,"output_tokens":50},"content":[]}}`,
+	}
+
+	testFile := filepath.Join(tmpDir, "s4.jsonl")
+	if err := os.WriteFile(testFile, []byte(joinLines(lines)), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	os.Setenv("AI_OBSERVER_CLAUDE_PATH", tmpDir)
+	defer os.Unsetenv("AI_OBSERVER_CLAUDE_PATH")
+
+	parser := NewClaudeParser()
+	result, err := parser.ParseFile(context.Background(), testFile)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+
+	counts := map[string]int{}
+	for _, m := range result.Metrics {
+		counts[m.MetricName]++
+	}
+
+	if counts[claudeSessionMetric] != 1 {
+		t.Errorf("expected 1 session metric, got %d", counts[claudeSessionMetric])
+	}
+	if counts[claudePullRequestMetric] != 1 {
+		t.Errorf("expected 1 PR metric for duplicate pr-link entries, got %d", counts[claudePullRequestMetric])
+	}
+}
+
+// TestCollectSessionMeta tests the session metadata collection first pass
+func TestCollectSessionMeta(t *testing.T) {
+	parser := NewClaudeParser()
+
+	lines := []string{
+		`{"type":"user","timestamp":"2025-01-01T00:00:00Z","gitBranch":"main","cwd":"/home/user/project"}`,
+		`{"type":"pr-link","prNumber":7,"prUrl":"https://github.com/a/b/pull/7","prRepository":"a/b","timestamp":"2025-01-01T00:01:00Z"}`,
+		// duplicate pr-link should not overwrite the first
+		`{"type":"pr-link","prNumber":8,"prUrl":"https://github.com/a/b/pull/8","prRepository":"a/b","timestamp":"2025-01-01T00:02:00Z"}`,
+	}
+
+	meta := parser.collectSessionMeta(lines)
+
+	if meta.GitBranch != "main" {
+		t.Errorf("expected GitBranch=main, got %q", meta.GitBranch)
+	}
+	if meta.Cwd != "/home/user/project" {
+		t.Errorf("expected Cwd, got %q", meta.Cwd)
+	}
+	if meta.PRNumber != 7 {
+		t.Errorf("expected PRNumber=7 (first pr-link), got %d", meta.PRNumber)
+	}
+	if meta.PRRepository != "a/b" {
+		t.Errorf("expected PRRepository=a/b, got %q", meta.PRRepository)
+	}
+}
+
+// TestExtractRepository tests repository name derivation
+func TestExtractRepository(t *testing.T) {
+	tests := []struct {
+		meta     claudeSessionMeta
+		expected string
+	}{
+		{claudeSessionMeta{PRRepository: "org/repo"}, "org/repo"},
+		{claudeSessionMeta{Cwd: "/home/user/my-project"}, "my-project"},
+		{claudeSessionMeta{PRRepository: "org/repo", Cwd: "/home/user/other"}, "org/repo"}, // PR takes precedence
+		{claudeSessionMeta{}, ""},
+	}
+	for _, tc := range tests {
+		got := extractRepository(tc.meta)
+		if got != tc.expected {
+			t.Errorf("extractRepository(%+v) = %q, want %q", tc.meta, got, tc.expected)
+		}
+	}
+}
+
+// TestCountLines tests line counting
+func TestCountLines(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected int
+	}{
+		{"", 0},
+		{"single line", 1},
+		{"line1\nline2", 2},
+		{"line1\nline2\nline3", 3},
+		{"line1\n", 2}, // trailing newline counts as an extra line
+	}
+	for _, tc := range tests {
+		got := countLines(tc.input)
+		if got != tc.expected {
+			t.Errorf("countLines(%q) = %d, want %d", tc.input, got, tc.expected)
+		}
+	}
+}
+
+// TestRelativeFilePath tests relative path extraction
+func TestRelativeFilePath(t *testing.T) {
+	tests := []struct {
+		filePath string
+		baseDir  string
+		expected string
+	}{
+		{"/home/user/project/main.go", "/home/user/project", "main.go"},
+		{"/home/user/project/sub/file.ts", "/home/user/project", "sub/file.ts"},
+		{"/home/user/project/main.go", "", "main.go"},
+		{"/other/path/file.py", "/home/user/project", "file.py"}, // outside base -> basename
+	}
+	for _, tc := range tests {
+		got := relativeFilePath(tc.filePath, tc.baseDir)
+		if got != tc.expected {
+			t.Errorf("relativeFilePath(%q, %q) = %q, want %q", tc.filePath, tc.baseDir, got, tc.expected)
+		}
+	}
+}
+
 // Helper functions
 func floatPtr(f float64) *float64 {
 	return &f
