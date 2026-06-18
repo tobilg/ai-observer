@@ -10,6 +10,7 @@ func TestServiceName(t *testing.T) {
 		{Claude, "claude-code"},
 		{Codex, "codex_cli_rs"},
 		{Gemini, "gemini_cli"},
+		{OpenCode, "opencode"},
 		{Tool("unknown"), "unknown"}, // Falls back to string representation
 	}
 
@@ -32,6 +33,7 @@ func TestParse(t *testing.T) {
 		{"claude-code", Claude, true},
 		{"codex", Codex, true},
 		{"gemini", Gemini, true},
+		{"opencode", OpenCode, true},
 		{"all", "", false},
 		{"invalid", "", false},
 		{"", "", false},
@@ -52,11 +54,11 @@ func TestParse(t *testing.T) {
 
 func TestAll(t *testing.T) {
 	all := All()
-	if len(all) != 3 {
-		t.Errorf("expected 3 tools, got %d", len(all))
+	if len(all) != 4 {
+		t.Errorf("expected 4 tools, got %d", len(all))
 	}
 
-	expected := map[Tool]bool{Claude: true, Codex: true, Gemini: true}
+	expected := map[Tool]bool{Claude: true, Codex: true, Gemini: true, OpenCode: true}
 	for _, tool := range all {
 		if !expected[tool] {
 			t.Errorf("unexpected tool: %s", tool)
@@ -72,6 +74,7 @@ func TestServiceNameFor(t *testing.T) {
 		{"claude-code", "claude-code"},
 		{"codex", "codex_cli_rs"},
 		{"gemini", "gemini_cli"},
+		{"opencode", "opencode"},
 		{"invalid", ""},
 	}
 
@@ -95,6 +98,7 @@ func TestNormalizeServiceName(t *testing.T) {
 		{"codex_cli_rs", "codex_cli_rs"},
 		{"gemini", "gemini_cli"},
 		{"gemini_cli", "gemini_cli"},
+		{"opencode", "opencode"},
 		{"copilot-chat", "copilot-chat"},
 		{"github-copilot", "github-copilot"},
 		{"invalid", ""},

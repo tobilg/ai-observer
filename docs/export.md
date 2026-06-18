@@ -45,6 +45,9 @@ ai-observer export all --output ./export
 # Export only Claude data
 ai-observer export claude-code --output ./export
 
+# Export OpenCode telemetry
+ai-observer export opencode --output ./export
+
 # Export with date filter
 ai-observer export all --output ./export --from 2025-01-01 --to 2025-01-15
 
@@ -80,6 +83,9 @@ The source argument maps to internal service names:
 | `claude-code` | `claude-code` |
 | `codex` | `codex_cli_rs` |
 | `gemini` | `gemini_cli` |
+| `opencode` | `opencode` |
+| `copilot-chat` | `copilot-chat` |
+| `github-copilot` | `github-copilot` |
 | `all` | No filter (all services) |
 
 ## Workflow
@@ -171,6 +177,8 @@ The source argument maps to internal service names:
 ### From-Files Export Mode
 
 When using `--from-files`, the export reads directly from raw session files without requiring prior import:
+
+`--from-files` is only available for `claude-code`, `codex`, `gemini`, and `all`. GitHub Copilot and OpenCode are OTLP-only in AI Observer and export from the DuckDB database.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐

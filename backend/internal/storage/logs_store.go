@@ -225,7 +225,7 @@ func (s *DuckDBStore) GetLogLevels(ctx context.Context) (map[string]int64, error
 }
 
 // QuerySessions returns sessions with transcript messages from all services
-// Supports: Claude Code (transcript.message), Gemini CLI (session.id), Codex CLI (conversation.id), Copilot (gen_ai.conversation.id)
+// Supports: Claude Code (transcript.message), Gemini CLI (session.id), Codex CLI (conversation.id), Copilot (gen_ai.conversation.id), OpenCode (session.id)
 func (s *DuckDBStore) QuerySessions(ctx context.Context, service string, from, to time.Time, limit, offset int) (*api.SessionsResponse, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -254,7 +254,8 @@ func (s *DuckDBStore) QuerySessions(ctx context.Context, service string, from, t
 			COALESCE(
 				MAX(json_extract_string(LogAttributes, '$.model')),
 				MAX(json_extract_string(LogAttributes, '$."gen_ai.response.model"')),
-				MAX(json_extract_string(LogAttributes, '$."gen_ai.request.model"'))
+				MAX(json_extract_string(LogAttributes, '$."gen_ai.request.model"')),
+				MAX(json_extract_string(LogAttributes, '$."llm.model_name"'))
 			) as model
 		FROM otel_logs
 		WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
@@ -432,11 +433,11 @@ func (s *DuckDBStore) GetSessionTranscript(ctx context.Context, sessionID string
 			ToolName:     getToolName(attrs, eventName),
 			ToolInput:    getToolInput(attrs),
 			ToolOutput:   getToolOutput(attrs),
-			InputTokens:  parseIntAttr(attrs, "input_tokens", "inputTokens", "gen_ai.usage.input_tokens"),
-			OutputTokens: parseIntAttr(attrs, "output_tokens", "outputTokens", "gen_ai.usage.output_tokens"),
+			InputTokens:  parseIntAttr(attrs, "input_tokens", "inputTokens", "gen_ai.usage.input_tokens", "llm.token_count.prompt"),
+			OutputTokens: parseIntAttr(attrs, "output_tokens", "outputTokens", "gen_ai.usage.output_tokens", "llm.token_count.completion"),
 			CacheRead:    parseIntAttr(attrs, "cache_read_input_tokens", "cacheRead", "gen_ai.usage.cache_read.input_tokens"),
 			CacheWrite:   parseIntAttr(attrs, "cache_creation_input_tokens", "cacheWrite", "gen_ai.usage.cache_creation.input_tokens"),
-			CostUSD:      parseFloatAttr(attrs, "cost_usd", "costUsd"),
+			CostUSD:      parseFloatAttr(attrs, "cost_usd", "costUsd", "llm.cost"),
 			DurationMs:   parseIntAttr(attrs, "duration_ms", "durationMs"),
 			Success:      parseBoolAttr(attrs, "success", "tool_success"),
 			OutputSize:   parseIntAttr(attrs, "tool_result_size_bytes", "outputSize"),
@@ -478,6 +479,8 @@ func mapEventToRole(eventName, serviceName string) string {
 		return "tool_result"
 	case "tool_decision", "codex.tool_decision":
 		return "tool_use"
+	case "api_error", "session.created", "session.idle", "session.error", "commit":
+		return "system"
 
 	// Gemini CLI
 	case "gemini_cli.user_prompt":
@@ -493,6 +496,18 @@ func mapEventToRole(eventName, serviceName string) string {
 	case "copilot_chat.tool.call":
 		return "tool_use"
 
+	// OpenCode OTEL plugin
+	case "opencode.user_prompt":
+		return "user"
+	case "opencode.api_request":
+		return "assistant"
+	case "opencode.tool_result":
+		return "tool_result"
+	case "opencode.tool_decision":
+		return "tool_use"
+	case "opencode.api_error", "opencode.session.created", "opencode.session.idle", "opencode.session.error", "opencode.commit":
+		return "system"
+
 	default:
 		return ""
 	}
@@ -506,6 +521,9 @@ func getModelName(attrs map[string]string) string {
 		return model
 	}
 	if model, ok := attrs["gen_ai.request.model"]; ok {
+		return model
+	}
+	if model, ok := attrs["llm.model_name"]; ok {
 		return model
 	}
 	return ""
@@ -525,6 +543,9 @@ func getToolName(attrs map[string]string, eventName string) string {
 	if name, ok := attrs["function_name"]; ok {
 		return name
 	}
+	if name, ok := attrs["openinference.tool.name"]; ok {
+		return name
+	}
 	return ""
 }
 
@@ -537,6 +558,9 @@ func getToolInput(attrs map[string]string) string {
 		return input
 	}
 	if input, ok := attrs["tool_parameters"]; ok {
+		return input
+	}
+	if input, ok := attrs["tool.parameters"]; ok {
 		return input
 	}
 	// Codex CLI uses "arguments"
@@ -555,6 +579,9 @@ func getToolOutput(attrs map[string]string) string {
 		return output
 	}
 	if output, ok := attrs["tool_result"]; ok {
+		return output
+	}
+	if output, ok := attrs["tool.result"]; ok {
 		return output
 	}
 	// Codex CLI OTLP sends actual output in "output" attribute

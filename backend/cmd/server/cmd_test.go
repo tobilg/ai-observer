@@ -59,6 +59,7 @@ func TestPrintHelp(t *testing.T) {
 		"AI_OBSERVER_API_PORT",
 		"AI_OBSERVER_OTLP_PORT",
 		"AI_OBSERVER_DATABASE_PATH",
+		"OPENCODE_ENABLE_TELEMETRY",
 	}
 
 	for _, s := range expectedStrings {
@@ -224,6 +225,15 @@ func TestPrintSetupInstructions(t *testing.T) {
 				"COPILOT_OTEL_CAPTURE_CONTENT",
 			},
 		},
+		{
+			"opencode",
+			[]string{
+				"OpenCode OTEL Plugin Setup",
+				"@devtheops/opencode-plugin-otel",
+				"OPENCODE_OTLP_ENDPOINT=http://localhost:4318",
+				"OPENCODE_OTLP_PROTOCOL=http/protobuf",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -278,6 +288,13 @@ func TestRunSetup(t *testing.T) {
 		err := runSetup([]string{"github-copilot"})
 		if err != nil {
 			t.Errorf("runSetup(github-copilot) failed: %v", err)
+		}
+	})
+
+	t.Run("opencode", func(t *testing.T) {
+		err := runSetup([]string{"opencode"})
+		if err != nil {
+			t.Errorf("runSetup(opencode) failed: %v", err)
 		}
 	})
 

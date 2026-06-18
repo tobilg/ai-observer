@@ -20,20 +20,21 @@ const (
 
 // AllSources returns all supported source types
 func AllSources() []SourceType {
-	all := tools.All()
-	result := make([]SourceType, len(all))
-	for i, t := range all {
-		result[i] = SourceType(t)
-	}
-	return result
+	return []SourceType{SourceClaude, SourceCodex, SourceGemini}
 }
 
 // ParseSourceType converts a string to a SourceType
 func ParseSourceType(s string) (SourceType, bool) {
-	if t, ok := tools.Parse(s); ok {
-		return SourceType(t), true
+	switch s {
+	case string(SourceClaude):
+		return SourceClaude, true
+	case string(SourceCodex):
+		return SourceCodex, true
+	case string(SourceGemini):
+		return SourceGemini, true
+	default:
+		return "", false
 	}
-	return "", false
 }
 
 // ServiceName returns the OTLP service name for this source
@@ -89,14 +90,14 @@ type FileState struct {
 
 // FileSummary contains counts for a single file
 type FileSummary struct {
-	Path        string
-	SessionID   string
-	Logs        int
-	Metrics     int
-	Spans       int
-	FirstTime   time.Time
-	LastTime    time.Time
-	Status      string // "new", "modified", "skipped"
+	Path      string
+	SessionID string
+	Logs      int
+	Metrics   int
+	Spans     int
+	FirstTime time.Time
+	LastTime  time.Time
+	Status    string // "new", "modified", "skipped"
 }
 
 // ImportSummary contains the overall import summary

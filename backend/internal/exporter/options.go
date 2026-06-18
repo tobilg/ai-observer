@@ -15,6 +15,7 @@ const (
 	SourceClaude        SourceType = SourceType(tools.Claude)
 	SourceCodex         SourceType = SourceType(tools.Codex)
 	SourceGemini        SourceType = SourceType(tools.Gemini)
+	SourceOpenCode      SourceType = SourceType(tools.OpenCode)
 	SourceCopilotVSCode SourceType = "copilot-chat"
 	SourceCopilotCLI    SourceType = "github-copilot"
 	SourceAll           SourceType = "all" // Export-specific: no filter
@@ -81,16 +82,18 @@ func ParseSourceArg(s string) (SourceType, error) {
 		return SourceCodex, nil
 	case "gemini":
 		return SourceGemini, nil
+	case "opencode":
+		return SourceOpenCode, nil
 	case "copilot-chat", "github-copilot":
 		return SourceType(strings.ToLower(s)), nil
 	case "all":
 		return SourceAll, nil
 	default:
-		return "", fmt.Errorf("invalid source: %s (valid: claude-code, codex, gemini, copilot-chat, github-copilot, all)", s)
+		return "", fmt.Errorf("invalid source: %s (valid: claude-code, codex, gemini, opencode, copilot-chat, github-copilot, all)", s)
 	}
 }
 
 // ValidSources returns a list of valid source names for help text
 func ValidSources() []string {
-	return []string{"claude-code", "codex", "gemini", "copilot-chat", "github-copilot", "all"}
+	return []string{"claude-code", "codex", "gemini", "opencode", "copilot-chat", "github-copilot", "all"}
 }

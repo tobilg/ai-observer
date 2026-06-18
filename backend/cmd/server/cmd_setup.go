@@ -19,12 +19,13 @@ func runSetup(args []string) error {
 	fs.Usage = func() {
 		fmt.Print(`Show setup instructions for AI tools
 
-Usage: ai-observer setup [claude-code|codex|gemini|github-copilot]
+Usage: ai-observer setup [claude-code|codex|gemini|opencode|github-copilot]
 
 Arguments:
   claude-code  Show Claude Code setup instructions
   codex        Show OpenAI Codex CLI setup instructions
   gemini       Show Gemini CLI setup instructions
+  opencode     Show OpenCode OTEL plugin setup instructions
   github-copilot Show GitHub Copilot setup instructions
 `)
 	}
@@ -36,7 +37,7 @@ Arguments:
 	// Get tool argument
 	tool := fs.Arg(0)
 	if tool == "" {
-		return fmt.Errorf("tool argument is required\nUsage: ai-observer setup [claude-code|codex|gemini|github-copilot]")
+		return fmt.Errorf("tool argument is required\nUsage: ai-observer setup [claude-code|codex|gemini|opencode|github-copilot]")
 	}
 
 	return printSetupInstructionsWithError(tool)
@@ -53,11 +54,14 @@ func printSetupInstructionsWithError(tool string) error {
 	case "codex":
 		printSetupInstructions(tool)
 		return nil
+	case "opencode":
+		printSetupInstructions(tool)
+		return nil
 	case "github-copilot":
 		printSetupInstructions(tool)
 		return nil
 	default:
-		return fmt.Errorf("unknown tool: %s\n\nSupported tools: claude-code, gemini, codex, github-copilot", tool)
+		return fmt.Errorf("unknown tool: %s\n\nSupported tools: claude-code, gemini, codex, opencode, github-copilot", tool)
 	}
 }
 
@@ -119,7 +123,27 @@ Add to ~/.codex/config.toml:
 [otel]
 exporter = { otlp-http = { endpoint = "http://localhost:4318/v1/logs", protocol = "binary" } }
 trace_exporter = { otlp-http = { endpoint = "http://localhost:4318/v1/traces", protocol = "binary" } }
-log_user_prompt = true
+	log_user_prompt = true
+`)
+	case "opencode":
+		fmt.Print(`OpenCode OTEL Plugin Setup
+==========================
+
+1. Add the OTEL plugin to your OpenCode config:
+
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["@devtheops/opencode-plugin-otel"]
+}
+
+2. Add to ~/.bashrc or ~/.zshrc:
+
+export OPENCODE_ENABLE_TELEMETRY=1
+export OPENCODE_OTLP_ENDPOINT=http://localhost:4318
+export OPENCODE_OTLP_PROTOCOL=http/protobuf
+
+The plugin default is OTLP/gRPC on port 4317. AI Observer receives OTLP over
+HTTP on port 4318, so use the http/protobuf protocol and endpoint above.
 `)
 	case "github-copilot":
 		fmt.Print(`GitHub Copilot Setup
@@ -145,7 +169,7 @@ Content capture can include prompts, code, tool arguments, and tool results.
 Only enable it in trusted local environments.
 `)
 	default:
-		fmt.Printf("Unknown tool: %s\n\nSupported tools: claude-code, gemini, codex, github-copilot\n", tool)
+		fmt.Printf("Unknown tool: %s\n\nSupported tools: claude-code, gemini, codex, opencode, github-copilot\n", tool)
 		os.Exit(1)
 	}
 }

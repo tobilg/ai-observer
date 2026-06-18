@@ -85,6 +85,7 @@ export function MetricsPage() {
     if (normalized.includes('gemini')) return 'gemini_cli'
     if (normalized.includes('codex')) return 'codex_cli_rs'
     if (normalized.includes('copilot')) return 'github_copilot'
+    if (normalized.includes('opencode')) return 'opencode'
     return null
   }, [])
 
@@ -94,7 +95,7 @@ export function MetricsPage() {
     const filterSource = getSourceFromService(service)
     if (!filterSource) return true
 
-    if (isSharedGenAIMetric(metricName) && (filterSource === 'gemini_cli' || filterSource === 'github_copilot')) {
+    if (isSharedGenAIMetric(metricName) && (filterSource === 'gemini_cli' || filterSource === 'github_copilot' || filterSource === 'opencode')) {
       return true
     }
 
@@ -252,6 +253,7 @@ export function MetricsPage() {
       gemini_cli: [],
       codex_cli_rs: [],
       github_copilot: [],
+      opencode: [],
       unknown: [],
       other: [],
     }
@@ -265,7 +267,7 @@ export function MetricsPage() {
       if (
         !filterSource ||
         m.source === filterSource ||
-        (isSharedGenAIMetric(m.name) && (filterSource === 'gemini_cli' || filterSource === 'github_copilot'))
+        (isSharedGenAIMetric(m.name) && (filterSource === 'gemini_cli' || filterSource === 'github_copilot' || filterSource === 'opencode'))
       ) {
         allMetricNames.add(m.name)
       }
@@ -476,6 +478,13 @@ export function MetricsPage() {
                 {groupedMetrics.github_copilot.length > 0 && (
                   <optgroup label={getSourceDisplayName('github_copilot')}>
                     {groupedMetrics.github_copilot.map((name) => (
+                      <option key={name} value={name}>{getMetricMetadata(name).displayName}</option>
+                    ))}
+                  </optgroup>
+                )}
+                {groupedMetrics.opencode.length > 0 && (
+                  <optgroup label={getSourceDisplayName('opencode')}>
+                    {groupedMetrics.opencode.map((name) => (
                       <option key={name} value={name}>{getMetricMetadata(name).displayName}</option>
                     ))}
                   </optgroup>

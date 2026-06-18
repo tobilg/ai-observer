@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-06-18
+
+### Added
+
+- Added OpenCode as an OTLP-only provider via the `@devtheops/opencode-plugin-otel` plugin.
+- Added `ai-observer setup opencode` instructions with AI Observer-compatible OTLP HTTP/protobuf configuration.
+- Added export and delete filtering support for the `opencode` service.
+- Added OpenCode frontend provider metadata, service labels, icons, metric grouping, and dashboard widget catalog support.
+- Added OpenCode metric metadata for sessions, token usage, cost, lines of code, commits, tool duration, cache activity, session duration, messages, model usage, and retries.
+- Added OpenCode session and transcript support for plugin log events and OpenInference-style model, token, cost, tool input, and tool output attributes.
+- Added OpenCode setup, usage, architecture, export, import, pricing, and metric availability documentation in README, docs, and the in-app documentation page.
+- Added backend and frontend tests for OpenCode provider registration, export behavior, setup output, transcript helpers, and metric metadata.
+
+### Changed
+
+- Extended frontend metric filtering so OpenCode services show provider-specific metrics and shared `gen_ai.*` metrics when selected.
+- Updated top-level CLI help to include OpenCode OTLP plugin environment variables.
+- Kept `import all` and `watch all` scoped to file-backed providers while allowing OpenCode as a recognized OTLP service.
+
+### Fixed
+
+- Fixed file-import source discovery so adding OpenCode to the shared tool registry does not make `import all` expect an OpenCode file parser.
+
 ## [0.4.0] - 2026-06-14
 
 ### Added
@@ -140,7 +163,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - OTLP ingestion on port 4318
 - API/Dashboard on port 8080
 
-[0.4.0]: https://github.com/tobilg/ai-observer/compare/v0.3.2...HEAD
+[0.5.0]: https://github.com/tobilg/ai-observer/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/tobilg/ai-observer/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/tobilg/ai-observer/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/tobilg/ai-observer/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/tobilg/ai-observer/compare/v0.2.0...v0.3.0

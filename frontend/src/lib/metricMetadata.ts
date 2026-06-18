@@ -1,6 +1,6 @@
 // Metric Metadata System for AI Observer
 // Provides human-readable names, descriptions, and formatting for metrics from
-// Claude Code, Gemini CLI, Codex CLI, and GitHub Copilot
+// Claude Code, Gemini CLI, Codex CLI, GitHub Copilot, and OpenCode
 
 import { Bot, BotMessageSquare, Terminal, Sparkles, type LucideIcon } from 'lucide-react'
 
@@ -9,7 +9,7 @@ import { Bot, BotMessageSquare, Terminal, Sparkles, type LucideIcon } from 'luci
 // ============================================================================
 
 export type MetricType = 'counter' | 'gauge' | 'histogram' | 'summary'
-export type SourceTool = 'claude_code' | 'gemini_cli' | 'codex_cli_rs' | 'github_copilot' | 'unknown'
+export type SourceTool = 'claude_code' | 'gemini_cli' | 'codex_cli_rs' | 'github_copilot' | 'opencode' | 'unknown'
 export type UnitFormatter = 'number' | 'duration' | 'bytes' | 'currency' | 'percentage' | 'tokens' | 'ratio'
 
 export interface UnitFormat {
@@ -1048,6 +1048,242 @@ export const METRIC_CATALOG: MetricMetadata[] = [
   },
 
   // ==========================================================================
+  // OPENCODE METRICS
+  // ==========================================================================
+  {
+    name: 'opencode.session.count',
+    displayName: 'Sessions',
+    description: 'Number of OpenCode sessions started',
+    source: 'opencode',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.count,
+    isMonotonic: true,
+  },
+  {
+    name: 'opencode.token.usage',
+    displayName: 'Token Usage',
+    description: 'OpenCode token usage by type',
+    source: 'opencode',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.tokens,
+    isMonotonic: true,
+    breakdowns: [
+      {
+        attributeKey: 'type',
+        displayName: 'Token Type',
+        showInLegend: true,
+        knownValues: {
+          input: 'Input',
+          output: 'Output',
+          reasoning: 'Reasoning',
+          cacheRead: 'Cache Read',
+          cacheCreation: 'Cache Creation',
+          cache_read: 'Cache Read',
+          cache_creation: 'Cache Creation',
+        },
+      },
+      {
+        attributeKey: 'model',
+        displayName: 'Model',
+        showInLegend: true,
+      },
+    ],
+  },
+  {
+    name: 'opencode.cost.usage',
+    displayName: 'Cost',
+    description: 'USD cost for completed OpenCode assistant messages',
+    source: 'opencode',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.usd,
+    isMonotonic: true,
+    breakdowns: [
+      {
+        attributeKey: 'model',
+        displayName: 'Model',
+        showInLegend: true,
+      },
+      {
+        attributeKey: 'provider',
+        displayName: 'Provider',
+        showInLegend: true,
+      },
+    ],
+  },
+  {
+    name: 'opencode.lines_of_code.count',
+    displayName: 'Lines of Code',
+    description: 'Gross positive OpenCode line churn by additions and deletions',
+    source: 'opencode',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.count,
+    isMonotonic: true,
+    breakdowns: [
+      {
+        attributeKey: 'type',
+        displayName: 'Type',
+        showInLegend: true,
+        knownValues: {
+          additions: 'Added',
+          deletions: 'Removed',
+        },
+      },
+    ],
+  },
+  {
+    name: 'opencode.lines_of_code.total',
+    displayName: 'Lines of Code Total',
+    description: 'Current cumulative OpenCode line changes for the session',
+    source: 'opencode',
+    metricType: 'gauge',
+    unit: UNIT_FORMATS.count,
+    isMonotonic: false,
+    breakdowns: [
+      {
+        attributeKey: 'type',
+        displayName: 'Type',
+        showInLegend: true,
+        knownValues: {
+          additions: 'Added',
+          deletions: 'Removed',
+        },
+      },
+    ],
+  },
+  {
+    name: 'opencode.commit.count',
+    displayName: 'Commits',
+    description: 'Git commits detected by OpenCode',
+    source: 'opencode',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.count,
+    isMonotonic: true,
+  },
+  {
+    name: 'opencode.tool.duration',
+    displayName: 'Tool Duration',
+    description: 'OpenCode tool execution time',
+    source: 'opencode',
+    metricType: 'histogram',
+    unit: UNIT_FORMATS.milliseconds,
+    isMonotonic: false,
+    breakdowns: [
+      {
+        attributeKey: 'tool.name',
+        displayName: 'Tool',
+        showInLegend: true,
+      },
+      {
+        attributeKey: 'success',
+        displayName: 'Success',
+        showInLegend: true,
+      },
+    ],
+  },
+  {
+    name: 'opencode.cache.count',
+    displayName: 'Cache Activity',
+    description: 'OpenCode cache read and cache creation activity',
+    source: 'opencode',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.count,
+    isMonotonic: true,
+    breakdowns: [
+      {
+        attributeKey: 'type',
+        displayName: 'Type',
+        showInLegend: true,
+        knownValues: {
+          cacheRead: 'Cache Read',
+          cacheCreation: 'Cache Creation',
+          cache_read: 'Cache Read',
+          cache_creation: 'Cache Creation',
+        },
+      },
+    ],
+  },
+  {
+    name: 'opencode.session.duration',
+    displayName: 'Session Duration',
+    description: 'OpenCode session duration from created to idle',
+    source: 'opencode',
+    metricType: 'histogram',
+    unit: UNIT_FORMATS.milliseconds,
+    isMonotonic: false,
+  },
+  {
+    name: 'opencode.message.count',
+    displayName: 'Messages',
+    description: 'Completed OpenCode assistant messages',
+    source: 'opencode',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.count,
+    isMonotonic: true,
+    breakdowns: [
+      {
+        attributeKey: 'model',
+        displayName: 'Model',
+        showInLegend: true,
+      },
+    ],
+  },
+  {
+    name: 'opencode.session.token.total',
+    displayName: 'Session Token Total',
+    description: 'Total tokens consumed per OpenCode session',
+    source: 'opencode',
+    metricType: 'histogram',
+    unit: UNIT_FORMATS.tokens,
+    isMonotonic: false,
+  },
+  {
+    name: 'opencode.session.cost.total',
+    displayName: 'Session Cost Total',
+    description: 'Total USD cost per OpenCode session',
+    source: 'opencode',
+    metricType: 'histogram',
+    unit: UNIT_FORMATS.usd,
+    isMonotonic: false,
+  },
+  {
+    name: 'opencode.model.usage',
+    displayName: 'Model Usage',
+    description: 'OpenCode completed messages by model and provider',
+    source: 'opencode',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.count,
+    isMonotonic: true,
+    breakdowns: [
+      {
+        attributeKey: 'model',
+        displayName: 'Model',
+        showInLegend: true,
+      },
+      {
+        attributeKey: 'provider',
+        displayName: 'Provider',
+        showInLegend: true,
+      },
+    ],
+  },
+  {
+    name: 'opencode.retry.count',
+    displayName: 'Retries',
+    description: 'OpenCode API retries observed from session status events',
+    source: 'opencode',
+    metricType: 'counter',
+    unit: UNIT_FORMATS.count,
+    isMonotonic: true,
+    breakdowns: [
+      {
+        attributeKey: 'model',
+        displayName: 'Model',
+        showInLegend: true,
+      },
+    ],
+  },
+
+  // ==========================================================================
   // GITHUB COPILOT METRICS
   // ==========================================================================
   {
@@ -1457,7 +1693,23 @@ export function getMetricMetadata(metricName: string): MetricMetadata {
   else if (metricName.startsWith('gemini_cli.')) source = 'gemini_cli'
   else if (metricName.startsWith('codex.') || metricName.startsWith('codex_cli_rs.')) source = 'codex_cli_rs'
   else if (metricName.startsWith('github_copilot.') || metricName.startsWith('copilot_chat.')) source = 'github_copilot'
+  else if (metricName.startsWith('opencode.')) source = 'opencode'
   else if (metricName.startsWith('gen_ai.')) source = 'gemini_cli'
+
+  let unit = UNIT_FORMATS.count
+  let metricType: MetricType = 'counter'
+  let isMonotonic = true
+  if (source === 'opencode') {
+    if (metricName.includes('cost')) {
+      unit = UNIT_FORMATS.usd
+    } else if (metricName.includes('token')) {
+      unit = UNIT_FORMATS.tokens
+    } else if (metricName.includes('duration')) {
+      unit = UNIT_FORMATS.milliseconds
+      metricType = 'histogram'
+      isMonotonic = false
+    }
+  }
 
   // Return fallback metadata
   return {
@@ -1465,9 +1717,9 @@ export function getMetricMetadata(metricName: string): MetricMetadata {
     displayName: formatMetricName(metricName),
     description: '',
     source,
-    metricType: 'counter',
-    unit: UNIT_FORMATS.count,
-    isMonotonic: true,
+    metricType,
+    unit,
+    isMonotonic,
   }
 }
 
@@ -1484,6 +1736,7 @@ export function formatMetricName(name: string): string {
     'codex.',
     'github_copilot.',
     'copilot_chat.',
+    'opencode.',
     'gen_ai.',
   ]
   let cleaned = name
@@ -1636,6 +1889,7 @@ export function getMetricsBySource(): Record<SourceTool, MetricMetadata[]> {
     gemini_cli: [],
     codex_cli_rs: [],
     github_copilot: [],
+    opencode: [],
     unknown: [],
   }
 
@@ -1659,6 +1913,8 @@ export function getSourceDisplayName(source: SourceTool): string {
       return 'Codex CLI'
     case 'github_copilot':
       return 'GitHub Copilot'
+    case 'opencode':
+      return 'OpenCode'
     default:
       return 'Other'
   }
@@ -1680,6 +1936,8 @@ export function getServiceDisplayName(serviceName: string): string {
       return 'GitHub Copilot VS Code Extension'
     case 'github-copilot':
       return 'GitHub Copilot CLI'
+    case 'opencode':
+      return 'OpenCode'
     default:
       return serviceName // fallback to original
   }
@@ -1700,6 +1958,8 @@ export function getServiceIcon(serviceName: string): LucideIcon {
     case 'copilot-chat':
     case 'github-copilot':
       return BotMessageSquare
+    case 'opencode':
+      return Terminal
     default:
       return Bot // fallback
   }

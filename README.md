@@ -2,7 +2,7 @@
 
 > Unified local observability for AI coding assistants
 
-**AI Observer** is a self-hosted, single-binary, OpenTelemetry-compatible observability backend designed specifically for monitoring local AI coding tools like Claude Code, Gemini CLI, OpenAI Codex CLI, and GitHub Copilot.
+**AI Observer** is a self-hosted, single-binary, OpenTelemetry-compatible observability backend designed specifically for monitoring local AI coding tools like Claude Code, Gemini CLI, OpenAI Codex CLI, GitHub Copilot, and OpenCode.
 
 Track token usage, costs, API latency, error rates, and session activity across all your AI coding assistants in one unified dashboard—with real-time updates and zero external dependencies.
 
@@ -17,12 +17,12 @@ AI coding assistants are becoming essential development tools, but understanding
 
 ## Features
 
-- **Multi-tool support** — Works with Claude Code, Gemini CLI, OpenAI Codex CLI, and GitHub Copilot
+- **Multi-tool support** — Works with Claude Code, Gemini CLI, OpenAI Codex CLI, GitHub Copilot, and OpenCode
 - **Real-time dashboard** — Live updates via WebSocket as telemetry arrives
 - **Persistent dashboards** — Drag-and-drop dashboard builder with saved widgets and multiple widget types
 - **File watcher mode** — Watch Claude, Codex, and Gemini session files in real-time, no OTLP configuration needed
 - **Historical import** — Import past Claude, Codex, and Gemini sessions from local JSONL/JSON files with cost calculation
-- **Cost tracking** — Embedded pricing data across Claude, Codex/OpenAI, Gemini, and GitHub Copilot model aliases
+- **Cost tracking** — Embedded pricing data across Claude, Codex/OpenAI, Gemini, and GitHub Copilot model aliases, plus native OpenCode plugin cost metrics
 - **Fast analytics** — DuckDB-powered storage for instant queries on large datasets
 - **Single binary** — One ~54MB executable with embedded frontend—no external dependencies
 - **Multi-arch Docker** — Ready-to-run ~97MB images for `linux/amd64` and `linux/arm64`
@@ -33,7 +33,7 @@ AI coding assistants are becoming essential development tools, but understanding
 - [Import Command](docs/import.md) — Import historical session data from local AI tool files
 - [Export Command](docs/export.md) — Export telemetry data to Parquet files for archiving and sharing
 - [Watch Command](#watch-command) — Watch local session files and import incrementally in real-time
-- [Pricing System](docs/pricing.md) — Cost calculation for Claude, Codex/OpenAI, Gemini, and GitHub Copilot models
+- [Pricing System](docs/pricing.md) — Cost calculation for Claude, Codex/OpenAI, Gemini, and GitHub Copilot models; OpenCode costs are ingested from the OTEL plugin
 
 ## Screenshots
 
@@ -163,6 +163,9 @@ ai-observer setup claude-code
 # Show setup instructions for GitHub Copilot
 ai-observer setup github-copilot
 
+# Show setup instructions for OpenCode
+ai-observer setup opencode
+
 # Import data from all file-backed AI tools
 ai-observer import all
 
@@ -255,7 +258,7 @@ Directories that don't exist yet are polled every 30 seconds and automatically a
 **File locations** are the same as the import command — override with `AI_OBSERVER_CLAUDE_PATH`, `AI_OBSERVER_CODEX_PATH`, `AI_OBSERVER_GEMINI_PATH`.
 
 > **Note:** Watch mode and OTLP ingestion (`serve`) are mutually exclusive. Running both simultaneously would produce duplicate data. Use `watch` for file-based ingestion or `serve` for OTLP — not both.
-> GitHub Copilot is OTLP-only in AI Observer; use `serve` and the Copilot OTLP settings below.
+> GitHub Copilot and OpenCode are OTLP-only in AI Observer; use `serve` and the OTLP setup settings below.
 
 **Examples:**
 
@@ -278,7 +281,7 @@ ai-observer watch gemini
 Export telemetry data to portable Parquet files with an optional DuckDB views database.
 
 ```bash
-ai-observer export [claude-code|codex|gemini|copilot-chat|github-copilot|all] --output <directory> [options]
+ai-observer export [claude-code|codex|gemini|opencode|copilot-chat|github-copilot|all] --output <directory> [options]
 ```
 
 | Option | Description |
@@ -310,6 +313,9 @@ ai-observer export claude-code --output ./export --from 2025-01-01 --to 2025-01-
 # Export GitHub Copilot VS Code Extension telemetry
 ai-observer export copilot-chat --output ./export
 
+# Export OpenCode telemetry
+ai-observer export opencode --output ./export
+
 # Export to ZIP archive
 ai-observer export all --output ./export --zip
 
@@ -320,7 +326,7 @@ ai-observer export claude-code --output ./export --from-files
 ai-observer export all --output ./export --dry-run
 ```
 
-> `--from-files` is only available for local file sources (`claude-code`, `codex`, `gemini`, `all`). GitHub Copilot is OTLP-only and exports from the DuckDB database.
+> `--from-files` is only available for local file sources (`claude-code`, `codex`, `gemini`, `all`). GitHub Copilot and OpenCode are OTLP-only and export from the DuckDB database.
 
 See [docs/export.md](docs/export.md) for detailed documentation.
 
@@ -430,6 +436,32 @@ trace_exporter = { otlp-http = { endpoint = "http://localhost:4318/v1/traces", p
 </details>
 
 <details>
+<summary><strong>OpenCode</strong></summary>
+
+OpenCode telemetry is available through the third-party [`@devtheops/opencode-plugin-otel`](https://github.com/DEVtheOPS/opencode-plugin-otel) plugin. AI Observer receives it through OTLP HTTP on port `4318`.
+
+Add to `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["@devtheops/opencode-plugin-otel"]
+}
+```
+
+Add to your `~/.bashrc`, `~/.zshrc`, or shell profile:
+
+```bash
+export OPENCODE_ENABLE_TELEMETRY=1
+export OPENCODE_OTLP_ENDPOINT=http://localhost:4318
+export OPENCODE_OTLP_PROTOCOL=http/protobuf
+```
+
+> The plugin defaults to OTLP/gRPC on port `4317`. AI Observer receives OTLP over HTTP on port `4318`, so set `OPENCODE_OTLP_PROTOCOL=http/protobuf` and use the base endpoint above.
+
+</details>
+
+<details>
 <summary><strong>GitHub Copilot</strong></summary>
 
 GitHub Copilot can export OTLP telemetry from the VS Code extension and CLI. AI Observer stores the raw telemetry and derives token and cost metrics from chat spans.
@@ -475,6 +507,7 @@ flowchart TB
     gemini[Gemini CLI<br/>traces, metrics, logs]
     codex[OpenAI Codex CLI<br/>logs, traces]
     copilot[GitHub Copilot<br/>VS Code + CLI<br/>traces, metrics, logs]
+    opencode[OpenCode<br/>OTEL plugin<br/>traces, metrics, logs]
 
     subgraph observer[AI Observer]
         ingest[OTLP Ingestion<br/>HTTP/JSON + HTTP/Protobuf<br/>Port 4318]
@@ -488,6 +521,7 @@ flowchart TB
     gemini -->|OTLP/HTTP| ingest
     codex -->|OTLP/HTTP| ingest
     copilot -->|OTLP/HTTP| ingest
+    opencode -->|OTLP/HTTP| ingest
     ingest --> derived
     ingest --> db
     derived --> db
@@ -518,7 +552,7 @@ flowchart TB
     api --> ui
 ```
 
-GitHub Copilot is not shown in watcher mode because AI Observer currently receives Copilot telemetry through OTLP only.
+GitHub Copilot and OpenCode are not shown in watcher mode because AI Observer currently receives their telemetry through OTLP only.
 
 **Tech Stack**:
 - **Backend**: Go 1.26+, chi router, DuckDB 1.5.3, gorilla/websocket
@@ -820,6 +854,44 @@ Copilot spans are stored as normal OTLP traces and can be opened from the Traces
 </details>
 
 <details>
+<summary><strong>OpenCode Metrics, Logs & Traces</strong></summary>
+
+OpenCode exports OTLP telemetry through the `@devtheops/opencode-plugin-otel` plugin. AI Observer stores the raw telemetry and surfaces the plugin's native token and cost metrics without deriving additional pricing rows.
+
+### Service
+
+| Service Name | Display Name |
+|--------------|--------------|
+| `opencode` | OpenCode |
+
+### Native Metrics
+
+| Metric | Display Name | Type | Description |
+|--------|--------------|------|-------------|
+| `opencode.session.count` | Sessions | Counter | OpenCode sessions started |
+| `opencode.token.usage` | Token Usage | Counter | Tokens by type (`input`, `output`, `reasoning`, `cacheRead`, `cacheCreation`) |
+| `opencode.cost.usage` | Cost | Counter | USD cost for completed assistant messages |
+| `opencode.lines_of_code.count` | Lines of Code | Counter | Gross positive line churn by additions and deletions |
+| `opencode.lines_of_code.total` | Lines of Code Total | Gauge | Current cumulative line changes for the session |
+| `opencode.commit.count` | Commits | Counter | Git commits detected via shell tool usage |
+| `opencode.tool.duration` | Tool Duration | Histogram | Tool execution time in milliseconds |
+| `opencode.cache.count` | Cache Activity | Counter | Cache read and cache creation activity |
+| `opencode.session.duration` | Session Duration | Histogram | Session duration from created to idle |
+| `opencode.message.count` | Messages | Counter | Completed assistant messages |
+| `opencode.session.token.total` | Session Token Total | Histogram | Total tokens consumed per session |
+| `opencode.session.cost.total` | Session Cost Total | Histogram | Total cost per session in USD |
+| `opencode.model.usage` | Model Usage | Counter | Messages by model and provider |
+| `opencode.retry.count` | Retries | Counter | API retries observed from session status events |
+
+### Logs and Traces
+
+OpenCode spans are stored as normal OTLP traces. When OpenCode emits plugin log events, AI Observer recognizes `session.id`, model attributes, token counts, cost, tool arguments, and tool results for session and transcript views.
+
+Recognized log events include `session.created`, `session.idle`, `session.error`, `user_prompt`, `api_request`, `api_error`, `tool_result`, `tool_decision`, and `commit`.
+
+</details>
+
+<details>
 <summary><strong>OpenAI Codex CLI Metrics & Events</strong></summary>
 
 Codex CLI exports logs and traces directly. AI Observer derives metrics from these log events.
@@ -960,7 +1032,30 @@ GitHub Copilot telemetry is OTLP-only in AI Observer. There is no local file wat
 | Traces / spans | Yes | — | — |
 | Transcript logs | Yes, when emitted as OTLP logs | — | — |
 
-> **Summary:** OTLP mode provides the richest telemetry — all metrics, traces, and events emitted by each tool's built-in instrumentation. Watch and import modes provide token usage, cost metrics, and full session transcripts parsed from local files. Operational metrics (lines of code, active time, API latency, git activity, etc.) only exist in the OTel telemetry stream and cannot be reconstructed from local files.
+### OpenCode
+
+OpenCode telemetry is OTLP-only in AI Observer through the `@devtheops/opencode-plugin-otel` plugin. There is no local file watcher or historical file import parser for OpenCode data.
+
+| Metric | OTLP (`serve`) | Watch (`watch`) | Import (`import`) |
+|--------|:-:|:-:|:-:|
+| `opencode.session.count` | Yes | — | — |
+| `opencode.token.usage` | Yes | — | — |
+| `opencode.cost.usage` | Yes | — | — |
+| `opencode.lines_of_code.count` | Yes | — | — |
+| `opencode.lines_of_code.total` | Yes | — | — |
+| `opencode.commit.count` | Yes | — | — |
+| `opencode.tool.duration` | Yes | — | — |
+| `opencode.cache.count` | Yes | — | — |
+| `opencode.session.duration` | Yes | — | — |
+| `opencode.message.count` | Yes | — | — |
+| `opencode.session.token.total` | Yes | — | — |
+| `opencode.session.cost.total` | Yes | — | — |
+| `opencode.model.usage` | Yes | — | — |
+| `opencode.retry.count` | Yes | — | — |
+| Traces / spans | Yes | — | — |
+| Transcript logs | Yes, when emitted as OTLP logs | — | — |
+
+> **Summary:** OTLP mode provides the richest telemetry — all metrics, traces, and events emitted by each tool's built-in or plugin instrumentation. Watch and import modes provide token usage, cost metrics, and full session transcripts parsed from local files. Operational metrics (lines of code, active time, API latency, git activity, etc.) only exist in the OTel telemetry stream and cannot be reconstructed from local files.
 
 ## Understanding Token Metrics: OTLP vs Local Files
 

@@ -60,6 +60,7 @@ export function AddWidgetPanel() {
     if (normalized.includes('gemini')) return 'gemini_cli'
     if (normalized.includes('codex')) return 'codex_cli_rs'
     if (normalized.includes('copilot')) return 'github_copilot'
+    if (normalized.includes('opencode')) return 'opencode'
     return null
   }, [])
 
@@ -70,6 +71,7 @@ export function AddWidgetPanel() {
       gemini_cli: [],
       codex_cli_rs: [],
       github_copilot: [],
+      opencode: [],
       unknown: [],
       other: [],
     }
@@ -80,7 +82,7 @@ export function AddWidgetPanel() {
       if (
         !filterSource ||
         metric.source === filterSource ||
-        (isSharedGenAIMetric(metric.name) && (filterSource === 'gemini_cli' || filterSource === 'github_copilot'))
+        (isSharedGenAIMetric(metric.name) && (filterSource === 'gemini_cli' || filterSource === 'github_copilot' || filterSource === 'opencode'))
       ) {
         allMetricNames.add(metric.name)
       }
@@ -428,6 +430,13 @@ export function AddWidgetPanel() {
                   {groupedMetrics.github_copilot.length > 0 && (
                     <optgroup label={getSourceDisplayName('github_copilot')}>
                       {groupedMetrics.github_copilot.map((name) => (
+                        <option key={name} value={name}>{getMetricMetadata(name).displayName}</option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {groupedMetrics.opencode.length > 0 && (
+                    <optgroup label={getSourceDisplayName('opencode')}>
+                      {groupedMetrics.opencode.map((name) => (
                         <option key={name} value={name}>{getMetricMetadata(name).displayName}</option>
                       ))}
                     </optgroup>

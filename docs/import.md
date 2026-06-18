@@ -10,6 +10,8 @@ The `ai-observer import` command allows you to import historical session data fr
 | Codex CLI | `~/.codex/sessions/*.jsonl` | JSONL |
 | Gemini CLI | `~/.gemini/tmp/**/session-*.json` | JSON |
 
+GitHub Copilot and OpenCode are OTLP-only in AI Observer. They do not have local file import parsers; run `ai-observer serve` and use their OTLP setup instead.
+
 ## Usage
 
 ```bash
