@@ -3,6 +3,7 @@ package otlp
 import (
 	"encoding/json"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/tobilg/ai-observer/internal/api"
@@ -35,6 +36,9 @@ func ConvertLogs(req *collogspb.ExportLogsServiceRequest) LogConversionResult {
 
 			for _, lr := range sl.GetLogRecords() {
 				logAttrs := convertAttributes(lr.GetAttributes())
+				if eventName := strings.TrimSpace(lr.GetEventName()); eventName != "" && logAttrs["event.name"] == "" {
+					logAttrs["event.name"] = eventName
+				}
 
 				// Resolve timestamp with fallbacks before creating log record
 				timestamp := nanosToTime(lr.GetTimeUnixNano())
