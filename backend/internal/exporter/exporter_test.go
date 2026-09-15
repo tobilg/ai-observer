@@ -70,6 +70,7 @@ func TestParseSourceArg(t *testing.T) {
 		{"claude-code", SourceClaude, false},
 		{"codex", SourceCodex, false},
 		{"gemini", SourceGemini, false},
+		{"opencode", SourceOpenCode, false},
 		{"copilot-chat", SourceCopilotVSCode, false},
 		{"github-copilot", SourceCopilotCLI, false},
 		{"all", SourceAll, false},
@@ -106,6 +107,7 @@ func TestOptionsServiceName(t *testing.T) {
 		{SourceClaude, "claude-code"},
 		{SourceCodex, "codex_cli_rs"},
 		{SourceGemini, "gemini_cli"},
+		{SourceOpenCode, "opencode"},
 		{SourceCopilotVSCode, "copilot-chat"},
 		{SourceCopilotCLI, "github-copilot"},
 		{SourceAll, ""},
@@ -128,6 +130,16 @@ func TestRunFromFilesRejectsCopilot(t *testing.T) {
 		t.Fatal("expected error for Copilot from-files export")
 	}
 	if err.Error() != "from-files export is not supported for copilot-chat because GitHub Copilot is OTLP-only" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunFromFilesRejectsOpenCode(t *testing.T) {
+	err := runFromFiles(context.Background(), Options{Source: SourceOpenCode})
+	if err == nil {
+		t.Fatal("expected error for OpenCode from-files export")
+	}
+	if err.Error() != "from-files export is not supported for opencode because OpenCode is OTLP-only" {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -394,14 +406,15 @@ func TestGetDateRange(t *testing.T) {
 
 func TestValidSources(t *testing.T) {
 	sources := ValidSources()
-	if len(sources) != 6 {
-		t.Errorf("expected 6 valid sources, got %d", len(sources))
+	if len(sources) != 7 {
+		t.Errorf("expected 7 valid sources, got %d", len(sources))
 	}
 
 	expected := map[string]bool{
 		"claude-code":    true,
 		"codex":          true,
 		"gemini":         true,
+		"opencode":       true,
 		"copilot-chat":   true,
 		"github-copilot": true,
 		"all":            true,

@@ -20,6 +20,8 @@ func runFromFiles(ctx context.Context, opts Options) error {
 		sources = []importer.SourceType{importer.SourceCodex}
 	case SourceGemini:
 		sources = []importer.SourceType{importer.SourceGemini}
+	case SourceOpenCode:
+		return fmt.Errorf("from-files export is not supported for %s because OpenCode is OTLP-only", opts.Source)
 	case SourceCopilotVSCode, SourceCopilotCLI:
 		return fmt.Errorf("from-files export is not supported for %s because GitHub Copilot is OTLP-only", opts.Source)
 	case SourceAll:

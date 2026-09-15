@@ -643,3 +643,62 @@ func TestGetBreakdownValues(t *testing.T) {
 		})
 	}
 }
+
+func TestGetSessionTranscript_CopilotListedSessionReturnsTranscript(t *testing.T) {
+	h, cleanup := setupTestHandlers(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	sessionID := "copilot-conv-1"
+
+	if err := h.store.InsertLogs(ctx, []api.LogRecord{{
+		Timestamp:   now,
+		ServiceName: "copilot-chat",
+		Body:        "copilot_chat.session.start",
+		LogAttributes: map[string]string{
+			"event.name": "copilot_chat.session.start",
+			"session.id": sessionID,
+		},
+	}}); err != nil {
+		t.Fatalf("failed to insert copilot session log: %v", err)
+	}
+	if err := h.store.InsertSpans(ctx, []api.Span{{
+		Timestamp:   now.Add(time.Second),
+		TraceID:     "trace-copilot",
+		SpanID:      "span-agent",
+		ServiceName: "copilot-chat",
+		SpanName:    "invoke_agent copilot",
+		StatusCode:  "OK",
+		SpanAttributes: map[string]string{
+			"gen_ai.operation.name":  "invoke_agent",
+			"gen_ai.conversation.id": sessionID,
+			"gen_ai.input.messages":  `[{"role":"user","parts":[{"type":"text","content":"hello from copilot"}]}]`,
+		},
+	}}); err != nil {
+		t.Fatalf("failed to insert copilot spans: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sessionID+"/transcript", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionId", sessionID)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	rec := httptest.NewRecorder()
+	h.GetSessionTranscript(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp api.TranscriptResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.SessionID != sessionID {
+		t.Fatalf("expected session %q, got %q", sessionID, resp.SessionID)
+	}
+	if len(resp.Messages) == 0 || resp.Messages[0].Role != "user" {
+		t.Fatalf("expected reconstructed user message, got %+v", resp.Messages)
+	}
+}

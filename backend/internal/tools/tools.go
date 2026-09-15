@@ -6,9 +6,10 @@ package tools
 type Tool string
 
 const (
-	Claude Tool = "claude-code"
-	Codex  Tool = "codex"
-	Gemini Tool = "gemini"
+	Claude   Tool = "claude-code"
+	Codex    Tool = "codex"
+	Gemini   Tool = "gemini"
+	OpenCode Tool = "opencode"
 )
 
 // ServiceName returns the OTLP service.name attribute for this tool.
@@ -23,14 +24,15 @@ func (t Tool) ServiceName() string {
 // serviceNames maps tools to their OTLP service.name attribute values.
 // This is the single source of truth for service names.
 var serviceNames = map[Tool]string{
-	Claude: "claude-code",  // Matches Claude Code OTLP telemetry
-	Codex:  "codex_cli_rs", // Matches Codex CLI OTLP telemetry
-	Gemini: "gemini_cli",   // Matches Gemini CLI OTLP telemetry
+	Claude:   "claude-code",  // Matches Claude Code OTLP telemetry
+	Codex:    "codex_cli_rs", // Matches Codex CLI OTLP telemetry
+	Gemini:   "gemini_cli",   // Matches Gemini CLI OTLP telemetry
+	OpenCode: "opencode",     // Matches OpenCode OTEL plugin telemetry
 }
 
 // All returns all supported tools
 func All() []Tool {
-	return []Tool{Claude, Codex, Gemini}
+	return []Tool{Claude, Codex, Gemini, OpenCode}
 }
 
 // Parse converts a string to a Tool, returning ok=false if invalid
@@ -42,6 +44,8 @@ func Parse(s string) (Tool, bool) {
 		return Codex, true
 	case "gemini":
 		return Gemini, true
+	case "opencode":
+		return OpenCode, true
 	default:
 		return "", false
 	}
@@ -55,9 +59,9 @@ func ServiceNameFor(tool string) string {
 	return ""
 }
 
-// NormalizeServiceName accepts either a short tool name (claude, codex, gemini)
-// or a full service name (claude-code, codex_cli_rs, gemini_cli, copilot-chat,
-// github-copilot) and returns
+// NormalizeServiceName accepts either a short tool name (claude, codex, gemini,
+// opencode) or a full service name (claude-code, codex_cli_rs, gemini_cli,
+// opencode, copilot-chat, github-copilot) and returns
 // the canonical service name. Returns empty string if invalid.
 func NormalizeServiceName(input string) string {
 	switch input {

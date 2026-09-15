@@ -84,6 +84,9 @@ Environment Variables:
   AI_OBSERVER_GEMINI_PATH    Custom Gemini CLI home directory
   COPILOT_OTEL_ENABLED       Enable GitHub Copilot OTLP export
   COPILOT_OTEL_CAPTURE_CONTENT Capture GitHub Copilot prompts and tool content
+  OPENCODE_ENABLE_TELEMETRY  Enable OpenCode OTEL plugin export
+  OPENCODE_OTLP_ENDPOINT     OpenCode OTLP endpoint (use http://localhost:4318)
+  OPENCODE_OTLP_PROTOCOL     OpenCode OTLP protocol (use http/protobuf)
 `)
 }
 

@@ -34,7 +34,7 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
     content: [
       {
         type: 'paragraph',
-        text: 'AI Observer is a unified observability dashboard for monitoring AI coding assistants. It collects and displays telemetry data from Claude Code, Gemini CLI, OpenAI Codex CLI, and GitHub Copilot, giving you real-time visibility into token usage, costs, API performance, and session activity.',
+        text: 'AI Observer is a unified observability dashboard for monitoring AI coding assistants. It collects and displays telemetry data from Claude Code, Gemini CLI, OpenAI Codex CLI, GitHub Copilot, and OpenCode, giving you real-time visibility into token usage, costs, API performance, and session activity.',
       },
       {
         type: 'heading',
@@ -395,6 +395,10 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
         text: 'GitHub Copilot metrics include: Sessions, Token Usage, Cost, Tool Calls, Agent Turns, Edit Outcomes, Lines of Code, and Cloud PR events',
       },
       {
+        type: 'note',
+        text: 'OpenCode metrics include: Sessions, Token Usage, Cost, Lines of Code, Tool Duration, Cache Activity, Model Usage, and Retries',
+      },
+      {
         type: 'paragraph',
         text: 'When you select a metric, its metadata is displayed below the selection: the metric name, unit of measurement, and description.',
       },
@@ -533,6 +537,7 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       { id: 'telemetry-claude', title: 'Claude Code' },
       { id: 'telemetry-gemini', title: 'Gemini CLI' },
       { id: 'telemetry-copilot', title: 'GitHub Copilot' },
+      { id: 'telemetry-opencode', title: 'OpenCode' },
       { id: 'telemetry-codex', title: 'Codex CLI' },
     ],
     content: [
@@ -675,6 +680,45 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
             { cells: ['copilot_chat.cloud.pr_ready.count', 'Cloud PR Ready', 'count', 'Cloud pull requests marked ready'] },
           ],
         },
+      },
+      {
+        type: 'heading',
+        level: 3,
+        text: 'OpenCode Metrics',
+      },
+      {
+        type: 'paragraph',
+        text: 'OpenCode exports OTLP telemetry through the @devtheops/opencode-plugin-otel plugin. AI Observer stores the raw OTLP data and surfaces the plugin-native token and cost metrics without deriving additional pricing rows.',
+      },
+      {
+        type: 'note',
+        text: 'Service name: opencode identifies OpenCode telemetry from the OTEL plugin. OpenCode is OTLP-only in AI Observer; there is no file watcher or historical file import parser.',
+      },
+      {
+        type: 'table',
+        table: {
+          headers: ['Metric Name', 'Display Name', 'Unit', 'Description'],
+          rows: [
+            { cells: ['opencode.session.count', 'Sessions', 'count', 'Number of OpenCode sessions started'] },
+            { cells: ['opencode.token.usage', 'Token Usage', 'tokens', 'Plugin-native token usage by type and model'] },
+            { cells: ['opencode.cost.usage', 'Cost', 'USD', 'Plugin-native cost for completed assistant messages'] },
+            { cells: ['opencode.lines_of_code.count', 'Lines of Code', 'count', 'Gross positive line churn by additions and deletions'] },
+            { cells: ['opencode.lines_of_code.total', 'Lines of Code Total', 'count', 'Current cumulative line changes for the session'] },
+            { cells: ['opencode.commit.count', 'Commits', 'count', 'Git commits detected by OpenCode'] },
+            { cells: ['opencode.tool.duration', 'Tool Duration', 'ms', 'Tool execution time'] },
+            { cells: ['opencode.cache.count', 'Cache Activity', 'count', 'Cache read and cache creation activity'] },
+            { cells: ['opencode.session.duration', 'Session Duration', 'ms', 'Session duration from created to idle'] },
+            { cells: ['opencode.message.count', 'Messages', 'count', 'Completed assistant messages'] },
+            { cells: ['opencode.session.token.total', 'Session Token Total', 'tokens', 'Total tokens consumed per session'] },
+            { cells: ['opencode.session.cost.total', 'Session Cost Total', 'USD', 'Total cost per session'] },
+            { cells: ['opencode.model.usage', 'Model Usage', 'count', 'Messages by model and provider'] },
+            { cells: ['opencode.retry.count', 'Retries', 'count', 'API retries observed from session status events'] },
+          ],
+        },
+      },
+      {
+        type: 'note',
+        text: 'OpenCode events: AI Observer recognizes session.created, session.idle, session.error, user_prompt, api_request, api_error, tool_result, tool_decision, and commit for session and transcript views.',
       },
       {
         type: 'heading',

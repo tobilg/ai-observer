@@ -1,6 +1,8 @@
 # Pricing System
 
-AI Observer includes a unified pricing system for calculating costs across Claude, Codex (OpenAI), and Gemini (Google) models. Pricing data is embedded in the binary as JSON files and loaded at startup.
+AI Observer includes a unified pricing system for calculating costs across Claude, Codex (OpenAI), Gemini (Google), and derived GitHub Copilot metrics. Pricing data is embedded in the binary as JSON files and loaded at startup.
+
+OpenCode is different: AI Observer ingests the native cost metrics emitted by the `@devtheops/opencode-plugin-otel` plugin and does not derive additional OpenCode pricing rows.
 
 ## Pricing Data
 
