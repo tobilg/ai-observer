@@ -846,6 +846,26 @@ func TestImportUnregisteredParser(t *testing.T) {
 	}
 }
 
+// TestRelativeFilePath tests relative path extraction
+func TestRelativeFilePath(t *testing.T) {
+	tests := []struct {
+		filePath string
+		baseDir  string
+		expected string
+	}{
+		{"/home/user/project/main.go", "/home/user/project", "main.go"},
+		{"/home/user/project/sub/file.ts", "/home/user/project", "sub/file.ts"},
+		{"/home/user/project/main.go", "", "main.go"},
+		{"/other/path/file.py", "/home/user/project", "file.py"}, // outside base -> basename
+	}
+	for _, tc := range tests {
+		got := relativeFilePath(tc.filePath, tc.baseDir)
+		if got != tc.expected {
+			t.Errorf("relativeFilePath(%q, %q) = %q, want %q", tc.filePath, tc.baseDir, got, tc.expected)
+		}
+	}
+}
+
 // Helper functions
 func floatPtr(f float64) *float64 {
 	return &f

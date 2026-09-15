@@ -1,9 +1,9 @@
 module github.com/tobilg/ai-observer
 
-go 1.26
+go 1.26.0
 
 require (
-	github.com/duckdb/duckdb-go/v2 v2.10503.1
+	github.com/duckdb/duckdb-go/v2 v2.10505.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/go-chi/cors v1.2.2
@@ -12,16 +12,17 @@ require (
 	go.opentelemetry.io/proto/otlp v1.10.0
 	golang.org/x/net v0.52.0
 	google.golang.org/protobuf v1.36.11
+	mvdan.cc/sh/v3 v3.14.1
 )
 
 require (
 	github.com/apache/arrow-go/v18 v18.5.2 // indirect
-	github.com/duckdb/duckdb-go-bindings v0.10503.0 // indirect
-	github.com/duckdb/duckdb-go-bindings/lib/darwin-amd64 v0.10503.0 // indirect
-	github.com/duckdb/duckdb-go-bindings/lib/darwin-arm64 v0.10503.0 // indirect
-	github.com/duckdb/duckdb-go-bindings/lib/linux-amd64 v0.10503.0 // indirect
-	github.com/duckdb/duckdb-go-bindings/lib/linux-arm64 v0.10503.0 // indirect
-	github.com/duckdb/duckdb-go-bindings/lib/windows-amd64 v0.10503.0 // indirect
+	github.com/duckdb/duckdb-go-bindings v0.10505.0 // indirect
+	github.com/duckdb/duckdb-go-bindings/lib/darwin-amd64 v0.10505.0 // indirect
+	github.com/duckdb/duckdb-go-bindings/lib/darwin-arm64 v0.10505.0 // indirect
+	github.com/duckdb/duckdb-go-bindings/lib/linux-amd64 v0.10505.0 // indirect
+	github.com/duckdb/duckdb-go-bindings/lib/linux-arm64 v0.10505.0 // indirect
+	github.com/duckdb/duckdb-go-bindings/lib/windows-amd64 v0.10505.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/goccy/go-json v0.10.6 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
@@ -33,7 +34,7 @@ require (
 	golang.org/x/exp v0.0.0-20260312153236-7ab1446f8b90 // indirect
 	golang.org/x/mod v0.34.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260316223853-b6b0c46d1ccd // indirect
 	golang.org/x/text v0.35.0 // indirect
 	golang.org/x/tools v0.43.0 // indirect

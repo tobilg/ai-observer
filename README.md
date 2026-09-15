@@ -953,11 +953,11 @@ This means long CLI sessions produce traces with thousands of spans spanning hou
 
 ## Metric Availability by Ingestion Mode
 
-Not all metrics are available in every mode. OTLP receives telemetry emitted by each tool's built-in OpenTelemetry instrumentation (in-memory counters, histograms, traces), while `watch` and `import` parse local session files which only contain conversation messages and per-response token/cost data.
+Not all metrics are available in every mode. OTLP receives telemetry emitted by each tool's built-in OpenTelemetry instrumentation (in-memory counters, histograms, traces), while `watch` and `import` parse local session files. Historical Claude Code imports can also reconstruct selected activity metrics from tool results and session metadata.
 
 ### Claude Code
 
-Local JSONL files store conversation messages and API usage per response. Operational metrics (lines of code, active time, git activity) are tracked in-memory by Claude Code's OTel instrumentation and only emitted over the network — they are never written to disk.
+Local JSONL files store conversation messages and API usage per response. Full imports also reconstruct activity from successful tool results, PR links, and turn durations when available. These records do not reproduce all live OTel counters; see [reconstruction rules and limitations](docs/import.md#claude-code-activity-metrics). The incremental watcher imports transcripts and token/cost usage only.
 
 | Metric | OTLP (`serve`) | Watch (`watch`) | Import (`import`) |
 |--------|:-:|:-:|:-:|
@@ -965,11 +965,11 @@ Local JSONL files store conversation messages and API usage per response. Operat
 | `claude_code.cost.usage` | Yes | Yes | Yes |
 | `claude_code.token.usage_user_facing` | Yes (derived) | Yes | Yes |
 | `claude_code.cost.usage_user_facing` | Yes (derived) | Yes | Yes |
-| `claude_code.session.count` | Yes | — | — |
-| `claude_code.lines_of_code.count` | Yes | — | — |
-| `claude_code.active_time.total` | Yes | — | — |
-| `claude_code.pull_request.count` | Yes | — | — |
-| `claude_code.commit.count` | Yes | — | — |
+| `claude_code.session.count` | Yes | — | Reconstructed |
+| `claude_code.lines_of_code.count` | Yes | — | Reconstructed |
+| `claude_code.active_time.total` | Yes | — | Reconstructed |
+| `claude_code.pull_request.count` | Yes | — | Reconstructed |
+| `claude_code.commit.count` | Yes | — | Reconstructed |
 | `claude_code.code_edit_tool.decision` | Yes | — | — |
 | Transcript logs | — | Yes | Yes |
 
