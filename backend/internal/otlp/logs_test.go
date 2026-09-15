@@ -384,3 +384,50 @@ func TestConvertLogs_CodexSSEEvent_NonResponseCompleted_NoMetrics(t *testing.T) 
 		t.Errorf("Expected 0 derived metrics for chunk event, got %d", len(result.DerivedMetrics))
 	}
 }
+
+func TestConvertLogs_PreservesProtoEventName(t *testing.T) {
+	payload := `{
+		"resourceLogs": [{
+			"resource": {
+				"attributes": [
+					{"key": "service.name", "value": {"stringValue": "copilot-chat"}}
+				]
+			},
+			"scopeLogs": [{
+				"scope": {"name": "copilot-chat"},
+				"logRecords": [
+					{
+						"timeUnixNano": "1703500000000000000",
+						"severityNumber": 9,
+						"eventName": "copilot_chat.session.start",
+						"body": {"stringValue": "copilot_chat.session.start"},
+						"attributes": [
+							{"key": "session.id", "value": {"stringValue": "conv-123"}}
+						]
+					}
+				]
+			}]
+		}]
+	}`
+
+	decoder, err := GetDecoder("application/json")
+	if err != nil {
+		t.Fatalf("Failed to get decoder: %v", err)
+	}
+
+	req, err := decoder.DecodeLogs(strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("Failed to decode logs: %v", err)
+	}
+
+	result := ConvertLogs(req)
+	if len(result.Logs) != 1 {
+		t.Fatalf("Expected 1 log record, got %d", len(result.Logs))
+	}
+	if got := result.Logs[0].LogAttributes["event.name"]; got != "copilot_chat.session.start" {
+		t.Fatalf("expected event.name from proto EventName, got %q", got)
+	}
+	if got := result.Logs[0].LogAttributes["session.id"]; got != "conv-123" {
+		t.Fatalf("expected session.id conv-123, got %q", got)
+	}
+}

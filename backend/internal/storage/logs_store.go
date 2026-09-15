@@ -225,7 +225,8 @@ func (s *DuckDBStore) GetLogLevels(ctx context.Context) (map[string]int64, error
 }
 
 // QuerySessions returns sessions with transcript messages from all services
-// Supports: Claude Code (transcript.message), Gemini CLI (session.id), Codex CLI (conversation.id), Copilot (gen_ai.conversation.id), OpenCode (session.id)
+// Supports: Claude Code (transcript.message), Gemini CLI (session.id), Codex CLI (conversation.id),
+// Copilot (session.id / gen_ai.conversation.id / copilot_chat.session_id), OpenCode (session.id)
 func (s *DuckDBStore) QuerySessions(ctx context.Context, service string, from, to time.Time, limit, offset int) (*api.SessionsResponse, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -240,13 +241,9 @@ func (s *DuckDBStore) QuerySessions(ctx context.Context, service string, from, t
 	// - Gemini CLI: session.id in logAttributes
 	// - Codex CLI: conversation.id in logAttributes
 	// Note: Keys contain dots, use JSONPath with escaped quotes: $."key.name"
-	query := `
+	query := fmt.Sprintf(`
 		SELECT
-			COALESCE(
-				json_extract_string(LogAttributes, '$."session.id"'),
-				json_extract_string(LogAttributes, '$."conversation.id"'),
-				json_extract_string(LogAttributes, '$."gen_ai.conversation.id"')
-			) as session_id,
+			%s as session_id,
 			ServiceName,
 			MIN(Timestamp) as start_time,
 			MAX(Timestamp) as last_time,
@@ -260,12 +257,8 @@ func (s *DuckDBStore) QuerySessions(ctx context.Context, service string, from, t
 		FROM otel_logs
 		WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
 		  AND json_valid(LogAttributes)
-		  AND (
-			json_extract_string(LogAttributes, '$."session.id"') IS NOT NULL
-			OR json_extract_string(LogAttributes, '$."conversation.id"') IS NOT NULL
-			OR json_extract_string(LogAttributes, '$."gen_ai.conversation.id"') IS NOT NULL
-		  )
-	`
+		  AND %s
+	`, sessionIDCoalesceSQL("LogAttributes"), sessionIDPresentSQL("LogAttributes"))
 	args := []interface{}{fromStr, toStr}
 
 	if service != "" {
@@ -280,21 +273,13 @@ func (s *DuckDBStore) QuerySessions(ctx context.Context, service string, from, t
 	`
 
 	// Get total count first
-	countQuery := `
-		SELECT COUNT(DISTINCT COALESCE(
-			json_extract_string(LogAttributes, '$."session.id"'),
-			json_extract_string(LogAttributes, '$."conversation.id"'),
-			json_extract_string(LogAttributes, '$."gen_ai.conversation.id"')
-		))
+	countQuery := fmt.Sprintf(`
+		SELECT COUNT(DISTINCT %s)
 		FROM otel_logs
 		WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
 		  AND json_valid(LogAttributes)
-		  AND (
-			json_extract_string(LogAttributes, '$."session.id"') IS NOT NULL
-			OR json_extract_string(LogAttributes, '$."conversation.id"') IS NOT NULL
-			OR json_extract_string(LogAttributes, '$."gen_ai.conversation.id"') IS NOT NULL
-		  )
-	`
+		  AND %s
+	`, sessionIDCoalesceSQL("LogAttributes"), sessionIDPresentSQL("LogAttributes"))
 	countArgs := []interface{}{fromStr, toStr}
 	if service != "" {
 		countQuery += " AND ServiceName = ?"
@@ -346,114 +331,40 @@ func (s *DuckDBStore) QuerySessions(ctx context.Context, service string, from, t
 	}, nil
 }
 
-// GetSessionTranscript returns all logs for a session, mapping events to transcript roles
-// Supports: Claude Code, Gemini CLI, Codex CLI, GitHub Copilot
+// GetSessionTranscript returns transcript messages for a session.
+// Copilot local sessions are listed from session-start logs but the conversation
+// content lives on GenAI spans, so matching spans are merged into the transcript.
 func (s *DuckDBStore) GetSessionTranscript(ctx context.Context, sessionID string) (*api.TranscriptResponse, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// Query for logs matching either session.id or conversation.id
-	// Note: Keys contain dots, use JSONPath with escaped quotes: $."key.name"
-	// Use json_valid() guard to skip rows with malformed JSON in LogAttributes
-	query := `
-		SELECT
-			Timestamp,
-			ServiceName,
-			Body,
-			LogAttributes
-		FROM otel_logs
-		WHERE json_valid(LogAttributes)
-		  AND (
-			json_extract_string(LogAttributes, '$."session.id"') = ?
-			OR json_extract_string(LogAttributes, '$."conversation.id"') = ?
-			OR json_extract_string(LogAttributes, '$."gen_ai.conversation.id"') = ?
-		)
-		ORDER BY Timestamp ASC
-	`
-
-	rows, err := s.db.QueryContext(ctx, query, sessionID, sessionID, sessionID)
+	logRows, err := s.querySessionLogsLocked(ctx, sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("querying transcript: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
-
-	var messages []api.TranscriptMessage
-	var serviceName string
-	var startTime, lastTime time.Time
-	isFirst := true
-	index := 0
-
-	for rows.Next() {
-		var timestamp time.Time
-		var svc string
-		var body sql.NullString
-		var logAttrs interface{}
-
-		if err := rows.Scan(&timestamp, &svc, &body, &logAttrs); err != nil {
-			return nil, fmt.Errorf("scanning transcript message: %w", err)
+	// Imported transcripts already contain the conversation. Preserve their
+	// records, indices and bounds even when live telemetry also exists.
+	imported := false
+	for _, row := range logRows {
+		if row.Attrs["event.name"] == "transcript.message" {
+			imported = true
+			break
 		}
-
-		attrs := scanJSONToMap(logAttrs)
-
-		if isFirst {
-			serviceName = svc
-			startTime = timestamp
-			isFirst = false
-		}
-		lastTime = timestamp
-
-		// Map event types to roles based on service
-		eventName := attrs["event.name"]
-		role := mapEventToRole(eventName, svc)
-
-		// For transcript.message events, use the message.role attribute
-		if eventName == "transcript.message" {
-			role = attrs["message.role"]
-		}
-
-		// Skip events that don't map to transcript roles
-		if role == "" {
-			continue
-		}
-
-		// Get index from attributes if available (Claude Code imported)
-		if idxStr, ok := attrs["message.index"]; ok {
-			fmt.Sscanf(idxStr, "%d", &index)
-		}
-
-		// Extract actual content based on event type
-		content := extractMessageContent(eventName, attrs, body.String)
-
-		msg := api.TranscriptMessage{
-			Timestamp:    timestamp,
-			Role:         role,
-			Content:      content,
-			Index:        index,
-			Model:        getModelName(attrs),
-			ToolName:     getToolName(attrs, eventName),
-			ToolInput:    getToolInput(attrs),
-			ToolOutput:   getToolOutput(attrs),
-			InputTokens:  parseIntAttr(attrs, "input_tokens", "inputTokens", "gen_ai.usage.input_tokens", "llm.token_count.prompt"),
-			OutputTokens: parseIntAttr(attrs, "output_tokens", "outputTokens", "gen_ai.usage.output_tokens", "llm.token_count.completion"),
-			CacheRead:    parseIntAttr(attrs, "cache_read_input_tokens", "cacheRead", "gen_ai.usage.cache_read.input_tokens"),
-			CacheWrite:   parseIntAttr(attrs, "cache_creation_input_tokens", "cacheWrite", "gen_ai.usage.cache_creation.input_tokens"),
-			CostUSD:      parseFloatAttr(attrs, "cost_usd", "costUsd", "llm.cost"),
-			DurationMs:   parseIntAttr(attrs, "duration_ms", "durationMs"),
-			Success:      parseBoolAttr(attrs, "success", "tool_success"),
-			OutputSize:   parseIntAttr(attrs, "tool_result_size_bytes", "outputSize"),
-		}
-
-		messages = append(messages, msg)
-		index++
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating transcript: %w", err)
+	var spans []api.Span
+	if !imported {
+		spans, err = s.querySessionSpansLocked(ctx, sessionID)
+		if err != nil {
+			return nil, err
+		}
 	}
-
-	if len(messages) == 0 {
+	if len(logRows) == 0 && len(spans) == 0 {
 		return nil, fmt.Errorf("session not found: %s", sessionID)
 	}
 
+	messages := mergeTranscriptMessages(logRows, transcriptMessagesFromSpans(spans, logRows))
+
+	serviceName, startTime, lastTime := sessionTranscriptBounds(logRows, spans)
 	return &api.TranscriptResponse{
 		SessionID:   sessionID,
 		ServiceName: serviceName,
@@ -461,6 +372,36 @@ func (s *DuckDBStore) GetSessionTranscript(ctx context.Context, sessionID string
 		LastTime:    lastTime,
 		Messages:    messages,
 	}, nil
+}
+
+func sessionTranscriptBounds(logRows []sessionLogRow, spans []api.Span) (string, time.Time, time.Time) {
+	var serviceName string
+	var startTime, lastTime time.Time
+
+	for _, row := range logRows {
+		if serviceName == "" {
+			serviceName = row.ServiceName
+		}
+		if startTime.IsZero() || row.Timestamp.Before(startTime) {
+			startTime = row.Timestamp
+		}
+		if lastTime.IsZero() || row.Timestamp.After(lastTime) {
+			lastTime = row.Timestamp
+		}
+	}
+	for _, span := range spans {
+		if serviceName == "" {
+			serviceName = span.ServiceName
+		}
+		if startTime.IsZero() || span.Timestamp.Before(startTime) {
+			startTime = span.Timestamp
+		}
+		end := spanEndTime(span)
+		if lastTime.IsZero() || end.After(lastTime) {
+			lastTime = end
+		}
+	}
+	return serviceName, startTime, lastTime
 }
 
 // mapEventToRole converts event names to transcript roles
@@ -648,8 +589,14 @@ func extractMessageContent(eventName string, attrs map[string]string, body strin
 		return body
 
 	case "gen_ai.client.inference.operation.details", "copilot_chat.agent.turn":
+		if output := extractGenAIMessageText(attrs["gen_ai.output.messages"], "assistant"); output != "" {
+			return output
+		}
 		if output, ok := attrs["gen_ai.output.messages"]; ok && output != "" {
 			return output
+		}
+		if input := extractGenAIMessageText(attrs["gen_ai.input.messages"], "user"); input != "" {
+			return input
 		}
 		return body
 

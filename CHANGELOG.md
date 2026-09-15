@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Fixed GitHub Copilot local session transcripts returning "Failed to load session transcript". Copilot lists sessions from `copilot_chat.session.start` logs, but conversation content is on GenAI spans; transcripts now reconstruct user, assistant, and tool messages from those spans instead of 404ing when no log events map to roles.
+
 ## [0.5.0] - 2026-06-18
 
 ### Added

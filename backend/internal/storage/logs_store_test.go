@@ -16,6 +16,10 @@ func TestOpenCodeTranscriptHelpers(t *testing.T) {
 		{"session.idle", "system"},
 		{"session.error", "system"},
 		{"commit", "system"},
+		{"gen_ai.client.inference.operation.details", "assistant"},
+		{"copilot_chat.agent.turn", "assistant"},
+		{"copilot_chat.tool.call", "tool_use"},
+		{"copilot_chat.session.start", ""},
 	}
 
 	for _, tt := range roleTests {
