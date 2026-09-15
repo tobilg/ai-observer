@@ -105,15 +105,16 @@ func (p *ClaudeParser) FindSessionFiles(ctx context.Context) ([]string, error) {
 
 // ClaudeJSONLEntry represents a single line in Claude Code JSONL files
 type ClaudeJSONLEntry struct {
-	Type      string         `json:"type,omitempty"` // Root type: "assistant", "user", "pr-link", "system", etc.
-	Timestamp string         `json:"timestamp"`
-	SessionID string         `json:"sessionId,omitempty"`
-	Version   string         `json:"version,omitempty"`
-	Cwd       string         `json:"cwd,omitempty"`
-	RequestID string         `json:"requestId,omitempty"`
-	CostUSD   *float64       `json:"costUSD,omitempty"`
-	Message   *ClaudeMessage `json:"message,omitempty"`
-	GitBranch string         `json:"gitBranch,omitempty"`
+	Type          string          `json:"type,omitempty"` // Root type: "assistant", "user", "pr-link", "system", etc.
+	Timestamp     string          `json:"timestamp"`
+	SessionID     string          `json:"sessionId,omitempty"`
+	Version       string          `json:"version,omitempty"`
+	Cwd           string          `json:"cwd,omitempty"`
+	RequestID     string          `json:"requestId,omitempty"`
+	CostUSD       *float64        `json:"costUSD,omitempty"`
+	Message       *ClaudeMessage  `json:"message,omitempty"`
+	ToolUseResult json.RawMessage `json:"toolUseResult,omitempty"`
+	GitBranch     string          `json:"gitBranch,omitempty"`
 	// PR link fields (present when type == "pr-link")
 	PRNumber     int    `json:"prNumber,omitempty"`
 	PRUrl        string `json:"prUrl,omitempty"`
@@ -135,6 +136,8 @@ type ClaudeMessage struct {
 }
 
 type ClaudeContent struct {
+	ID        string `json:"id,omitempty"`
+	IsError   bool   `json:"is_error,omitempty"`
 	Type      string `json:"type,omitempty"`        // "text", "tool_use", "tool_result"
 	Text      string `json:"text,omitempty"`        // message text
 	Name      string `json:"name,omitempty"`        // tool name (for tool_use)
@@ -152,9 +155,10 @@ type ClaudeUsage struct {
 
 // claudeEditInput holds the input for Edit tool calls
 type claudeEditInput struct {
-	FilePath  string `json:"file_path"`
-	OldString string `json:"old_string"`
-	NewString string `json:"new_string"`
+	FilePath   string `json:"file_path"`
+	OldString  string `json:"old_string"`
+	NewString  string `json:"new_string"`
+	ReplaceAll bool   `json:"replace_all"`
 }
 
 // claudeWriteInput holds the input for Write tool calls
@@ -167,8 +171,9 @@ type claudeWriteInput struct {
 type claudeMultiEditInput struct {
 	FilePath string `json:"file_path"`
 	Edits    []struct {
-		OldString string `json:"old_string"`
-		NewString string `json:"new_string"`
+		OldString  string `json:"old_string"`
+		NewString  string `json:"new_string"`
+		ReplaceAll bool   `json:"replace_all"`
 	} `json:"edits"`
 }
 
@@ -183,16 +188,20 @@ type claudeSessionMeta struct {
 	Cwd            string
 	OriginalCwd    string   // from worktree-state.worktreeSession.originalCwd
 	CandidateRepos []string // owner/repo references from pr-link entries (most-frequent first)
-	PRNumber       int
-	PRUrl          string
-	PRRepository   string
-	PRTimestamp    time.Time
+	PRLinks        []claudePRLink
+}
+
+type claudePRLink struct {
+	Number     int
+	URL        string
+	Repository string
+	Timestamp  time.Time
 }
 
 // collectSessionMeta does a first pass over raw JSONL lines to collect session-level metadata
 func (p *ClaudeParser) collectSessionMeta(lines []string) claudeSessionMeta {
 	meta := claudeSessionMeta{}
-	seenPRs := make(map[int]bool)
+	seenPRs := make(map[string]bool)
 	seenRepos := make(map[string]bool)
 
 	for _, line := range lines {
@@ -211,24 +220,28 @@ func (p *ClaudeParser) collectSessionMeta(lines []string) claudeSessionMeta {
 				meta.OriginalCwd = oc
 			}
 		}
-		if entry.Type == "pr-link" && entry.PRNumber != 0 && !seenPRs[entry.PRNumber] {
-			seenPRs[entry.PRNumber] = true
-			// Collect all pr-link repositories as candidates for resolution.
-			if r := entry.PRRepository; r != "" && !seenRepos[r] {
+		if entry.Type == "pr-link" && entry.PRNumber > 0 {
+			ts, err := time.Parse(time.RFC3339Nano, entry.Timestamp)
+			if err != nil {
+				continue
+			}
+			repo := strings.TrimSpace(entry.PRRepository)
+			if repo == "" {
+				repo = githubRepoFromURL(entry.PRUrl)
+			}
+			if repo == "" {
+				continue
+			}
+			key := strings.ToLower(repo) + "#" + strconv.Itoa(entry.PRNumber)
+			if seenPRs[key] {
+				continue
+			}
+			seenPRs[key] = true
+			if r := repo; !seenRepos[r] {
 				seenRepos[r] = true
 				meta.CandidateRepos = append(meta.CandidateRepos, r)
 			}
-			// Use the first PR linked in the session for structured PR metadata.
-			if meta.PRNumber == 0 {
-				meta.PRNumber = entry.PRNumber
-				meta.PRUrl = entry.PRUrl
-				meta.PRRepository = entry.PRRepository
-				if ts, err := time.Parse(time.RFC3339Nano, entry.Timestamp); err == nil {
-					meta.PRTimestamp = ts
-				} else if ts, err := time.Parse(time.RFC3339, entry.Timestamp); err == nil {
-					meta.PRTimestamp = ts
-				}
-			}
+			meta.PRLinks = append(meta.PRLinks, claudePRLink{Number: entry.PRNumber, URL: entry.PRUrl, Repository: repo, Timestamp: ts})
 		}
 	}
 	return meta
@@ -236,14 +249,8 @@ func (p *ClaudeParser) collectSessionMeta(lines []string) claudeSessionMeta {
 
 // extractRepository returns the best repository identifier for a session.
 //
-// Priority:
-//  1. PRRepository from a structured pr-link entry (authoritative - this is
-//     exactly where the linked PR lives, not just a text-mined reference).
-//  2. resolveSessionRepository: on-disk git remote -> matching candidate -> cwd name.
+// A linked PR is only a candidate: its repository may differ from the working tree.
 func extractRepository(meta claudeSessionMeta) string {
-	if meta.PRRepository != "" {
-		return meta.PRRepository
-	}
 	return resolveSessionRepository(meta.CandidateRepos, "", meta.OriginalCwd, meta.Cwd)
 }
 
@@ -252,7 +259,7 @@ func countLines(s string) int {
 	if s == "" {
 		return 0
 	}
-	return strings.Count(s, "\n") + 1
+	return strings.Count(strings.TrimSuffix(s, "\n"), "\n") + 1
 }
 
 // ParseFile parses a Claude Code JSONL file
@@ -294,13 +301,13 @@ func (p *ClaudeParser) ParseFile(ctx context.Context, path string) (*ImportResul
 	meta := p.collectSessionMeta(lines)
 	repository := extractRepository(meta)
 
-	// Emit pull_request.count metric if a PR was linked
-	if meta.PRNumber != 0 && !meta.PRTimestamp.IsZero() {
-		result.Metrics = append(result.Metrics, createPRMetric(meta, repository))
+	for _, pr := range meta.PRLinks {
+		result.Metrics = append(result.Metrics, createPRMetric(meta, pr))
 	}
 
 	messageIndex := 0
 	seenRequests := make(map[string]bool) // For deduplication of metrics
+	activity := newClaudeActivity()
 
 	// Second pass: process records
 	for _, line := range lines {
@@ -372,8 +379,11 @@ func (p *ClaudeParser) ParseFile(ctx context.Context, path string) (*ImportResul
 		transcriptLogs := p.createTranscriptLogs(entry, ts, sessionID, meta, &messageIndex)
 		result.Logs = append(result.Logs, transcriptLogs...)
 
-		// For assistant entries: create metrics and process file-editing tool calls
-		if entry.Type == "assistant" {
+		result.Metrics = append(result.Metrics, activity.process(entry, ts, sessionID, meta, repository)...)
+
+		// Usage and individual tool actions have different identities. A content-only
+		// assistant entry must not consume the later usage record for its request.
+		if entry.Type == "assistant" && entry.Message.Usage != nil {
 			// Deduplication using messageId:requestId for metrics only
 			dedupKey := fmt.Sprintf("%s:%s", entry.Message.ID, entry.RequestID)
 			if entry.Message.ID != "" && entry.RequestID != "" {
@@ -383,77 +393,77 @@ func (p *ClaudeParser) ParseFile(ctx context.Context, path string) (*ImportResul
 				seenRequests[dedupKey] = true
 			}
 
-			// Lines of code from file-editing tool calls
-			locMetrics := p.extractLinesOfCodeMetrics(entry, ts, meta, repository)
-			result.Metrics = append(result.Metrics, locMetrics...)
+			// Create api_request log record
+			logRecord := api.LogRecord{
+				Timestamp:      ts,
+				ServiceName:    SourceClaude.ServiceName(),
+				SeverityText:   "INFO",
+				SeverityNumber: 9,
+				Body:           "api_request",
+				LogAttributes: map[string]string{
+					"event.name":    "claude_code.api_request",
+					"session.id":    sessionID,
+					"model":         entry.Message.Model,
+					"import_source": "local_jsonl",
+				},
+			}
+			if entry.Cwd != "" {
+				logRecord.LogAttributes["cwd"] = entry.Cwd
+			}
+			if entry.RequestID != "" {
+				logRecord.LogAttributes["request_id"] = entry.RequestID
+			}
+			if meta.GitBranch != "" {
+				logRecord.LogAttributes["git_branch"] = meta.GitBranch
+			}
+			if repository != "" {
+				logRecord.LogAttributes["repository"] = repository
+			}
+			result.Logs = append(result.Logs, logRecord)
 
-			// Commits from Bash tool calls
-			commitMetrics := p.extractCommitMetrics(entry, ts, meta, repository)
-			result.Metrics = append(result.Metrics, commitMetrics...)
+			// Token usage metrics
+			usage := entry.Message.Usage
+			model := entry.Message.Model
 
-			if entry.Message.Usage != nil {
-				// Create api_request log record
-				logRecord := api.LogRecord{
-					Timestamp:      ts,
-					ServiceName:    SourceClaude.ServiceName(),
-					SeverityText:   "INFO",
-					SeverityNumber: 9,
-					Body:           "api_request",
-					LogAttributes: map[string]string{
-						"event.name":    "claude_code.api_request",
-						"session.id":    sessionID,
-						"model":         entry.Message.Model,
-						"import_source": "local_jsonl",
-					},
-				}
-				if entry.Cwd != "" {
-					logRecord.LogAttributes["cwd"] = entry.Cwd
-				}
-				if entry.RequestID != "" {
-					logRecord.LogAttributes["request_id"] = entry.RequestID
-				}
-				if meta.GitBranch != "" {
-					logRecord.LogAttributes["git_branch"] = meta.GitBranch
-				}
-				if repository != "" {
-					logRecord.LogAttributes["repository"] = repository
-				}
-				result.Logs = append(result.Logs, logRecord)
+			if usage.InputTokens > 0 {
+				result.Metrics = append(result.Metrics, createTokenMetrics(ts, model, "input", float64(usage.InputTokens), meta, repository)...)
+			}
+			if usage.OutputTokens > 0 {
+				result.Metrics = append(result.Metrics, createTokenMetrics(ts, model, "output", float64(usage.OutputTokens), meta, repository)...)
+			}
+			if usage.CacheCreationInputTokens > 0 {
+				result.Metrics = append(result.Metrics, createTokenMetrics(ts, model, "cacheCreation", float64(usage.CacheCreationInputTokens), meta, repository)...)
+			}
+			if usage.CacheReadInputTokens > 0 {
+				result.Metrics = append(result.Metrics, createTokenMetrics(ts, model, "cacheRead", float64(usage.CacheReadInputTokens), meta, repository)...)
+			}
 
-				// Token usage metrics
-				usage := entry.Message.Usage
-				model := entry.Message.Model
-
-				if usage.InputTokens > 0 {
-					result.Metrics = append(result.Metrics, createTokenMetrics(ts, model, "input", float64(usage.InputTokens), meta, repository)...)
-				}
-				if usage.OutputTokens > 0 {
-					result.Metrics = append(result.Metrics, createTokenMetrics(ts, model, "output", float64(usage.OutputTokens), meta, repository)...)
-				}
-				if usage.CacheCreationInputTokens > 0 {
-					result.Metrics = append(result.Metrics, createTokenMetrics(ts, model, "cacheCreation", float64(usage.CacheCreationInputTokens), meta, repository)...)
-				}
-				if usage.CacheReadInputTokens > 0 {
-					result.Metrics = append(result.Metrics, createTokenMetrics(ts, model, "cacheRead", float64(usage.CacheReadInputTokens), meta, repository)...)
-				}
-
-				// Cost metrics
-				tokenUsage := pricing.ClaudeTokenUsage{
-					InputTokens:              int64(usage.InputTokens),
-					OutputTokens:             int64(usage.OutputTokens),
-					CacheCreationInputTokens: int64(usage.CacheCreationInputTokens),
-					CacheReadInputTokens:     int64(usage.CacheReadInputTokens),
-				}
-				cost := pricing.GetClaudeCostWithMode(p.pricingMode, model, tokenUsage, entry.CostUSD)
-				if cost > 0 {
-					result.Metrics = append(result.Metrics, createCostMetrics(ts, model, cost, meta, repository)...)
-				}
+			// Cost metrics
+			tokenUsage := pricing.ClaudeTokenUsage{
+				InputTokens:              int64(usage.InputTokens),
+				OutputTokens:             int64(usage.OutputTokens),
+				CacheCreationInputTokens: int64(usage.CacheCreationInputTokens),
+				CacheReadInputTokens:     int64(usage.CacheReadInputTokens),
+			}
+			cost := pricing.GetClaudeCostWithMode(p.pricingMode, model, tokenUsage, entry.CostUSD)
+			if cost > 0 {
+				result.Metrics = append(result.Metrics, createCostMetrics(ts, model, cost, meta, repository)...)
 			}
 		}
 
 		result.RecordCount++
 	}
 
+	// Every emitted event participates in file-level date filtering, including PR
+	// links which can occur after the last conversation message.
+	for _, metric := range result.Metrics {
+		if result.FirstTime.IsZero() || metric.Timestamp.Before(result.FirstTime) {
+			result.FirstTime = metric.Timestamp
+		}
+		if metric.Timestamp.After(result.LastTime) {
+			result.LastTime = metric.Timestamp
+		}
+	}
 	// Session count metric - one per file, timestamped at first activity
 	if !result.FirstTime.IsZero() {
 		result.Metrics = append(result.Metrics, createSessionMetric(result.FirstTime, meta, repository))
@@ -467,105 +477,6 @@ func (p *ClaudeParser) ParseFile(ctx context.Context, path string) (*ImportResul
 // (private) which also enriches records with session metadata.
 func (p *ClaudeParser) CreateTranscriptLogs(entry ClaudeJSONLEntry, ts time.Time, sessionID string, messageIndex *int) []api.LogRecord {
 	return p.createTranscriptLogs(entry, ts, sessionID, claudeSessionMeta{}, messageIndex)
-}
-
-// extractLinesOfCodeMetrics parses file-editing tool calls in an assistant entry and returns
-// claude_code.lines_of_code.count metrics broken down by file type and path.
-func (p *ClaudeParser) extractLinesOfCodeMetrics(entry ClaudeJSONLEntry, ts time.Time, meta claudeSessionMeta, repository string) []api.MetricDataPoint {
-	var metrics []api.MetricDataPoint
-
-	for _, content := range entry.Message.Content {
-		if content.Type != "tool_use" {
-			continue
-		}
-
-		// Marshal input back to JSON so we can decode into typed structs
-		inputBytes, err := json.Marshal(content.Input)
-		if err != nil {
-			continue
-		}
-
-		switch content.Name {
-		case "Edit":
-			var inp claudeEditInput
-			if err := json.Unmarshal(inputBytes, &inp); err != nil || inp.FilePath == "" {
-				continue
-			}
-			removed := countLines(inp.OldString)
-			added := countLines(inp.NewString)
-			fileType := filepath.Ext(inp.FilePath)
-			relPath := relativeFilePath(inp.FilePath, meta.Cwd)
-			if removed > 0 {
-				metrics = append(metrics, createLOCMetric(ts, "removed", relPath, fileType, float64(removed), meta, repository))
-			}
-			if added > 0 {
-				metrics = append(metrics, createLOCMetric(ts, "added", relPath, fileType, float64(added), meta, repository))
-			}
-
-		case "Write":
-			var inp claudeWriteInput
-			if err := json.Unmarshal(inputBytes, &inp); err != nil || inp.FilePath == "" {
-				continue
-			}
-			added := countLines(inp.Content)
-			fileType := filepath.Ext(inp.FilePath)
-			relPath := relativeFilePath(inp.FilePath, meta.Cwd)
-			if added > 0 {
-				metrics = append(metrics, createLOCMetric(ts, "added", relPath, fileType, float64(added), meta, repository))
-			}
-
-		case "MultiEdit":
-			var inp claudeMultiEditInput
-			if err := json.Unmarshal(inputBytes, &inp); err != nil || inp.FilePath == "" {
-				continue
-			}
-			fileType := filepath.Ext(inp.FilePath)
-			relPath := relativeFilePath(inp.FilePath, meta.Cwd)
-			var totalRemoved, totalAdded int
-			for _, edit := range inp.Edits {
-				totalRemoved += countLines(edit.OldString)
-				totalAdded += countLines(edit.NewString)
-			}
-			if totalRemoved > 0 {
-				metrics = append(metrics, createLOCMetric(ts, "removed", relPath, fileType, float64(totalRemoved), meta, repository))
-			}
-			if totalAdded > 0 {
-				metrics = append(metrics, createLOCMetric(ts, "added", relPath, fileType, float64(totalAdded), meta, repository))
-			}
-		}
-	}
-
-	return metrics
-}
-
-// claudeBashInput holds the input for Bash tool calls
-type claudeBashInput struct {
-	Command string `json:"command"`
-}
-
-// extractCommitMetrics parses Bash tool calls in an assistant entry and returns
-// claude_code.commit.count metrics for git commit commands.
-func (p *ClaudeParser) extractCommitMetrics(entry ClaudeJSONLEntry, ts time.Time, meta claudeSessionMeta, repository string) []api.MetricDataPoint {
-	var metrics []api.MetricDataPoint
-
-	for _, content := range entry.Message.Content {
-		if content.Type != "tool_use" || content.Name != "Bash" {
-			continue
-		}
-		inputBytes, err := json.Marshal(content.Input)
-		if err != nil {
-			continue
-		}
-		var inp claudeBashInput
-		if err := json.Unmarshal(inputBytes, &inp); err != nil {
-			continue
-		}
-		if strings.Contains(inp.Command, "git commit") {
-			metrics = append(metrics, createCommitMetric(ts, meta, repository))
-		}
-	}
-
-	return metrics
 }
 
 // relativeFilePath returns a path relative to baseDir, falling back to the base filename
@@ -612,11 +523,6 @@ func (p *ClaudeParser) createTranscriptLogs(entry ClaudeJSONLEntry, ts time.Time
 		}
 		if repo := extractRepository(meta); repo != "" {
 			attrs["repository"] = repo
-		}
-		if meta.PRNumber != 0 {
-			attrs["pr_number"] = strconv.Itoa(meta.PRNumber)
-			attrs["pr_repository"] = meta.PRRepository
-			attrs["pr_url"] = meta.PRUrl
 		}
 
 		switch content.Type {
@@ -814,14 +720,15 @@ func createLOCMetric(ts time.Time, lineType, filePath, fileType string, value fl
 }
 
 // createPRMetric creates a pull_request.count metric for a linked PR
-func createPRMetric(meta claudeSessionMeta, repository string) api.MetricDataPoint {
+func createPRMetric(meta claudeSessionMeta, pr claudePRLink) api.MetricDataPoint {
 	one := 1.0
-	attrs := sessionAttrs(meta, repository)
-	attrs["pr_number"] = strconv.Itoa(meta.PRNumber)
-	attrs["pr_url"] = meta.PRUrl
+	attrs := sessionAttrs(meta, pr.Repository)
+	attrs["pr_number"] = strconv.Itoa(pr.Number)
+	attrs["pr_url"] = pr.URL
+	attrs["reconstruction"] = "pr_link"
 	attrs["import_source"] = "local_jsonl"
 	return api.MetricDataPoint{
-		Timestamp:   meta.PRTimestamp,
+		Timestamp:   pr.Timestamp,
 		ServiceName: SourceClaude.ServiceName(),
 		MetricName:  claudePullRequestMetric,
 		MetricType:  "sum",
@@ -865,10 +772,13 @@ func createSessionMetric(ts time.Time, meta claudeSessionMeta, repository string
 func createActiveTimeMetric(ts time.Time, secs float64, meta claudeSessionMeta, repository string) api.MetricDataPoint {
 	attrs := sessionAttrs(meta, repository)
 	attrs["import_source"] = "local_jsonl"
+	attrs["type"] = "cli"
+	attrs["reconstruction"] = "turn_duration"
 	return api.MetricDataPoint{
 		Timestamp:   ts,
 		ServiceName: SourceClaude.ServiceName(),
 		MetricName:  claudeActiveTimeMetric,
+		MetricUnit:  "s",
 		MetricType:  "sum",
 		Value:       &secs,
 		Attributes:  attrs,
