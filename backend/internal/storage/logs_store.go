@@ -342,18 +342,27 @@ func (s *DuckDBStore) GetSessionTranscript(ctx context.Context, sessionID string
 	if err != nil {
 		return nil, err
 	}
-	spans, err := s.querySessionSpansLocked(ctx, sessionID)
-	if err != nil {
-		return nil, err
+	// Imported transcripts already contain the conversation. Preserve their
+	// records, indices and bounds even when live telemetry also exists.
+	imported := false
+	for _, row := range logRows {
+		if row.Attrs["event.name"] == "transcript.message" {
+			imported = true
+			break
+		}
+	}
+	var spans []api.Span
+	if !imported {
+		spans, err = s.querySessionSpansLocked(ctx, sessionID)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if len(logRows) == 0 && len(spans) == 0 {
 		return nil, fmt.Errorf("session not found: %s", sessionID)
 	}
 
-	messages := mergeTranscriptMessages(
-		transcriptMessagesFromLogs(logRows),
-		transcriptMessagesFromSpans(spans),
-	)
+	messages := mergeTranscriptMessages(logRows, transcriptMessagesFromSpans(spans, logRows))
 
 	serviceName, startTime, lastTime := sessionTranscriptBounds(logRows, spans)
 	return &api.TranscriptResponse{
@@ -387,10 +396,7 @@ func sessionTranscriptBounds(logRows []sessionLogRow, spans []api.Span) (string,
 		if startTime.IsZero() || span.Timestamp.Before(startTime) {
 			startTime = span.Timestamp
 		}
-		end := span.Timestamp
-		if span.Duration > 0 {
-			end = span.Timestamp.Add(time.Duration(span.Duration))
-		}
+		end := spanEndTime(span)
 		if lastTime.IsZero() || end.After(lastTime) {
 			lastTime = end
 		}

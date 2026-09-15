@@ -59,6 +59,8 @@ func sessionIDMatchArgs(sessionID string) []interface{} {
 type sessionLogRow struct {
 	Timestamp   time.Time
 	ServiceName string
+	TraceID     string
+	SpanID      string
 	Body        string
 	Attrs       map[string]string
 }
@@ -68,6 +70,8 @@ func (s *DuckDBStore) querySessionLogsLocked(ctx context.Context, sessionID stri
 		SELECT
 			Timestamp,
 			ServiceName,
+			TraceId,
+			SpanId,
 			Body,
 			LogAttributes
 		FROM otel_logs
@@ -85,12 +89,14 @@ func (s *DuckDBStore) querySessionLogsLocked(ctx context.Context, sessionID stri
 	var result []sessionLogRow
 	for rows.Next() {
 		var row sessionLogRow
-		var body sql.NullString
+		var body, traceID, spanID sql.NullString
 		var logAttrs interface{}
-		if err := rows.Scan(&row.Timestamp, &row.ServiceName, &body, &logAttrs); err != nil {
+		if err := rows.Scan(&row.Timestamp, &row.ServiceName, &traceID, &spanID, &body, &logAttrs); err != nil {
 			return nil, fmt.Errorf("scanning transcript message: %w", err)
 		}
 		row.Body = body.String
+		row.TraceID = traceID.String
+		row.SpanID = spanID.String
 		row.Attrs = scanJSONToMap(logAttrs)
 		result = append(result, row)
 	}
@@ -102,18 +108,96 @@ func (s *DuckDBStore) querySessionLogsLocked(ctx context.Context, sessionID stri
 
 func (s *DuckDBStore) querySessionSpansLocked(ctx context.Context, sessionID string) ([]api.Span, error) {
 	query := fmt.Sprintf(`
+		WITH matching_traces AS (
+			SELECT DISTINCT ServiceName, TraceId
+			FROM otel_traces
+			WHERE json_valid(SpanAttributes) AND %s
+		)
 		SELECT
-			Timestamp, TraceId, SpanId, ParentSpanId, TraceState,
-			SpanName, SpanKind, ServiceName, ResourceAttributes,
-			ScopeName, ScopeVersion, SpanAttributes, Duration,
-			StatusCode, StatusMessage
-		FROM otel_traces
-		WHERE json_valid(SpanAttributes)
-		  AND %s
-		ORDER BY Timestamp ASC
+			t.Timestamp, t.TraceId, t.SpanId, t.ParentSpanId, t.TraceState,
+			t.SpanName, t.SpanKind, t.ServiceName, t.ResourceAttributes,
+			t.ScopeName, t.ScopeVersion, t.SpanAttributes, t.Duration,
+			t.StatusCode, t.StatusMessage
+		FROM otel_traces t
+		JOIN matching_traces m ON t.ServiceName = m.ServiceName AND t.TraceId = m.TraceId
+		ORDER BY t.Timestamp ASC
 	`, sessionIDMatchSQL("SpanAttributes"))
 
-	return s.scanSpans(ctx, query, sessionIDMatchArgs(sessionID)...)
+	spans, err := s.scanSpans(ctx, query, sessionIDMatchArgs(sessionID)...)
+	if err != nil {
+		return nil, err
+	}
+	return selectSessionSpans(spans, sessionID), nil
+}
+
+type sessionSpanKey struct {
+	ServiceName string
+	TraceID     string
+	SpanID      string
+}
+
+func spanKey(span api.Span) sessionSpanKey {
+	return sessionSpanKey{span.ServiceName, span.TraceID, span.SpanID}
+}
+
+func parentSpanKey(span api.Span) sessionSpanKey {
+	return sessionSpanKey{span.ServiceName, span.TraceID, span.ParentSpanID}
+}
+
+// A Copilot agent can bridge an internal conversation ID and a VS Code chat ID.
+// Recover descendants without IDs, but do not pull in unrelated siblings or
+// descendants that explicitly identify a different session.
+func selectSessionSpans(spans []api.Span, sessionID string) []api.Span {
+	aliases := make(map[string]map[string]bool)
+	selected := make(map[sessionSpanKey]bool)
+	children := make(map[sessionSpanKey][]api.Span)
+	var queue []api.Span
+	for _, span := range spans {
+		children[parentSpanKey(span)] = append(children[parentSpanKey(span)], span)
+		for _, key := range sessionIDAttributeKeys {
+			if id := span.SpanAttributes[key]; id == "" || id != sessionID {
+				continue
+			}
+			if aliases[span.ServiceName] == nil {
+				aliases[span.ServiceName] = make(map[string]bool)
+			}
+			for _, aliasKey := range sessionIDAttributeKeys {
+				if id := span.SpanAttributes[aliasKey]; id != "" {
+					aliases[span.ServiceName][id] = true
+				}
+			}
+			selected[spanKey(span)] = true
+			queue = append(queue, span)
+			break
+		}
+	}
+	for i := 0; i < len(queue); i++ {
+		for _, child := range children[spanKey(queue[i])] {
+			if selected[spanKey(child)] {
+				continue
+			}
+			hasID, matches := false, false
+			for _, key := range sessionIDAttributeKeys {
+				if id := child.SpanAttributes[key]; id != "" {
+					hasID = true
+					matches = matches || aliases[child.ServiceName][id]
+				}
+			}
+			if hasID && !matches {
+				continue
+			}
+			selected[spanKey(child)] = true
+			queue = append(queue, child)
+		}
+	}
+	var result []api.Span
+	for _, span := range spans {
+		if selected[spanKey(span)] {
+			result = append(result, span)
+			delete(selected, spanKey(span)) // Deduplicate telemetry by span identity.
+		}
+	}
+	return result
 }
 
 func transcriptMessagesFromLogs(rows []sessionLogRow) []api.TranscriptMessage {
@@ -160,12 +244,82 @@ func transcriptMessagesFromLogs(rows []sessionLogRow) []api.TranscriptMessage {
 	return messages
 }
 
-func transcriptMessagesFromSpans(spans []api.Span) []api.TranscriptMessage {
-	var messages []api.TranscriptMessage
+type spanTranscriptMessage struct {
+	Source  sessionSpanKey
+	Message api.TranscriptMessage
+}
+
+func transcriptMessagesFromSpans(spans []api.Span, logs []sessionLogRow) []spanTranscriptMessage {
+	byID := make(map[sessionSpanKey]api.Span, len(spans))
+	generated := make(map[sessionSpanKey][]api.TranscriptMessage, len(spans))
 	for _, span := range spans {
-		messages = append(messages, transcriptMessagesFromSpan(span)...)
+		byID[spanKey(span)] = span
+		generated[spanKey(span)] = transcriptMessagesFromSpan(span)
+	}
+	logMessages := make(map[sessionSpanKey][]api.TranscriptMessage)
+	for _, row := range logs {
+		if row.TraceID != "" && row.SpanID != "" {
+			key := sessionSpanKey{row.ServiceName, row.TraceID, row.SpanID}
+			logMessages[key] = append(logMessages[key], transcriptMessagesFromLogs([]sessionLogRow{row})...)
+		}
+	}
+	// Agent usage aggregates its child calls. Track child replies and usage so
+	// parent output is a fallback, without duplicating replies or token counts.
+	descendantOutputs := make(map[sessionSpanKey]map[string]bool)
+	descendantUsage := make(map[sessionSpanKey]bool)
+	for _, span := range spans {
+		coverage := append([]api.TranscriptMessage(nil), generated[spanKey(span)]...)
+		coverage = append(coverage, logMessages[spanKey(span)]...)
+		for _, msg := range coverage {
+			if msg.Role != "assistant" {
+				continue
+			}
+			seen := map[sessionSpanKey]bool{spanKey(span): true}
+			for parent := parentSpanKey(span); parent.SpanID != "" && !seen[parent]; {
+				seen[parent] = true
+				if descendantOutputs[parent] == nil {
+					descendantOutputs[parent] = make(map[string]bool)
+				}
+				if msg.Content != "" {
+					descendantOutputs[parent][msg.Content] = true
+				}
+				if msg.InputTokens != 0 || msg.OutputTokens != 0 || msg.CacheRead != 0 || msg.CacheWrite != 0 {
+					descendantUsage[parent] = true
+				}
+				ancestor, ok := byID[parent]
+				if !ok {
+					break
+				}
+				parent = parentSpanKey(ancestor)
+			}
+		}
+	}
+	var messages []spanTranscriptMessage
+	for _, span := range spans {
+		for _, msg := range generated[spanKey(span)] {
+			if spanOperation(span) == "invoke_agent" && msg.Role == "assistant" {
+				if descendantOutputs[spanKey(span)][msg.Content] {
+					continue
+				}
+				if descendantUsage[spanKey(span)] {
+					msg.InputTokens, msg.OutputTokens, msg.CacheRead, msg.CacheWrite = 0, 0, 0, 0
+				}
+			}
+			messages = append(messages, spanTranscriptMessage{Source: spanKey(span), Message: msg})
+		}
 	}
 	return messages
+}
+
+func spanOperation(span api.Span) string {
+	return strings.ToLower(strings.TrimSpace(span.SpanAttributes["gen_ai.operation.name"]))
+}
+
+func spanEndTime(span api.Span) time.Time {
+	if span.Duration > 0 {
+		return span.Timestamp.Add(time.Duration(span.Duration))
+	}
+	return span.Timestamp
 }
 
 func transcriptMessagesFromSpan(span api.Span) []api.TranscriptMessage {
@@ -174,7 +328,7 @@ func transcriptMessagesFromSpan(span api.Span) []api.TranscriptMessage {
 		return nil
 	}
 
-	op := strings.ToLower(strings.TrimSpace(attrs["gen_ai.operation.name"]))
+	op := spanOperation(span)
 	model := getModelName(attrs)
 	durationMs := int(span.Duration / int64(time.Millisecond))
 	if durationMs < 0 {
@@ -187,16 +341,24 @@ func transcriptMessagesFromSpan(span api.Span) []api.TranscriptMessage {
 			extractGenAIMessageText(attrs["gen_ai.input.messages"], "user"),
 			attrs["copilot_chat.user_request"],
 		)
-		if content == "" {
-			return nil
+		var messages []api.TranscriptMessage
+		if content != "" {
+			messages = append(messages, api.TranscriptMessage{
+				Timestamp: span.Timestamp, Role: "user", Content: content,
+				Model: model, DurationMs: durationMs,
+			})
 		}
-		return []api.TranscriptMessage{{
-			Timestamp:  span.Timestamp,
-			Role:       "user",
-			Content:    content,
-			Model:      model,
-			DurationMs: durationMs,
-		}}
+		if output := extractGenAIMessageText(attrs["gen_ai.output.messages"], "assistant"); output != "" {
+			messages = append(messages, api.TranscriptMessage{
+				Timestamp: spanEndTime(span), Role: "assistant", Content: output,
+				Model: model, DurationMs: durationMs,
+				InputTokens:  parseIntAttr(attrs, "gen_ai.usage.input_tokens", "input_tokens"),
+				OutputTokens: parseIntAttr(attrs, "gen_ai.usage.output_tokens", "output_tokens"),
+				CacheRead:    parseIntAttr(attrs, "gen_ai.usage.cache_read.input_tokens"),
+				CacheWrite:   parseIntAttr(attrs, "gen_ai.usage.cache_creation.input_tokens"),
+			})
+		}
+		return messages
 
 	case "chat":
 		content := extractGenAIMessageText(attrs["gen_ai.output.messages"], "assistant")
@@ -247,7 +409,7 @@ func transcriptMessagesFromSpan(span api.Span) []api.TranscriptMessage {
 		}}
 		if toolOutput != "" {
 			messages = append(messages, api.TranscriptMessage{
-				Timestamp:  span.Timestamp.Add(time.Millisecond),
+				Timestamp:  spanEndTime(span),
 				Role:       "tool_result",
 				Content:    toolOutput,
 				Model:      model,
@@ -263,18 +425,42 @@ func transcriptMessagesFromSpan(span api.Span) []api.TranscriptMessage {
 	return nil
 }
 
-func mergeTranscriptMessages(groups ...[]api.TranscriptMessage) []api.TranscriptMessage {
-	var merged []api.TranscriptMessage
-	seen := make(map[string]struct{})
-	for _, group := range groups {
-		for _, msg := range group {
-			key := transcriptDedupKey(msg)
-			if _, exists := seen[key]; exists {
-				continue
-			}
-			seen[key] = struct{}{}
-			merged = append(merged, msg)
+// Only correlate messages from different signals when they identify the same
+// span and content. Equal text in distinct log entries is not a duplicate.
+func mergeTranscriptMessages(rows []sessionLogRow, spans []spanTranscriptMessage) []api.TranscriptMessage {
+	merged := transcriptMessagesFromLogs(rows)
+	if len(spans) == 0 {
+		if merged == nil {
+			return []api.TranscriptMessage{}
 		}
+		return merged // Preserve imported message indices.
+	}
+	type messageKey struct {
+		Source                                         sessionSpanKey
+		Role, Content, ToolName, ToolInput, ToolOutput string
+	}
+	keyFor := func(source sessionSpanKey, msg api.TranscriptMessage) messageKey {
+		return messageKey{source, msg.Role, msg.Content, msg.ToolName, msg.ToolInput, msg.ToolOutput}
+	}
+	logMessages := make(map[messageKey]int)
+	index := 0
+	for _, row := range rows {
+		msgs := transcriptMessagesFromLogs([]sessionLogRow{row})
+		if len(msgs) == 0 {
+			continue
+		}
+		if row.TraceID != "" && row.SpanID != "" && row.Attrs["event.name"] != "transcript.message" {
+			source := sessionSpanKey{row.ServiceName, row.TraceID, row.SpanID}
+			logMessages[keyFor(source, msgs[0])] = index
+		}
+		index++
+	}
+	for _, span := range spans {
+		if i, ok := logMessages[keyFor(span.Source, span.Message)]; ok {
+			merged[i] = enrichTranscriptMessage(merged[i], span.Message)
+			continue
+		}
+		merged = append(merged, span.Message)
 	}
 
 	sort.SliceStable(merged, func(i, j int) bool {
@@ -289,15 +475,35 @@ func mergeTranscriptMessages(groups ...[]api.TranscriptMessage) []api.Transcript
 	return merged
 }
 
-func transcriptDedupKey(msg api.TranscriptMessage) string {
-	return strings.Join([]string{
-		msg.Timestamp.UTC().Format(time.RFC3339Nano),
-		msg.Role,
-		msg.Content,
-		msg.ToolName,
-		msg.ToolInput,
-		msg.ToolOutput,
-	}, "\x1f")
+func enrichTranscriptMessage(log, span api.TranscriptMessage) api.TranscriptMessage {
+	if log.Model == "" {
+		log.Model = span.Model
+	}
+	if log.InputTokens == 0 {
+		log.InputTokens = span.InputTokens
+	}
+	if log.OutputTokens == 0 {
+		log.OutputTokens = span.OutputTokens
+	}
+	if log.CacheRead == 0 {
+		log.CacheRead = span.CacheRead
+	}
+	if log.CacheWrite == 0 {
+		log.CacheWrite = span.CacheWrite
+	}
+	if log.CostUSD == 0 {
+		log.CostUSD = span.CostUSD
+	}
+	if log.DurationMs == 0 {
+		log.DurationMs = span.DurationMs
+	}
+	if log.Success == nil {
+		log.Success = span.Success
+	}
+	if log.OutputSize == 0 {
+		log.OutputSize = span.OutputSize
+	}
+	return log
 }
 
 func extractGenAIMessageText(raw, role string) string {
