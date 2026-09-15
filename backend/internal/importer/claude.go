@@ -184,11 +184,8 @@ type claudeWorktreeSession struct {
 
 // claudeSessionMeta holds session-level metadata collected in a first pass
 type claudeSessionMeta struct {
-	GitBranch      string
-	Cwd            string
-	OriginalCwd    string   // from worktree-state.worktreeSession.originalCwd
-	CandidateRepos []string // owner/repo references from pr-link entries (most-frequent first)
-	PRLinks        []claudePRLink
+	RepositoryMetadata
+	PRLinks []claudePRLink
 }
 
 type claudePRLink struct {
@@ -202,24 +199,14 @@ type claudePRLink struct {
 func (p *ClaudeParser) collectSessionMeta(lines []string) claudeSessionMeta {
 	meta := claudeSessionMeta{}
 	seenPRs := make(map[string]bool)
-	seenRepos := make(map[string]bool)
 
 	for _, line := range lines {
 		var entry ClaudeJSONLEntry
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			continue
 		}
-		if entry.GitBranch != "" && meta.GitBranch == "" {
-			meta.GitBranch = entry.GitBranch
-		}
-		if entry.Cwd != "" && meta.Cwd == "" {
-			meta.Cwd = entry.Cwd
-		}
-		if entry.Type == "worktree-state" && entry.WorktreeSession != nil {
-			if oc := entry.WorktreeSession.OriginalCwd; oc != "" && meta.OriginalCwd == "" {
-				meta.OriginalCwd = oc
-			}
-		}
+		meta.ObserveClaude(entry)
+
 		if entry.Type == "pr-link" && entry.PRNumber > 0 {
 			ts, err := time.Parse(time.RFC3339Nano, entry.Timestamp)
 			if err != nil {
@@ -237,10 +224,7 @@ func (p *ClaudeParser) collectSessionMeta(lines []string) claudeSessionMeta {
 				continue
 			}
 			seenPRs[key] = true
-			if r := repo; !seenRepos[r] {
-				seenRepos[r] = true
-				meta.CandidateRepos = append(meta.CandidateRepos, r)
-			}
+
 			meta.PRLinks = append(meta.PRLinks, claudePRLink{Number: entry.PRNumber, URL: entry.PRUrl, Repository: repo, Timestamp: ts})
 		}
 	}
@@ -251,7 +235,7 @@ func (p *ClaudeParser) collectSessionMeta(lines []string) claudeSessionMeta {
 //
 // A linked PR is only a candidate: its repository may differ from the working tree.
 func extractRepository(meta claudeSessionMeta) string {
-	return resolveSessionRepository(meta.CandidateRepos, "", meta.OriginalCwd, meta.Cwd)
+	return meta.Repository()
 }
 
 // countLines returns the number of lines in s (at least 1 for non-empty strings)

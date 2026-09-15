@@ -122,6 +122,7 @@ type CodexReasoningSummary struct {
 // codexGitInfo contains git metadata from session_meta
 type codexGitInfo struct {
 	RepositoryURL string `json:"repository_url"`
+	Branch        string `json:"branch"`
 }
 
 // CodexSessionMeta represents session metadata
@@ -182,7 +183,7 @@ func (p *CodexParser) ParseFile(ctx context.Context, path string) (*ImportResult
 	var sessionMeta *CodexSessionMeta
 	var currentModel string
 	var lastTokenCount *CodexTokenCount
-	var repository string
+	var attribution RepositoryMetadata
 	messageIndex := 0 // Track message order for transcripts
 
 	for scanner.Scan() {
@@ -209,6 +210,8 @@ func (p *CodexParser) ParseFile(ctx context.Context, path string) (*ImportResult
 			}
 		}
 
+		attribution.ObserveCodex(entry)
+
 		// Update time range
 		if result.FirstTime.IsZero() || ts.Before(result.FirstTime) {
 			result.FirstTime = ts
@@ -229,13 +232,6 @@ func (p *CodexParser) ParseFile(ctx context.Context, path string) (*ImportResult
 					currentModel = meta.Model
 				}
 
-				// Resolve repository using git URL from session metadata (authoritative for Codex).
-				gitRepoURL := ""
-				if meta.Git != nil {
-					gitRepoURL = meta.Git.RepositoryURL
-				}
-				repository = resolveSessionRepository(nil, gitRepoURL, "", meta.Cwd)
-
 				// Create session start log
 				logRecord := api.LogRecord{
 					Timestamp:      ts,
@@ -254,9 +250,6 @@ func (p *CodexParser) ParseFile(ctx context.Context, path string) (*ImportResult
 				}
 				if meta.Cwd != "" {
 					logRecord.LogAttributes["cwd"] = meta.Cwd
-				}
-				if repository != "" {
-					logRecord.LogAttributes["repository"] = repository
 				}
 				result.Logs = append(result.Logs, logRecord)
 				result.RecordCount++
@@ -305,29 +298,29 @@ func (p *CodexParser) ParseFile(ctx context.Context, path string) (*ImportResult
 
 					// Create metrics for non-zero deltas
 					if deltaInput > 0 {
-						result.Metrics = append(result.Metrics, createCodexTokenMetric(ts, currentModel, "input", float64(deltaInput), repository))
+						result.Metrics = append(result.Metrics, CreateCodexTokenMetric(ts, currentModel, "input", float64(deltaInput)))
 					}
 					if deltaOutput > 0 {
-						result.Metrics = append(result.Metrics, createCodexTokenMetric(ts, currentModel, "output", float64(deltaOutput), repository))
+						result.Metrics = append(result.Metrics, CreateCodexTokenMetric(ts, currentModel, "output", float64(deltaOutput)))
 					}
 					if deltaCacheCreation > 0 {
-						result.Metrics = append(result.Metrics, createCodexTokenMetric(ts, currentModel, "cache_creation", float64(deltaCacheCreation), repository))
+						result.Metrics = append(result.Metrics, CreateCodexTokenMetric(ts, currentModel, "cache_creation", float64(deltaCacheCreation)))
 					}
 					if deltaCacheRead > 0 {
-						result.Metrics = append(result.Metrics, createCodexTokenMetric(ts, currentModel, "cache_read", float64(deltaCacheRead), repository))
+						result.Metrics = append(result.Metrics, CreateCodexTokenMetric(ts, currentModel, "cache_read", float64(deltaCacheRead)))
 					}
 					if deltaReasoning > 0 {
-						result.Metrics = append(result.Metrics, createCodexTokenMetric(ts, currentModel, "reasoning", float64(deltaReasoning), repository))
+						result.Metrics = append(result.Metrics, CreateCodexTokenMetric(ts, currentModel, "reasoning", float64(deltaReasoning)))
 					}
 					if deltaTool > 0 {
-						result.Metrics = append(result.Metrics, createCodexTokenMetric(ts, currentModel, "tool", float64(deltaTool), repository))
+						result.Metrics = append(result.Metrics, CreateCodexTokenMetric(ts, currentModel, "tool", float64(deltaTool)))
 					}
 
 					// Calculate and add cost metric
 					// Note: cache_read is used for cost calculation (cache_creation tokens are billed at input rate)
 					cost := pricing.CalculateCodexCost(currentModel, int64(deltaInput), int64(deltaCacheRead), int64(deltaOutput))
 					if cost != nil && *cost > 0 {
-						result.Metrics = append(result.Metrics, createCodexCostMetric(ts, currentModel, *cost, repository))
+						result.Metrics = append(result.Metrics, CreateCodexCostMetric(ts, currentModel, *cost))
 					}
 
 					lastTokenCount = tokenCount
@@ -532,18 +525,17 @@ func (p *CodexParser) ParseFile(ctx context.Context, path string) (*ImportResult
 		return nil, fmt.Errorf("reading file: %w", err)
 	}
 
+	attribution.Enrich(result.Metrics, result.Logs)
 	return result, nil
 }
 
-// createCodexTokenMetric creates a token usage metric for Codex with optional repository attribution.
-func createCodexTokenMetric(ts time.Time, model, tokenType string, value float64, repository string) api.MetricDataPoint {
+// CreateCodexTokenMetric creates a token usage metric. Importers and watchers
+// attach repository context to the completed batch.
+func CreateCodexTokenMetric(ts time.Time, model, tokenType string, value float64) api.MetricDataPoint {
 	attrs := map[string]string{
 		"type":          tokenType,
 		"model":         model,
 		"import_source": "local_jsonl",
-	}
-	if repository != "" {
-		attrs["repository"] = repository
 	}
 	return api.MetricDataPoint{
 		Timestamp:   ts,
@@ -555,21 +547,12 @@ func createCodexTokenMetric(ts time.Time, model, tokenType string, value float64
 	}
 }
 
-// CreateCodexTokenMetric creates a token usage metric for Codex.
-// This public form is used by the file watcher; ParseFile uses createCodexTokenMetric
-// (private) which also attaches repository attribution.
-func CreateCodexTokenMetric(ts time.Time, model, tokenType string, value float64) api.MetricDataPoint {
-	return createCodexTokenMetric(ts, model, tokenType, value, "")
-}
-
-// createCodexCostMetric creates a cost usage metric for Codex with optional repository attribution.
-func createCodexCostMetric(ts time.Time, model string, cost float64, repository string) api.MetricDataPoint {
+// CreateCodexCostMetric creates a cost metric. Importers and watchers attach
+// repository context to the completed batch.
+func CreateCodexCostMetric(ts time.Time, model string, cost float64) api.MetricDataPoint {
 	attrs := map[string]string{
 		"model":         model,
 		"import_source": "local_jsonl",
-	}
-	if repository != "" {
-		attrs["repository"] = repository
 	}
 	return api.MetricDataPoint{
 		Timestamp:   ts,
@@ -579,11 +562,4 @@ func createCodexCostMetric(ts time.Time, model string, cost float64, repository 
 		Value:       &cost,
 		Attributes:  attrs,
 	}
-}
-
-// CreateCodexCostMetric creates a cost usage metric for Codex.
-// This public form is used by the file watcher; ParseFile uses createCodexCostMetric
-// (private) which also attaches repository attribution.
-func CreateCodexCostMetric(ts time.Time, model string, cost float64) api.MetricDataPoint {
-	return createCodexCostMetric(ts, model, cost, "")
 }
