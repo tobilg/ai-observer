@@ -531,6 +531,55 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
     ],
   },
   {
+    id: 'import-watch',
+    title: 'Local Import & Watch',
+    content: [
+      {
+        type: 'paragraph',
+        text: 'Use ai-observer import to load historical Claude Code, Codex CLI, and Gemini CLI session files, or ai-observer watch to ingest new file content as it arrives. Both modes provide transcripts and token/cost metrics. Full Claude Code imports also reconstruct selected activity metrics described in the Telemetry Reference. GitHub Copilot and OpenCode use OTLP ingestion only.',
+      },
+      {
+        type: 'heading',
+        level: 3,
+        text: 'Repository Attribution',
+      },
+      {
+        type: 'paragraph',
+        text: 'Claude Code and Codex logs and token/cost metrics receive repository and git_branch attributes when session evidence is available. This includes Codex session-start, user/agent event, transcript, tool-call, tool-result, and reasoning logs. Repository selection uses the following order:',
+      },
+      {
+        type: 'list',
+        items: [
+          'Codex repository URL recorded in session metadata.',
+          'The local working tree origin remote, including Git worktrees and the original working directory recorded by Claude Code.',
+          'An unambiguous repository reference matching the working directory name; an exact name match takes precedence over an ancestor directory match.',
+          'The working directory name. Without a working directory, a single distinct reference can identify the repository; conflicting references leave it unset.',
+        ],
+      },
+      {
+        type: 'paragraph',
+        text: 'Fallback references come from structured Claude PR links, GitHub repository/PR URLs, and literal gh pr --repo or -R arguments in user/assistant text, text tool results, and supported shell tool inputs. References to other repositories cannot override a recorded Git URL or local remote. Text references do not create PR or commit activity metrics.',
+      },
+      {
+        type: 'paragraph',
+        text: 'System/developer messages, reasoning summaries, arbitrary tool arguments, and structured Codex output objects are excluded from reference detection. Placeholder examples, lookalike GitHub hosts, and dynamically constructed repository names are ignored. Git URL credentials are omitted from stored repository identifiers.',
+      },
+      {
+        type: 'heading',
+        level: 3,
+        text: 'Restarts and Existing Data',
+      },
+      {
+        type: 'paragraph',
+        text: 'Full imports can use repository evidence anywhere in a file. Watch mode uses evidence through the end of each parsed batch and retains that context across restarts. When resuming older state, starting after a full import, or starting without backfill, the watcher reads the skipped file prefix once to recover context without importing its old records again. Later references can improve subsequent batches; existing database records are not automatically updated.',
+      },
+      {
+        type: 'note',
+        text: 'Import state skips unchanged files. Forcing an import does not deduplicate against existing metrics or overlapping live telemetry. When replacing imported data, use the import command with --purge and the intended date range.',
+      },
+    ],
+  },
+  {
     id: 'telemetry',
     title: 'Telemetry Reference',
     subsections: [
@@ -543,7 +592,7 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
     content: [
       {
         type: 'paragraph',
-        text: 'AI Observer collects OpenTelemetry metrics and events from various AI coding tools. Each metric includes metadata for display names, descriptions, units, and breakdown attributes for multi-series visualization.',
+        text: 'AI Observer collects OpenTelemetry metrics and events and imports data from supported local session files. Metric availability and meaning depend on the ingestion mode. Each metric includes metadata for display names, descriptions, units, and breakdown attributes for multi-series visualization.',
       },
       {
         type: 'heading',
@@ -555,18 +604,26 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
         table: {
           headers: ['Metric Name', 'Display Name', 'Unit', 'Description'],
           rows: [
-            { cells: ['claude_code.session.count', 'Sessions', 'count', 'Number of coding sessions started'] },
+            { cells: ['claude_code.session.count', 'Sessions', 'count', 'OTLP: CLI sessions started. Full import: non-empty session files, including separate agent files'] },
             { cells: ['claude_code.lines_of_code.count', 'Lines of Code', 'count', 'Lines of code added or removed'] },
-            { cells: ['claude_code.pull_request.count', 'Pull Requests', 'count', 'Number of pull requests created'] },
+            { cells: ['claude_code.pull_request.count', 'Pull Requests', 'count', 'OTLP: pull requests created. Full import: distinct repository/PR links per file, not confirmed creations'] },
             { cells: ['claude_code.commit.count', 'Commits', 'count', 'Number of commits made'] },
             { cells: ['claude_code.cost.usage', 'Cost', 'USD', 'Total cost incurred in USD'] },
             { cells: ['claude_code.cost.usage_user_facing', 'Cost (User-Facing)', 'USD', 'Cost for user-facing API calls only (excludes tool-routing)'] },
             { cells: ['claude_code.token.usage', 'Token Usage', 'tokens', 'Token consumption by type'] },
             { cells: ['claude_code.token.usage_user_facing', 'Token Usage (User-Facing)', 'tokens', 'Tokens for user-facing API calls only (excludes tool-routing)'] },
             { cells: ['claude_code.code_edit_tool.decision', 'Edit Decisions', 'count', 'Code edit tool usage decisions'] },
-            { cells: ['claude_code.active_time.total', 'Active Time', 'seconds', 'Total active coding time'] },
+            { cells: ['claude_code.active_time.total', 'Active Time', 'seconds', 'OTLP: active time. Full import: recorded turn durations converted to seconds, excluding user typing/reading time'] },
           ],
         },
+      },
+      {
+        type: 'paragraph',
+        text: 'Full Claude Code imports reconstruct lines of code and commits from supported successful tool results. Failed or incomplete tool activity is omitted. File overwrites need original contents or a recorded patch to calculate line changes; commits need a parsed git commit command and a matching completion result. These are historical reconstructions of the evidence in the file.',
+      },
+      {
+        type: 'note',
+        text: 'Activity metrics are available from full imports, not incremental watch mode. The watcher imports transcripts and token/cost usage only. Imported metrics carry import_source=local_jsonl; PR links and turn durations also identify their approximation with reconstruction=pr_link and reconstruction=turn_duration. Avoid adding overlapping imports and live telemetry as independent activity.',
       },
       {
         type: 'heading',
@@ -680,6 +737,14 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
             { cells: ['copilot_chat.cloud.pr_ready.count', 'Cloud PR Ready', 'count', 'Cloud pull requests marked ready'] },
           ],
         },
+      },
+      {
+        type: 'paragraph',
+        text: 'Copilot session transcripts combine supported log events with conversation content captured in GenAI spans. They include user messages, assistant replies, tool calls, and tool results. Related child spans can be included even when their session ID is missing or uses a supported alternate ID, while overlapping telemetry is combined without duplicating messages or token usage.',
+      },
+      {
+        type: 'note',
+        text: 'To capture conversation content, enable github.copilot.chat.otel.captureContent in VS Code or COPILOT_OTEL_CAPTURE_CONTENT=true for the environment-based setup, and send traces to AI Observer. A session may be listed without any captured conversation; its transcript then shows "No messages in this session". Upgrading can display content already stored in spans, but enabling capture later cannot recover content that was never recorded.',
       },
       {
         type: 'heading',

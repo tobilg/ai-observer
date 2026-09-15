@@ -161,22 +161,39 @@ Override default file locations:
 ### Claude Code
 
 **Log events:**
+
 - `claude_code.api_request` - Each API request with model and session info
+- `transcript.message` - User and assistant content, including tool calls and results
 
 **Metrics:**
+
 - `claude_code.token.usage` - Token counts by type (input, output, cache_creation, cache_read)
 - `claude_code.cost.usage` - Cost in USD per request
+- `claude_code.token.usage_user_facing` - Token counts for user-facing API calls
+- `claude_code.cost.usage_user_facing` - Cost for user-facing API calls
+- `claude_code.lines_of_code.count` - Lines added/deleted from supported successful edits and writes
+- `claude_code.commit.count` - Commits confirmed by supported successful Git commit results
+- `claude_code.pull_request.count` - Distinct repository/PR links per file, not proof of PR creation
+- `claude_code.session.count` - One event per non-empty parsed session file, including separate agent files
+- `claude_code.active_time.total` - Positive recorded turn durations converted to seconds
+
+The five activity metrics are reconstructed by full imports only. See [Claude Code activity metrics](#claude-code-activity-metrics) for evidence requirements, omissions, and overlapping import/live-data limits. Logs and token/cost metrics receive `repository` and `git_branch` when available, as described in [repository attribution](#repository-attribution-in-import-and-watch).
 
 ### Codex CLI
 
 **Log events:**
+
 - `codex.conversation_starts` - Session start with model and CLI version
 - `codex.user_message` - User prompts
 - `codex.agent_message` - Agent responses
+- `transcript.message` - Conversation messages, tool calls, tool results, and reasoning summaries
 
 **Metrics:**
+
 - `codex_cli_rs.token.usage` - Token counts by type (input, output, cache_creation, cache_read, reasoning, tool)
 - `codex_cli_rs.cost.usage` - Cost in USD per token count event
+
+All these log categories and token/cost metrics receive `repository` and `git_branch` when available in both import and watch mode. Reasoning logs receive attribution, but their contents are not used to infer the repository.
 
 ### Gemini CLI
 

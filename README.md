@@ -495,6 +495,8 @@ Service names:
 | `copilot-chat` | GitHub Copilot VS Code Extension |
 | `github-copilot` | GitHub Copilot CLI |
 
+Copilot transcripts use conversation content captured in GenAI spans and supported log events. Enable content capture as shown above and send traces to AI Observer to include prompts, assistant replies, tool calls, and tool results. A session can appear in the session list without captured messages; its transcript then shows "No messages in this session". Enabling capture later does not recover content that was never recorded.
+
 > Content capture can include prompts, code, tool arguments, and tool results. Only enable it in trusted local environments.
 
 </details>
@@ -557,7 +559,7 @@ flowchart TB
 GitHub Copilot and OpenCode are not shown in watcher mode because AI Observer currently receives their telemetry through OTLP only.
 
 **Tech Stack**:
-- **Backend**: Go 1.26+, chi router, DuckDB 1.5.3, gorilla/websocket
+- **Backend**: Go 1.26+, chi router, DuckDB 1.5.5, gorilla/websocket
 - **Frontend**: React 19, TypeScript, Vite, Tailwind CSS v4, Zustand, Recharts
 
 ## API Reference
@@ -696,16 +698,20 @@ Each AI coding tool exports different telemetry signals. Here's what you can obs
 
 | Metric | Display Name | Type | Description |
 |--------|--------------|------|-------------|
-| `claude_code.session.count` | Sessions | Counter | CLI sessions started |
+| `claude_code.session.count` | Sessions | Counter | CLI sessions started; full imports count non-empty session files |
 | `claude_code.token.usage` | Token Usage | Counter | Tokens used (by type: input/output/cache) |
 | `claude_code.cost.usage` | Cost | Counter | Session cost in USD |
 | `claude_code.lines_of_code.count` | Lines of Code | Counter | Lines of code modified (added/removed) |
-| `claude_code.pull_request.count` | Pull Requests | Counter | Pull requests created |
+| `claude_code.pull_request.count` | Pull Requests | Counter | Pull requests created in live telemetry; full imports count distinct repository/PR links per file |
 | `claude_code.commit.count` | Commits | Counter | Git commits created |
 | `claude_code.code_edit_tool.decision` | Edit Decisions | Counter | Tool permission decisions (accept/reject) |
-| `claude_code.active_time.total` | Active Time | Counter | Active time in seconds |
+| `claude_code.active_time.total` | Active Time | Counter | Active time in seconds; full imports approximate it from recorded turn durations |
 
 **Common attributes**: `session.id`, `organization.id`, `user.account_uuid`, `terminal.type`, `model`
+
+Full imports reconstruct lines of code and commits only from supported successful tool results. Imported PR links do not prove PR creation, session-file counts do not measure CLI launches, and turn durations exclude user typing/reading time. The incremental watcher imports transcripts and token/cost usage without reconstructing these activity metrics. See [activity reconstruction rules](docs/import.md#claude-code-activity-metrics) for details and how to avoid counting overlapping imports and live telemetry twice.
+
+Claude Code and Codex logs and token/cost metrics from import and watch also receive `repository` and `git_branch` when evidence is available. See [repository attribution](docs/import.md#repository-attribution-in-import-and-watch) for selection rules and restart behavior.
 
 ### Derived Metrics
 
@@ -851,7 +857,9 @@ Cost derivation uses GitHub Copilot pricing data plus aliases generated from the
 
 ### Logs and Traces
 
-Copilot spans are stored as normal OTLP traces and can be opened from the Traces page. When Copilot emits GenAI log records, AI Observer recognizes `gen_ai.conversation.id`, model attributes, tool call arguments, and tool results for session and transcript views.
+Copilot spans are stored as normal OTLP traces and can be opened from the Traces page. Session transcripts combine supported log events with captured GenAI span content to reconstruct user messages, assistant replies, tool calls, and tool results. AI Observer correlates related child spans even when their session ID is missing or uses a supported alternate ID, while avoiding duplicate messages and token usage from overlapping telemetry.
+
+Conversation content must be captured and sent to AI Observer; see [AI tool setup](#ai-tool-setup) for the Copilot settings. A known session without captured messages returns an empty transcript instead of a 404, and the UI shows "No messages in this session". Unknown sessions still return 404. Content already stored in spans can be displayed after upgrading; content that was never captured cannot be recovered.
 
 </details>
 
@@ -1032,7 +1040,7 @@ GitHub Copilot telemetry is OTLP-only in AI Observer. There is no local file wat
 | `copilot_chat.cloud.session.count` | Yes | — | — |
 | `copilot_chat.cloud.pr_ready.count` | Yes | — | — |
 | Traces / spans | Yes | — | — |
-| Transcript logs | Yes, when emitted as OTLP logs | — | — |
+| Session transcripts | Yes, from captured GenAI spans and supported OTLP logs | — | — |
 
 ### OpenCode
 
@@ -1057,7 +1065,7 @@ OpenCode telemetry is OTLP-only in AI Observer through the `@devtheops/opencode-
 | Traces / spans | Yes | — | — |
 | Transcript logs | Yes, when emitted as OTLP logs | — | — |
 
-> **Summary:** OTLP mode provides the richest telemetry — all metrics, traces, and events emitted by each tool's built-in or plugin instrumentation. Watch and import modes provide token usage, cost metrics, and full session transcripts parsed from local files. Operational metrics (lines of code, active time, API latency, git activity, etc.) only exist in the OTel telemetry stream and cannot be reconstructed from local files.
+> **Summary:** OTLP mode receives the metrics, traces, and events emitted by each tool's built-in or plugin instrumentation. Watch and import modes provide token usage, cost metrics, and session transcripts from supported local files. Full Claude Code imports also reconstruct selected activity metrics from successful tool results, PR links, session files, and turn durations. These reconstructions have the limits described above; incremental watch mode does not emit them. Other operational metrics, such as API latency and tool timing, still require live telemetry. Copilot transcripts use captured GenAI spans and supported OTLP logs.
 
 ## Understanding Token Metrics: OTLP vs Local Files
 

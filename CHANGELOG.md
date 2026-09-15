@@ -7,9 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-15
+
+### Added
+
+- Added reconstructed Claude Code activity metrics to full imports: lines added/deleted from successful edits and writes, and commits from successful Git commit results. Incomplete or failed tool activity is omitted.
+- Added Claude Code pull request counts from distinct repository/PR links within each imported file, session counts per non-empty file, and active-time estimates from recorded turn durations. PR links indicate references rather than confirmed PR creation; these activity metrics are available in full imports, not incremental watch mode.
+- Added repository and Git branch attribution to Claude Code and Codex logs and token/cost metrics in both import and watch mode, including Codex session, transcript, tool, and reasoning logs.
+- Added repository detection from Codex session metadata, local Git remotes and worktrees, structured Claude PR links, GitHub URLs, and literal `gh pr --repo`/`-R` arguments in supported message and tool content. Recorded Git URLs and local remotes take precedence over references to other repositories.
+- Added persistent repository context across watcher restarts and context recovery when resuming older watch state, starting after a full import, or starting without backfill. Later evidence enriches subsequent batches; existing database records are not automatically updated.
+
+### Changed
+
+- Updated DuckDB to v1.5.5 through `duckdb-go` v2.10505.0 and Go bindings v0.10505.0.
+- Expanded import documentation and metric availability tables with activity reconstruction rules, repository attribution precedence, supported reference sources, and import/watch limitations.
+- Added full backend race detection to macOS CI builds and regression coverage for activity reconstruction, repository attribution, transcripts, DuckDB string/blob boundaries, and concurrent logger use.
+
 ### Fixed
 
-- Fixed GitHub Copilot local session transcripts returning "Failed to load session transcript". Copilot lists sessions from `copilot_chat.session.start` logs, but conversation content is on GenAI spans; transcripts now reconstruct user, assistant, and tool messages from those spans instead of 404ing when no log events map to roles.
+- Fixed GitHub Copilot local sessions returning "Failed to load session transcript" by reconstructing user, assistant, and tool messages from GenAI spans, including related child spans with missing or alternate session IDs.
+- Fixed known sessions without captured conversation content returning 404; they now return an empty transcript while unknown sessions still return 404.
+- Preserved imported transcript messages and indices when combining logs with spans, avoided duplicate messages and token usage from overlapping telemetry, and ordered tool results by completion time.
+- Preserved OTLP protobuf log event names as `event.name` so transcript events remain identifiable.
+- Fixed Claude Code imports dropping token and cost usage when usage arrives in a later record for an already-seen request.
+- Fixed a DuckDB pointer-alignment crash when reading non-inlined strings with Go pointer checks enabled through the dependency upgrade.
+- Fixed a data race during default logger initialization, access, and reconfiguration.
 
 ## [0.5.0] - 2026-06-18
 
@@ -169,6 +191,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - OTLP ingestion on port 4318
 - API/Dashboard on port 8080
 
+[0.6.0]: https://github.com/tobilg/ai-observer/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/tobilg/ai-observer/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/tobilg/ai-observer/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/tobilg/ai-observer/compare/v0.3.1...v0.3.2
