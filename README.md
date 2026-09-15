@@ -244,6 +244,8 @@ ai-observer watch [claude-code|codex|gemini|all] [options]
 - **First start with `--backfill`:** Loads all existing session data, then watches for new changes.
 - **Restart:** Resumes from where it left off, importing any data written while the watcher was stopped.
 
+Claude Code and Codex logs and token/cost metrics receive repository attribution in both import and watch mode. The watcher retains repository context across restarts and recovers it from existing session files when needed. See [repository attribution](docs/import.md#repository-attribution-in-import-and-watch) for evidence precedence, reference-mining scope, and limits on updating historical records.
+
 At startup, the watcher detects which tools are installed and reports their status:
 
 ```

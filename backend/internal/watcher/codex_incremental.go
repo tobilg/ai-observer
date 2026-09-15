@@ -18,10 +18,11 @@ import (
 )
 
 type codexParserState struct {
-	SessionID      string                    `json:"sessionId"`
-	CurrentModel   string                    `json:"currentModel"`
-	MessageIndex   int                       `json:"messageIndex"`
-	LastTokenCount *importer.CodexTokenCount `json:"lastTokenCount"`
+	Repository     *importer.RepositoryMetadata `json:"repository,omitempty"`
+	SessionID      string                       `json:"sessionId"`
+	CurrentModel   string                       `json:"currentModel"`
+	MessageIndex   int                          `json:"messageIndex"`
+	LastTokenCount *importer.CodexTokenCount    `json:"lastTokenCount"`
 }
 
 type codexIncrementalParser struct{}
@@ -51,6 +52,47 @@ func (p *codexIncrementalParser) ParseIncremental(ctx context.Context, filePath 
 	}
 	if parserState.MessageIndex == 0 && workingState.MessageCount > 0 {
 		parserState.MessageIndex = workingState.MessageCount
+	}
+
+	if parserState.Repository == nil {
+		parserState.Repository = &importer.RepositoryMetadata{}
+		recoverTokens := parserState.LastTokenCount == nil
+		recoverModel := parserState.CurrentModel == ""
+		recoverSession := parserState.SessionID == ""
+		if err := replayRepositoryPrefix(ctx, file, workingState.ByteOffset, func(line []byte) {
+			var entry importer.CodexJSONLEntry
+			if json.Unmarshal(line, &entry) != nil {
+				return
+			}
+			if _, err := time.Parse(time.RFC3339Nano, entry.Timestamp); err != nil {
+				return
+			}
+			parserState.Repository.ObserveCodex(entry)
+			switch entry.Type {
+			case "session_meta":
+				var meta importer.CodexSessionMeta
+				if json.Unmarshal(entry.Payload, &meta) == nil {
+					if recoverSession && meta.ID != "" {
+						parserState.SessionID = meta.ID
+					}
+					if recoverModel && meta.Model != "" {
+						parserState.CurrentModel = meta.Model
+					}
+				}
+			case "turn_context":
+				var turn struct{ Model string }
+				if recoverModel && json.Unmarshal(entry.Payload, &turn) == nil && turn.Model != "" {
+					parserState.CurrentModel = turn.Model
+				}
+			case "event_msg":
+				var event importer.CodexEventMsg
+				if recoverTokens && json.Unmarshal(entry.Payload, &event) == nil && event.Type == "token_count" && event.Info != nil && event.Info.TotalTokenUsage != nil {
+					parserState.LastTokenCount = event.Info.TotalTokenUsage
+				}
+			}
+		}); err != nil {
+			return nil, err
+		}
 	}
 
 	// Use filename as fallback session ID
@@ -114,6 +156,8 @@ readLoop:
 				continue
 			}
 		}
+
+		parserState.Repository.ObserveCodex(entry)
 
 		switch entry.Type {
 		case "session_meta":
@@ -416,6 +460,8 @@ readLoop:
 			break readLoop
 		}
 	}
+
+	parserState.Repository.Enrich(result.Metrics, result.Logs)
 
 	// Update state
 	workingState.ByteOffset += committedBytes

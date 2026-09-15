@@ -43,9 +43,26 @@ Full `import claude-code` reconstructs selected activity metrics from JSONL reco
 
 Tool activity without a matching successful result is omitted. LOC is also omitted for overwrites without original contents or a patch, `replace_all` without a patch, and unusually large fallback diffs (over four million line comparisons after shared edges are removed). Commit aliases, wrappers, dynamically constructed commands, quiet commits, and unrecognized/localized completion output may be omitted. These omissions favor reporting supported activity over inventing counts from incomplete records.
 
-Repository attribution uses the working tree's Git remote when available, then matching PR repository candidates, then the directory name. A linked PR in another repository keeps that repository on its own metric and does not override session usage attribution. Codex imports prefer the Git URL recorded in session metadata. On another machine or without Git installed, attribution may fall back to a directory name.
-
 Imported metrics carry `import_source=local_jsonl`. Avoid summing overlapping imports and live telemetry as if they were independent activity. The normal import state skips unchanged files; forcing an import does not deduplicate against existing metrics. Use the existing `--purge` workflow when replacing previously imported data.
+
+## Repository attribution in import and watch
+
+Both full imports and incremental `watch` attach `repository` to Claude Code and Codex token/cost metrics and logs when the session provides enough evidence. This includes Codex session-start, user/agent event, transcript, tool-call, tool-result, and reasoning logs. The first recorded Git branch is attached as `git_branch` when available.
+
+Repository selection uses this order:
+
+1. Codex's recorded `session_meta.git.repository_url`.
+2. The local working tree's `origin` remote, including Git worktrees and Claude's recorded original working directory.
+3. An unambiguous repository candidate whose name matches the working directory. An exact directory-name match takes precedence over a matching ancestor path segment.
+4. The working directory's name. If no working directory is known, a single distinct candidate can identify the repository; multiple candidates leave it unset.
+
+Candidates come from structured Claude `pr-link` entries and references in user/assistant message text, text tool results, and supported shell tool inputs (`Bash`, `exec_command`, `shell_command`, and `shell`). Mining recognizes GitHub repository/PR URLs and literal `gh pr ... --repo OWNER/REPO` or `-R` arguments, including quoted values and `--repo=OWNER/REPO`. Codex string tool outputs and user/agent event text are included. System/developer messages, reasoning summaries, arbitrary tool arguments, and structured Codex output objects are excluded. Markdown/prose can supply URLs; command flags are extracted only when the text parses as a shell command.
+
+Mined examples such as `owner/repo`, lookalike GitHub hosts, and dynamically constructed repository names are ignored. References are fallback evidence: they cannot replace a recorded Git URL or local remote. Conflicting owners for a matching repository name fall back to the directory name. Text references never create PR or commit activity metrics. A structured PR in another repository keeps that repository on its own activity metric without overriding session attribution.
+
+Full import can use evidence anywhere in a file. Watch mode uses evidence available through the end of each parsed batch and saves that context, including a discovered local remote, across restarts. A reference arriving later can improve subsequent batches; previously stored records are not rewritten. When upgrading older watch state or starting after a full import/without backfill, the watcher reads the already-skipped prefix once to recover context and missing token baselines without emitting its old records. Existing database records are not automatically backfilled with new attributes.
+
+On another machine or without Git installed, attribution may fall back to matching references or the directory name. Repository identifiers contain the normalized owner/name, not credentials from Git URLs. The activity-metric differences between full import and watch described above still apply.
 
 ## Options
 

@@ -5,9 +5,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
+
+	"mvdan.cc/sh/v3/syntax"
 )
 
 // Repository attribution logic.
@@ -21,19 +22,16 @@ import (
 //  2. On-disk git remote from cwd (real remote, authoritative)
 //  3. Candidate repos whose name matches cwd name or path segment
 //  4. Bare cwd directory name
-//  5. First candidate repository reference
+//  5. A unique candidate when no cwd is available
 
 var (
 	githubURLRe = regexp.MustCompile(`(?i)(?:^|://|@)(?:[^/@]+@)?github\.com[:/]+([^/]+/[^/?#]+)`)
 	schemeRe    = regexp.MustCompile(`(?i)^[a-z][a-z0-9+.-]*://`)
 	userAtRe    = regexp.MustCompile(`^[^@/]+@`)
 
-	ghPRRe     = regexp.MustCompile(`(?i)\bgh\s+pr\s+(create|merge|close|reopen|checkout|view|diff|review|list|edit|comment|ready|status)\b`)
-	repoFlagRe = regexp.MustCompile(`(?i)--repo[ =]\s*['"]?([^\s'"]+)`)
-	pullURLRe  = regexp.MustCompile(`(?i)https?://github\.com/([^/\s]+/[^/\s]+?)/pull/(\d+)`)
-	// repoURLRe catches any github.com/owner/repo reference not already matched by pullURLRe.
-	// The lazy second component combined with the required terminator stops at path separators.
-	repoURLRe = regexp.MustCompile(`(?i)github\.com[:/]+([^/\s]+/[^/\s]+?)(?:\.git)?(?:[/\s)"',` + "`" + `]|$)`)
+	// Match standalone GitHub references, excluding lookalike hosts and dynamic paths.
+	repoURLRe  = regexp.MustCompile(`(?i)(?:^|[^a-z0-9_.@/-])(?:https?://|ssh://git@|git@)?github\.com[:/]([a-z0-9_.-]+/[a-z0-9_.-]+)`)
+	repoNameRe = regexp.MustCompile(`^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$`)
 )
 
 var placeholderRepos = map[string]bool{
@@ -130,11 +128,11 @@ func cwdGitRemote(path string) string {
 // resolveSessionRepository returns the best repository id for a session.
 //
 // candidateRepos are owner/repo references seen for the session - from pr-link
-// entries and text-mined references - ideally most-frequent first.
+// entries and text-mined references - deduplicated by repository identity.
 //
 // The working directory says which repo we're in; candidates supply the owner/
 // prefix the cwd alone can't. A candidate whose repo-part matches the cwd name
-// or a path segment is the highest-confidence answer. A candidate that doesn't
+// or a path segment can supply an owner when Git metadata is absent. A candidate that doesn't
 // match is treated as a stray and used only when there's no cwd at all.
 func resolveSessionRepository(candidateRepos []string, gitRepoURL, originalCwd, cwd string) string {
 	// Codex carries the cwd's actual git remote - authoritative.
@@ -162,29 +160,44 @@ func resolveSessionRepository(candidateRepos []string, gitRepoURL, originalCwd, 
 		}
 	}
 
+	// Resolve only an unambiguous candidate. An exact cwd-name match outranks
+	// ancestor matches; competing owners of the same name fall back to cwd.
 	if len(candidates) > 0 && path != "" {
 		segments := make(map[string]bool)
 		for _, seg := range strings.Split(filepath.ToSlash(path), "/") {
-			if seg != "" {
-				segments[strings.ToLower(seg)] = true
-			}
+			segments[strings.ToLower(seg)] = true
 		}
-		for _, r := range candidates {
-			parts := strings.Split(r, "/")
-			name := strings.ToLower(parts[len(parts)-1])
-			if name == strings.ToLower(cwdName) || segments[name] {
-				return r
+		for _, exact := range []bool{true, false} {
+			var matches []string
+			for _, repo := range candidates {
+				name := strings.ToLower(repo[strings.LastIndex(repo, "/")+1:])
+				if (exact && name == strings.ToLower(cwdName)) || (!exact && segments[name]) {
+					matches = append(matches, repo)
+				}
+			}
+			if len(matches) > 0 {
+				if repo := uniqueRepository(matches); repo != "" {
+					return repo
+				}
+				return cwdName
 			}
 		}
 	}
-
 	if cwdName != "" {
 		return cwdName
 	}
-	if len(candidates) > 0 {
-		return candidates[0]
+	return uniqueRepository(candidates)
+}
+
+func uniqueRepository(candidates []string) string {
+	var result string
+	for _, repo := range candidates {
+		if result != "" && !strings.EqualFold(result, repo) {
+			return ""
+		}
+		result = repo
 	}
-	return ""
+	return result
 }
 
 // isPlaceholder returns true if repo is a documentation/example placeholder.
@@ -195,87 +208,88 @@ func isPlaceholder(repo string) bool {
 
 func normalizeRepoFlag(val string) string {
 	if gh := githubRepoFromURL(val); gh != "" {
-		if isPlaceholder(gh) {
-			return ""
-		}
-		return gh
+		val = gh
 	}
-	val = strings.TrimRight(strings.TrimSpace(val), "/")
-	var parts []string
-	for _, p := range strings.Split(val, "/") {
-		if p != "" {
-			parts = append(parts, p)
-		}
+	val = strings.TrimSuffix(strings.TrimRight(strings.TrimSpace(val), "/"), ".git")
+	if !repoNameRe.MatchString(val) || isPlaceholder(val) {
+		return ""
 	}
-	if len(parts) >= 2 && !strings.Contains(parts[len(parts)-2], ".") {
-		repo := strings.TrimSuffix(parts[len(parts)-2]+"/"+parts[len(parts)-1], ".git")
-		if isPlaceholder(repo) {
-			return ""
-		}
-		return repo
-	}
-	return ""
+	return val
 }
 
-// extractedRefs holds PR/repo references mined from free text.
-type extractedRefs struct {
-	PRActions []string
-	PRURLs    []string
-	PRNumbers []int
-	Repos     []string
-}
-
-// extractRefs scans one or more strings for gh pr commands, PR URLs,
-// --repo flags, and GitHub repo references.
-func extractRefs(texts ...string) extractedRefs {
-	result := extractedRefs{}
-	seenActions := map[string]bool{}
-	seenURLs := map[string]bool{}
-	seenNumbers := map[int]bool{}
-	seenRepos := map[string]bool{}
-
+// extractRepositoryRefs mines attribution candidates only. References never
+// create activity metrics, and commands/expansions are parsed, never executed.
+func extractRepositoryRefs(texts ...string) []string {
+	var repos []string
 	for _, text := range texts {
-		if text == "" {
+		repos = append(repos, extractGitHubRefs(text)...)
+		// Parse literal gh pr commands, including quoted --repo/-R values.
+		// Markdown/prose that is not valid shell still contributes URL references.
+		if !strings.Contains(text, "gh") {
 			continue
 		}
-		for _, m := range ghPRRe.FindAllStringSubmatch(text, -1) {
-			action := "gh pr " + strings.ToLower(m[1])
-			if !seenActions[action] {
-				seenActions[action] = true
-				result.PRActions = append(result.PRActions, action)
-			}
+		file, err := syntax.NewParser().Parse(strings.NewReader(text), "")
+		if err != nil {
+			continue
 		}
-		for _, m := range pullURLRe.FindAllStringSubmatch(text, -1) {
-			repo := strings.TrimSuffix(m[1], ".git")
-			if isPlaceholder(repo) {
-				continue
+		syntax.Walk(file, func(node syntax.Node) bool {
+			if _, ok := node.(*syntax.FuncDecl); ok {
+				return false
 			}
-			if !seenRepos[repo] {
-				seenRepos[repo] = true
-				result.Repos = append(result.Repos, repo)
+			call, ok := node.(*syntax.CallExpr)
+			if !ok {
+				return true
 			}
-			if num, err := strconv.Atoi(m[2]); err == nil && !seenNumbers[num] {
-				seenNumbers[num] = true
-				result.PRNumbers = append(result.PRNumbers, num)
+			args := make([]string, len(call.Args))
+			for i, arg := range call.Args {
+				args[i], _ = literalShellWord(arg.Parts)
 			}
-			if url := m[0]; !seenURLs[url] {
-				seenURLs[url] = true
-				result.PRURLs = append(result.PRURLs, url)
+			repos = append(repos, repositoryFromGHArgs(args)...)
+			return true
+		})
+	}
+	return repos
+}
+
+func repositoryFromGHArgs(args []string) []string {
+	if len(args) < 3 || args[0] != "gh" || args[1] != "pr" {
+		return nil
+	}
+	var repos []string
+	for i := 2; i < len(args); i++ {
+		arg := args[i]
+		var value string
+		switch {
+		case arg == "--":
+			return repos
+		case arg == "--repo" || arg == "-R":
+			i++
+			if i < len(args) {
+				value = args[i]
 			}
+		case strings.HasPrefix(arg, "--repo="):
+			value = strings.TrimPrefix(arg, "--repo=")
+		case strings.HasPrefix(arg, "-R"):
+			value = strings.TrimPrefix(arg, "-R")
 		}
-		for _, m := range repoFlagRe.FindAllStringSubmatch(text, -1) {
-			if r := normalizeRepoFlag(m[1]); r != "" && !seenRepos[r] {
-				seenRepos[r] = true
-				result.Repos = append(result.Repos, r)
-			}
-		}
-		for _, m := range repoURLRe.FindAllStringSubmatch(text, -1) {
-			r := strings.TrimSuffix(m[1], ".git")
-			if !isPlaceholder(r) && !seenRepos[r] {
-				seenRepos[r] = true
-				result.Repos = append(result.Repos, r)
-			}
+		if repo := normalizeRepoFlag(value); repo != "" {
+			repos = append(repos, repo)
 		}
 	}
-	return result
+	return repos
+}
+
+func extractGitHubRefs(text string) []string {
+	var repos []string
+	for _, match := range repoURLRe.FindAllStringSubmatchIndex(text, -1) {
+		// Check the terminator without consuming it: adjacent references can
+		// share a separator. Reject partial matches before shell expansions.
+		if end := match[3]; end < len(text) && !strings.ContainsRune("/ \t\r\n?#)\"',;`>]}", rune(text[end])) {
+			continue
+		}
+		if repo := normalizeRepoFlag(strings.TrimRight(text[match[2]:match[3]], ".")); repo != "" {
+			repos = append(repos, repo)
+		}
+	}
+	return repos
 }

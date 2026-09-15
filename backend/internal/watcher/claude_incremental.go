@@ -18,8 +18,9 @@ import (
 )
 
 type claudeParserState struct {
-	MessageIndex int             `json:"messageIndex"`
-	SeenRequests map[string]bool `json:"seenRequests"`
+	Repository   *importer.RepositoryMetadata `json:"repository,omitempty"`
+	MessageIndex int                          `json:"messageIndex"`
+	SeenRequests map[string]bool              `json:"seenRequests"`
 }
 
 type claudeIncrementalParser struct {
@@ -56,6 +57,23 @@ func (p *claudeIncrementalParser) ParseIncremental(ctx context.Context, filePath
 	}
 	if parserState.MessageIndex == 0 && workingState.MessageCount > 0 {
 		parserState.MessageIndex = workingState.MessageCount
+	}
+
+	if parserState.Repository == nil {
+		parserState.Repository = &importer.RepositoryMetadata{}
+		if err := replayRepositoryPrefix(ctx, file, workingState.ByteOffset, func(line []byte) {
+			var entry importer.ClaudeJSONLEntry
+			if json.Unmarshal(line, &entry) != nil {
+				return
+			}
+			parserState.Repository.ObserveClaude(entry)
+			// Empty legacy state also lacks the full import's usage dedup keys.
+			if entry.Type == "assistant" && entry.Message != nil && entry.Message.Usage != nil && entry.Message.ID != "" && entry.RequestID != "" {
+				parserState.SeenRequests[entry.Message.ID+":"+entry.RequestID] = true
+			}
+		}); err != nil {
+			return nil, err
+		}
 	}
 
 	result := &IncrementalResult{}
@@ -106,6 +124,8 @@ func (p *claudeIncrementalParser) ParseIncremental(ctx context.Context, filePath
 			}
 			continue
 		}
+
+		parserState.Repository.ObserveClaude(entry)
 
 		if entry.Message == nil {
 			commitLine()
@@ -213,6 +233,8 @@ func (p *claudeIncrementalParser) ParseIncremental(ctx context.Context, filePath
 			break
 		}
 	}
+
+	parserState.Repository.Enrich(result.Metrics, result.Logs)
 
 	// Update state
 	workingState.ByteOffset += committedBytes
