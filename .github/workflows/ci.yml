@@ -115,10 +115,10 @@ jobs:
           ./bin/ai-observer --version
           ./bin/ai-observer --version | grep -q "${{ steps.version.outputs.version }}" || (echo "Version mismatch!" && exit 1)
 
-      - name: Run storage and importer race checks
+      - name: Run backend race checks
         if: matrix.goos == 'darwin'
         working-directory: backend
-        run: go test -race ./internal/storage ./internal/importer ./internal/watcher -timeout 120s
+        run: go test -race ./... -timeout 120s
 
       - name: Create archive
         shell: bash

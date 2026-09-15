@@ -4,13 +4,21 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"sync"
 )
 
-// Global logger instance
-var defaultLogger *slog.Logger
+// Protect both lazy initialization and explicit reconfiguration. Callers keep
+// the returned logger and emit records after the lock has been released.
+var (
+	defaultLoggerMu sync.Mutex
+	defaultLogger   *slog.Logger
+)
 
 // Initialize sets up the global structured logger
 func Initialize(level slog.Level) {
+	defaultLoggerMu.Lock()
+	defer defaultLoggerMu.Unlock()
+
 	opts := &slog.HandlerOptions{
 		Level: level,
 	}
@@ -21,6 +29,9 @@ func Initialize(level slog.Level) {
 
 // InitializeText sets up a text-based logger (better for development)
 func InitializeText(level slog.Level) {
+	defaultLoggerMu.Lock()
+	defer defaultLoggerMu.Unlock()
+
 	opts := &slog.HandlerOptions{
 		Level: level,
 	}
@@ -31,8 +42,13 @@ func InitializeText(level slog.Level) {
 
 // Logger returns the default logger
 func Logger() *slog.Logger {
+	defaultLoggerMu.Lock()
+	defer defaultLoggerMu.Unlock()
+
 	if defaultLogger == nil {
-		Initialize(slog.LevelInfo)
+		handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+		defaultLogger = slog.New(handler)
+		slog.SetDefault(defaultLogger)
 	}
 	return defaultLogger
 }
