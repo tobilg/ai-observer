@@ -1,4 +1,10 @@
+# Dependencies allowed to run build scripts. pnpm 10 reads
+# onlyBuiltDependencies; newer pnpm versions ignore it and fail with
+# ERR_PNPM_IGNORED_BUILDS unless allowBuilds approves the package, so both
+# are kept until pnpm is upgraded.
 onlyBuiltDependencies:
   - esbuild
+allowBuilds:
+  esbuild: true
 overrides:
   '@csstools/css-color-parser': 4.1.4

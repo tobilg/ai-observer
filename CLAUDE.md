@@ -55,7 +55,7 @@ make clean              # Remove bin/ and built frontend assets
 
 **Toolchain:** Go 1.26 (per `go.mod`; CI and Dockerfile also use 1.26), Node 22, pnpm 10. CGO is required for DuckDB. The backend embeds `backend/internal/frontend/dist`, so build the frontend before building or testing the backend from a clean checkout.
 
-**pnpm version:** `frontend/package.json` pins pnpm via `packageManager` (also used in CI, the Dockerfile and `.tool-versions`); a newer global pnpm switches to the pinned version automatically inside `frontend/`. Update all four together.
+**pnpm version:** `frontend/package.json` pins pnpm via `packageManager` (also used in CI, the Dockerfile and `.tool-versions`); a newer global pnpm switches to the pinned version automatically inside `frontend/`. Update all four together. Packages allowed to run build scripts (esbuild) are listed in `pnpm-workspace.yaml` both as `onlyBuiltDependencies` (pnpm 10) and `allowBuilds` (newer pnpm, which ignores the former and fails with `ERR_PNPM_IGNORED_BUILDS`: the cause of the failed v0.6.0 Docker build, which installed an unpinned pnpm 12).
 
 CI additionally runs `go test -race ./... -timeout 120s` on macOS.
 

@@ -27,7 +27,8 @@ WORKDIR /app
 # Dependencies first: these layers are rebuilt only when the manifests change
 COPY backend/go.mod backend/go.sum ./backend/
 RUN cd backend && go mod download
-COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./frontend/
+# .npmrc holds pnpm settings such as minimum-release-age
+COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml frontend/.npmrc ./frontend/
 RUN cd frontend && pnpm install --frozen-lockfile --ignore-scripts && pnpm rebuild esbuild
 
 COPY . ./
