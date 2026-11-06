@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/tobilg/ai-observer/internal/api"
 	"github.com/tobilg/ai-observer/internal/storage"
+	"github.com/tobilg/ai-observer/internal/tools"
 	"github.com/tobilg/ai-observer/internal/websocket"
 )
 
@@ -86,7 +88,8 @@ func TestGetStats(t *testing.T) {
 	}
 }
 
-func TestGetStatsIgnoresTimeRange(t *testing.T) {
+// Stats count the records in the requested range; without one, all records
+func TestGetStatsTimeRange(t *testing.T) {
 	h, cleanup := setupTestHandlers(t)
 	defer cleanup()
 
@@ -102,22 +105,34 @@ func TestGetStatsIgnoresTimeRange(t *testing.T) {
 		t.Fatalf("failed to insert test span: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/stats?from=2000-01-01T00:00:00Z&to=2000-01-02T00:00:00Z", nil)
+	getStats := func(query string) api.StatsResponse {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		h.GetStats(rec, httptest.NewRequest(http.MethodGet, "/api/stats"+query, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status for %q = %d: %s", query, rec.Code, rec.Body)
+		}
+		var stats api.StatsResponse
+		if err := json.NewDecoder(rec.Body).Decode(&stats); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+		return stats
+	}
+
+	if stats := getStats("?from=2000-01-01T00:00:00Z&to=2000-01-02T00:00:00Z"); stats.TraceCount != 0 || stats.SpanCount != 0 {
+		t.Errorf("counts in a range without data = %d traces, %d spans, want 0", stats.TraceCount, stats.SpanCount)
+	}
+	if stats := getStats("?from=2000-01-01T00:00:00Z&to=2000-01-02T00:00:00Z"); len(stats.Services) != 1 {
+		t.Errorf("services = %v, want the known service also outside the range", stats.Services)
+	}
+	if stats := getStats(""); stats.TraceCount != 1 {
+		t.Errorf("all-time trace count = %d, want 1", stats.TraceCount)
+	}
+
 	rec := httptest.NewRecorder()
-
-	h.GetStats(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", rec.Code)
-	}
-
-	var stats api.StatsResponse
-	if err := json.NewDecoder(rec.Body).Decode(&stats); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	if stats.TraceCount != 1 {
-		t.Errorf("expected all-time trace count 1, got %d", stats.TraceCount)
+	h.GetStats(rec, httptest.NewRequest(http.MethodGet, "/api/stats?from=invalid", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status for an invalid from = %d, want 400", rec.Code)
 	}
 }
 
@@ -225,7 +240,7 @@ func TestGetTraceSpans_CopilotTraceID(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rec := httptest.NewRecorder()
-	h.GetTraceSpans(rec, req)
+	h.GetTrace(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
@@ -558,7 +573,7 @@ func TestParsePagination(t *testing.T) {
 		{"custom limit", "limit=25", 25, 0},
 		{"custom offset", "offset=10", 50, 10},
 		{"both custom", "limit=20&offset=5", 20, 5},
-		{"limit capped at 1000", "limit=2000", 1000, 0},
+		{"large limit is passed on (storage caps it)", "limit=2000", 2000, 0},
 		{"invalid limit uses default", "limit=abc", 50, 0},
 		{"negative offset uses 0", "offset=-5", 50, 0},
 		{"zero limit uses default", "limit=0", 50, 0},
@@ -580,36 +595,43 @@ func TestParsePagination(t *testing.T) {
 }
 
 func TestParseTimeRange(t *testing.T) {
-	// Use future dates to ensure from < to even with defaults
-	futureDate := time.Now().Add(48 * time.Hour).Format(time.RFC3339)
-
 	tests := []struct {
-		name      string
-		query     string
-		checkFrom bool
-		checkTo   bool
+		name    string
+		from    string
+		to      string
+		wantErr bool
+		wantDur time.Duration // expected to - from, if not 0
 	}{
-		{"default (no params)", "", false, false},
-		{"with from", "from=2024-01-01T00:00:00Z", true, false},
-		{"with to", "to=" + futureDate, false, true},
-		{"with both", "from=2024-01-01T00:00:00Z&to=2024-12-31T23:59:59Z", true, true},
-		{"invalid from uses default", "from=invalid", false, false},
-		{"invalid to uses default", "to=invalid", false, false},
+		{"default (no params)", "", "", false, 24 * time.Hour},
+		{"with from", "2024-01-01T00:00:00Z", "", false, 0},
+		{"with to only", "", "2024-12-31T00:00:00Z", false, 24 * time.Hour},
+		{"with both", "2024-01-01T00:00:00Z", "2024-12-31T23:59:59Z", false, 0},
+		{"invalid from", "invalid", "", true, 0},
+		{"invalid to", "", "invalid", true, 0},
+		{"from after to", "2025-01-02T00:00:00Z", "2025-01-01T00:00:00Z", true, 0},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/?"+tt.query, nil)
-			from, to := parseTimeRange(req)
-
-			// Both from and to should be valid times
-			if from.IsZero() {
-				t.Error("from time should not be zero")
+			from, to, err := parseTimeRange(tt.from, tt.to)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
 			}
-			if to.IsZero() {
-				t.Error("to time should not be zero")
+			if tt.wantDur != 0 && to.Sub(from) != tt.wantDur {
+				t.Errorf("range = %v, want %v", to.Sub(from), tt.wantDur)
 			}
 		})
+	}
+}
+
+func TestInvalidTimeRangeIsBadRequest(t *testing.T) {
+	h, cleanup := setupTestHandlers(t)
+	defer cleanup()
+
+	rec := httptest.NewRecorder()
+	h.QueryLogs(rec, httptest.NewRequest(http.MethodGet, "/api/logs?from=yesterday", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for an invalid from", rec.Code)
 	}
 }
 
@@ -700,5 +722,185 @@ func TestGetSessionTranscript_CopilotListedSessionReturnsTranscript(t *testing.T
 	}
 	if len(resp.Messages) == 0 || resp.Messages[0].Role != "user" {
 		t.Fatalf("expected reconstructed user message, got %+v", resp.Messages)
+	}
+}
+
+func requestSessionTranscript(h *Handlers, sessionID string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sessionID+"/transcript", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionId", sessionID)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	rec := httptest.NewRecorder()
+	h.GetSessionTranscript(rec, req)
+	return rec
+}
+
+// A transcript holds the whole session, also when the session started before
+// the time range it was listed for (or a link still carries from/to)
+func TestGetSessionTranscript_WholeSession(t *testing.T) {
+	h, cleanup := setupTestHandlers(t)
+	defer cleanup()
+	start := time.Date(2026, 1, 2, 10, 0, 0, 0, time.UTC)
+	if err := h.store.InsertLogs(context.Background(), []api.LogRecord{
+		{Timestamp: start, ServiceName: "claude-code", LogAttributes: map[string]string{"session.id": "s1", "event.name": "user_prompt", "prompt": "early"}},
+		{Timestamp: start.Add(50 * time.Hour), ServiceName: "claude-code", LogAttributes: map[string]string{"session.id": "s1", "event.name": "user_prompt", "prompt": "late"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	late := start.Add(50 * time.Hour).Format(time.RFC3339)
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/s1/transcript?from="+late+"&to="+late, nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionId", "s1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+	h.GetSessionTranscript(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var resp api.TranscriptResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Messages) != 2 {
+		t.Errorf("messages = %d, want 2 (the whole session)", len(resp.Messages))
+	}
+}
+
+func TestGetSessionTranscript_UnknownSessionReturns404(t *testing.T) {
+	h, cleanup := setupTestHandlers(t)
+	defer cleanup()
+
+	rec := requestSessionTranscript(h, "no-such-session")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGetSessionTranscript_StorageFailureReturns500WithoutDetails(t *testing.T) {
+	h, cleanup := setupTestHandlers(t)
+	defer cleanup()
+
+	// A closed database makes every query fail; that must not look like a missing session.
+	h.store.Close()
+
+	rec := requestSessionTranscript(h, "some-session")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp api.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.Message != "failed to load session transcript" {
+		t.Errorf("expected generic error message, got %q", resp.Message)
+	}
+}
+
+func TestQueryTimeoutReturnsGatewayTimeout(t *testing.T) {
+	h, cleanup := setupTestHandlers(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/logs", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	h.QueryLogs(rec, req)
+
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Errorf("status = %d, want 504 for a timed-out query", rec.Code)
+	}
+}
+
+func TestGetStatsIsCached(t *testing.T) {
+	h, cleanup := setupTestHandlers(t)
+	defer cleanup()
+
+	get := func() api.StatsResponse {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		h.GetStats(rec, httptest.NewRequest(http.MethodGet, "/api/stats", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d", rec.Code)
+		}
+		var stats api.StatsResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &stats); err != nil {
+			t.Fatalf("decoding stats: %v", err)
+		}
+		return stats
+	}
+
+	if got := get().LogCount; got != 0 {
+		t.Fatalf("initial log count = %d", got)
+	}
+	insertTestLog(t, h.store, "svc", "INFO", "hello")
+	if got := get().LogCount; got != 0 {
+		t.Errorf("log count = %d within the cache TTL, want the cached 0", got)
+	}
+
+	h.stats.expires = time.Now().Add(-time.Second)
+	if got := get().LogCount; got != 1 {
+		t.Errorf("log count = %d after expiry, want 1", got)
+	}
+}
+
+func TestListProviders(t *testing.T) {
+	h, cleanup := setupTestHandlers(t)
+	defer cleanup()
+
+	rec := httptest.NewRecorder()
+	h.ListProviders(rec, httptest.NewRequest(http.MethodGet, "/api/providers", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var resp api.ProvidersResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Providers) != len(tools.Providers()) {
+		t.Fatalf("providers = %d, want %d", len(resp.Providers), len(tools.Providers()))
+	}
+	claude := resp.Providers[0]
+	if claude.Tool != "claude-code" || claude.ServiceName != "claude-code" || claude.DisplayName != "Claude Code" || !claude.SessionFiles {
+		t.Errorf("first provider = %+v, want Claude Code with session files", claude)
+	}
+}
+
+func TestListEndpointsRejectDeepOffsets(t *testing.T) {
+	h, cleanup := setupTestHandlers(t)
+	defer cleanup()
+
+	for path, handler := range map[string]http.HandlerFunc{
+		"/api/logs":     h.QueryLogs,
+		"/api/traces":   h.QueryTraces,
+		"/api/sessions": h.QuerySessions,
+		"/api/metrics":  h.QueryMetrics,
+	} {
+		rec := httptest.NewRecorder()
+		handler(rec, httptest.NewRequest(http.MethodGet, path+"?offset=10001", nil))
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "cursor") {
+			t.Errorf("%s with offset 10001: status %d (%s), want 400 pointing to cursors", path, rec.Code, rec.Body)
+		}
+	}
+}
+
+func TestListEndpointsRejectInvalidCursor(t *testing.T) {
+	h, cleanup := setupTestHandlers(t)
+	defer cleanup()
+
+	for path, handler := range map[string]http.HandlerFunc{
+		"/api/logs":     h.QueryLogs,
+		"/api/traces":   h.QueryTraces,
+		"/api/sessions": h.QuerySessions,
+		"/api/metrics":  h.QueryMetrics,
+	} {
+		rec := httptest.NewRecorder()
+		handler(rec, httptest.NewRequest(http.MethodGet, path+"?cursor=not-a-cursor", nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s with an invalid cursor: status %d, want 400", path, rec.Code)
+		}
 	}
 }

@@ -1,12 +1,14 @@
 {
   "provider": "github_copilot",
-  "lastUpdated": "2026-06-14T00:00:00Z",
+  "source": "https://models.dev (models.dev contributors, MIT License)",
+  "lastUpdated": "2026-11-05T00:00:00Z",
   "models": {
     "gpt-5-mini": {
       "aliases": ["gpt-5 mini"],
       "inputCostPerMTok": 0.25,
       "outputCostPerMTok": 2,
-      "cacheReadCostPerMTok": 0.025
+      "cacheReadCostPerMTok": 0.025,
+      "deprecated": true
     },
     "gpt-5.3-codex": {
       "aliases": ["gpt-5.3 codex", "gpt-5-3-codex"],
@@ -19,6 +21,7 @@
       "inputCostPerMTok": 2.5,
       "outputCostPerMTok": 15,
       "cacheReadCostPerMTok": 0.25,
+      "deprecated": true,
       "longContext": {
         "thresholdInputTokens": 272000,
         "inputCostPerMTok": 5,
@@ -30,7 +33,8 @@
       "aliases": ["gpt-5.4 mini", "gpt-5-4-mini"],
       "inputCostPerMTok": 0.75,
       "outputCostPerMTok": 4.5,
-      "cacheReadCostPerMTok": 0.075
+      "cacheReadCostPerMTok": 0.075,
+      "deprecated": true
     },
     "gpt-5.4-nano": {
       "aliases": ["gpt-5.4 nano", "gpt-5-4-nano"],
@@ -43,11 +47,124 @@
       "inputCostPerMTok": 5,
       "outputCostPerMTok": 30,
       "cacheReadCostPerMTok": 0.5,
+      "deprecated": true,
       "longContext": {
         "thresholdInputTokens": 272000,
         "inputCostPerMTok": 10,
         "outputCostPerMTok": 45,
         "cacheReadCostPerMTok": 1
+      }
+    },
+    "gpt-5.6-luna": {
+      "aliases": ["gpt-5.6 luna", "gpt-5-6-luna"],
+      "inputCostPerMTok": 0.2,
+      "outputCostPerMTok": 1.2,
+      "cacheReadCostPerMTok": 0.02,
+      "cacheWriteCostPerMTok": 0.25,
+      "longContext": {
+        "thresholdInputTokens": 200000,
+        "inputCostPerMTok": 0.4,
+        "outputCostPerMTok": 1.8,
+        "cacheReadCostPerMTok": 0.04,
+        "cacheWriteCostPerMTok": 0.5
+      }
+    },
+    "gpt-5.6-sol": {
+      "aliases": ["gpt-5.6 sol", "gpt-5-6-sol"],
+      "inputCostPerMTok": 4,
+      "outputCostPerMTok": 20,
+      "cacheReadCostPerMTok": 0.4,
+      "cacheWriteCostPerMTok": 5,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 8,
+        "outputCostPerMTok": 30,
+        "cacheReadCostPerMTok": 0.8,
+        "cacheWriteCostPerMTok": 10
+      }
+    },
+    "gpt-5.6-terra": {
+      "aliases": ["gpt-5.6 terra", "gpt-5-6-terra"],
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 12,
+      "cacheReadCostPerMTok": 0.2,
+      "cacheWriteCostPerMTok": 2.5,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 4,
+        "outputCostPerMTok": 18,
+        "cacheReadCostPerMTok": 0.4,
+        "cacheWriteCostPerMTok": 5
+      }
+    },
+    "gpt-6-astra": {
+      "aliases": ["gpt-6 astra"],
+      "inputCostPerMTok": 10,
+      "outputCostPerMTok": 50,
+      "cacheReadCostPerMTok": 1,
+      "cacheWriteCostPerMTok": 12.5,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 20,
+        "outputCostPerMTok": 75,
+        "cacheReadCostPerMTok": 2,
+        "cacheWriteCostPerMTok": 25
+      }
+    },
+    "gpt-6-luna": {
+      "aliases": ["gpt-6 luna"],
+      "inputCostPerMTok": 0.1,
+      "outputCostPerMTok": 0.5,
+      "cacheReadCostPerMTok": 0.01,
+      "cacheWriteCostPerMTok": 0.125,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 0.2,
+        "outputCostPerMTok": 0.75,
+        "cacheReadCostPerMTok": 0.02,
+        "cacheWriteCostPerMTok": 0.25
+      }
+    },
+    "gpt-6-sol": {
+      "aliases": ["gpt-6 sol"],
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 10,
+      "cacheReadCostPerMTok": 0.2,
+      "cacheWriteCostPerMTok": 2.5,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 4,
+        "outputCostPerMTok": 15,
+        "cacheReadCostPerMTok": 0.4,
+        "cacheWriteCostPerMTok": 5
+      }
+    },
+    "gpt-6.1-sol": {
+      "aliases": ["gpt-6.1 sol", "gpt-6-1-sol"],
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 10,
+      "cacheReadCostPerMTok": 0.1,
+      "cacheWriteCostPerMTok": 2.5,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 4,
+        "outputCostPerMTok": 15,
+        "cacheReadCostPerMTok": 0.2,
+        "cacheWriteCostPerMTok": 5
+      }
+    },
+    "gpt-6.1-terra": {
+      "aliases": ["gpt-6.1 terra", "gpt-6-1-terra"],
+      "inputCostPerMTok": 1,
+      "outputCostPerMTok": 5,
+      "cacheReadCostPerMTok": 0.05,
+      "cacheWriteCostPerMTok": 1.25,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 2,
+        "outputCostPerMTok": 7.5,
+        "cacheReadCostPerMTok": 0.1,
+        "cacheWriteCostPerMTok": 2.5
       }
     },
     "claude-haiku-4.5": {
@@ -97,7 +214,8 @@
       "inputCostPerMTok": 5,
       "outputCostPerMTok": 25,
       "cacheReadCostPerMTok": 0.5,
-      "cacheWriteCostPerMTok": 6.25
+      "cacheWriteCostPerMTok": 6.25,
+      "deprecated": true
     },
     "claude-opus-4.8": {
       "aliases": ["claude opus 4.8", "claude-opus-4-8"],
@@ -112,6 +230,55 @@
       "outputCostPerMTok": 50,
       "cacheReadCostPerMTok": 1,
       "cacheWriteCostPerMTok": 12.5
+    },
+    "claude-fable-5.1": {
+      "aliases": ["claude fable 5.1", "claude-fable-5-1"],
+      "inputCostPerMTok": 10,
+      "outputCostPerMTok": 50,
+      "cacheReadCostPerMTok": 0.25,
+      "cacheWriteCostPerMTok": 12.5
+    },
+    "claude-opus-5": {
+      "aliases": ["claude opus 5"],
+      "inputCostPerMTok": 5,
+      "outputCostPerMTok": 25,
+      "cacheReadCostPerMTok": 0.5,
+      "cacheWriteCostPerMTok": 6.25
+    },
+    "claude-opus-5.5": {
+      "aliases": ["claude opus 5.5", "claude-opus-5-5"],
+      "inputCostPerMTok": 4,
+      "outputCostPerMTok": 20,
+      "cacheReadCostPerMTok": 0.2,
+      "cacheWriteCostPerMTok": 5
+    },
+    "claude-sonnet-5": {
+      "aliases": ["claude sonnet 5"],
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 10,
+      "cacheReadCostPerMTok": 0.2,
+      "cacheWriteCostPerMTok": 2.5
+    },
+    "claude-sonnet-5.5": {
+      "aliases": ["claude sonnet 5.5", "claude-sonnet-5-5"],
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 10,
+      "cacheReadCostPerMTok": 0.1,
+      "cacheWriteCostPerMTok": 2.5
+    },
+    "claude-haiku-5.5": {
+      "aliases": ["claude haiku 5.5", "claude-haiku-5-5"],
+      "inputCostPerMTok": 0.1,
+      "outputCostPerMTok": 0.5,
+      "cacheReadCostPerMTok": 0.01,
+      "cacheWriteCostPerMTok": 0.125,
+      "longContext": {
+        "thresholdInputTokens": 100000,
+        "inputCostPerMTok": 0.5,
+        "outputCostPerMTok": 2.5,
+        "cacheReadCostPerMTok": 0.05,
+        "cacheWriteCostPerMTok": 0.625
+      }
     },
     "gemini-2.5-pro": {
       "aliases": ["gemini 2.5 pro", "gemini-2-5-pro"],
@@ -141,7 +308,20 @@
       "aliases": ["gemini 3.5 flash", "gemini-3-5-flash"],
       "inputCostPerMTok": 1.5,
       "outputCostPerMTok": 9,
-      "cacheReadCostPerMTok": 0.15
+      "cacheReadCostPerMTok": 0.15,
+      "deprecated": true
+    },
+    "gemini-3.8-flash": {
+      "aliases": ["gemini 3.8 flash", "gemini-3-8-flash"],
+      "inputCostPerMTok": 0.75,
+      "outputCostPerMTok": 3.75,
+      "cacheReadCostPerMTok": 0.075
+    },
+    "gemini-4-argon": {
+      "aliases": ["gemini 4 argon"],
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 10,
+      "cacheReadCostPerMTok": 0.1
     },
     "raptor-mini": {
       "aliases": ["raptor mini"],
@@ -154,6 +334,74 @@
       "inputCostPerMTok": 0.75,
       "outputCostPerMTok": 4.5,
       "cacheReadCostPerMTok": 0.075
+    },
+    "claude-opus-4.8-fast-mode": {
+      "aliases": ["claude-opus-4.8-fast-mode-preview"],
+      "inputCostPerMTok": 10,
+      "outputCostPerMTok": 50,
+      "cacheReadCostPerMTok": 1,
+      "cacheWriteCostPerMTok": 12.5
+    },
+    "grok-4.5": {
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 6,
+      "cacheReadCostPerMTok": 0.5,
+      "longContext": {
+        "thresholdInputTokens": 200000,
+        "inputCostPerMTok": 4,
+        "outputCostPerMTok": 12,
+        "cacheReadCostPerMTok": 1
+      }
+    },
+    "grok-4.6": {
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 6,
+      "cacheReadCostPerMTok": 0.5,
+      "longContext": {
+        "thresholdInputTokens": 200000,
+        "inputCostPerMTok": 4,
+        "outputCostPerMTok": 12,
+        "cacheReadCostPerMTok": 1
+      }
+    },
+    "grok-4.7": {
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 6,
+      "cacheReadCostPerMTok": 0.5,
+      "longContext": {
+        "thresholdInputTokens": 200000,
+        "inputCostPerMTok": 4,
+        "outputCostPerMTok": 12,
+        "cacheReadCostPerMTok": 1
+      }
+    },
+    "mai-code-1.1-flash": {
+      "inputCostPerMTok": 0.2,
+      "outputCostPerMTok": 1.2,
+      "cacheReadCostPerMTok": 0.02
+    },
+    "kimi-k3": {
+      "inputCostPerMTok": 3,
+      "outputCostPerMTok": 15,
+      "cacheReadCostPerMTok": 0.3
+    },
+    "gemini-3.6-flash": {
+      "inputCostPerMTok": 0.75,
+      "outputCostPerMTok": 3.75,
+      "cacheReadCostPerMTok": 0.075,
+      "deprecated": true
+    },
+    "gemini-3.7-flash": {
+      "inputCostPerMTok": 0.75,
+      "outputCostPerMTok": 3.75,
+      "cacheReadCostPerMTok": 0.075,
+      "deprecated": true
+    },
+    "kimi-k2.7-code": {
+      "inputCostPerMTok": 0.95,
+      "outputCostPerMTok": 4,
+      "cacheReadCostPerMTok": 0.19,
+      "deprecated": true
     }
   }
 }

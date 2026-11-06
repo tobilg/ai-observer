@@ -1,8 +1,9 @@
 {
   "name": "frontend",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.7.0",
   "type": "module",
+  "packageManager": "pnpm@10.34.7",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",

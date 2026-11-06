@@ -8,6 +8,8 @@ import (
 
 	"github.com/tobilg/ai-observer/internal/config"
 	"github.com/tobilg/ai-observer/internal/importer"
+	"github.com/tobilg/ai-observer/internal/pricing"
+	"github.com/tobilg/ai-observer/internal/server"
 	"github.com/tobilg/ai-observer/internal/storage"
 )
 
@@ -27,7 +29,9 @@ type ImportFlags struct {
 	Verbose bool
 	Purge   bool
 	Yes     bool
-	Tool    string
+	// PricingMode is the Claude Code cost mode: auto, calculate or display
+	PricingMode string
+	Tool        string
 }
 
 // parseImportFlags parses command line arguments into ImportFlags
@@ -42,6 +46,7 @@ func parseImportFlags(args []string) (*ImportFlags, error) {
 	fs.BoolVar(&flags.Verbose, "verbose", false, "Show detailed progress")
 	fs.BoolVar(&flags.Purge, "purge", false, "Delete existing data in time range before import")
 	fs.BoolVar(&flags.Yes, "yes", false, "Skip confirmation prompts")
+	fs.StringVar(&flags.PricingMode, "pricing-mode", "auto", "Claude Code cost mode: auto (recorded costUSD, else calculated), calculate, display")
 
 	fs.Usage = func() {
 		fmt.Print(`Import local sessions from AI tool files
@@ -59,7 +64,7 @@ Options:
 		printFlags(fs)
 	}
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(reorderArgs(fs, args)); err != nil {
 		return nil, err
 	}
 
@@ -68,7 +73,7 @@ Options:
 }
 
 func runImport(args []string) error {
-	flags, err := parseImportFlags(reorderArgs(args))
+	flags, err := parseImportFlags(args)
 	if err != nil {
 		return err
 	}
@@ -99,6 +104,11 @@ func runImport(args []string) error {
 		return fmt.Errorf("--from date must be before --to date")
 	}
 
+	pricingMode, err := pricing.ParsePricingMode(flags.PricingMode)
+	if err != nil {
+		return err
+	}
+
 	// Load config and initialize store
 	cfg := config.Load()
 	store, err := storage.NewDuckDBStore(cfg.DatabasePath)
@@ -106,11 +116,9 @@ func runImport(args []string) error {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
 	defer store.Close()
+	store.SetRedactor(server.NewRedactor(cfg.Redaction))
 
 	// Create importer and register parsers
-	imp := importer.NewImporter(store, flags.Verbose)
-	imp.RegisterAllParsers()
-
 	// Build options
 	opts := importer.Options{
 		DryRun:      flags.DryRun,
@@ -119,7 +127,11 @@ func runImport(args []string) error {
 		ToDate:      toDate,
 		Purge:       flags.Purge,
 		SkipConfirm: flags.Yes,
+		PricingMode: pricingMode,
 	}
+
+	imp := importer.NewImporter(store, flags.Verbose)
+	imp.RegisterAllParsersWithOptions(opts)
 
 	// Run import
 	ctx := context.Background()

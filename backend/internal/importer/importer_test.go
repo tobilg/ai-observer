@@ -308,6 +308,32 @@ func TestGeminiParser(t *testing.T) {
 		t.Errorf("expected 9 metrics, got %d", len(result.Metrics))
 	}
 
+	// Token types are named like Gemini CLI's telemetry, and the input tokens
+	// include the cached ones, which are only charged at the cache rate
+	types := make(map[string]bool)
+	var firstCost float64
+	for _, m := range result.Metrics {
+		if !m.Timestamp.Equal(time.Date(2025, 1, 2, 10, 1, 0, 0, time.UTC)) {
+			continue
+		}
+		switch m.MetricName {
+		case "gemini_cli.token.usage":
+			types[m.Attributes["type"]] = true
+		case "gemini_cli.cost.usage":
+			firstCost = *m.Value
+		}
+	}
+	for _, tokenType := range []string{"input", "output", "cache", "thought", "tool"} {
+		if !types[tokenType] {
+			t.Errorf("no %q token metric, got types %v", tokenType, types)
+		}
+	}
+	// gemini-2.0-flash: input $0.10/M, output $0.40/M, cache reads $0.025/M
+	wantCost := 450*0.1e-6 + 50*0.025e-6 + (200+30)*0.4e-6
+	if diff := firstCost - wantCost; diff > 1e-12 || diff < -1e-12 {
+		t.Errorf("cost = %g, want %g", firstCost, wantCost)
+	}
+
 	// Verify time range - uses session metadata LastUpdated, not last message timestamp
 	expectedFirst, _ := time.Parse(time.RFC3339, "2025-01-02T10:00:00.000Z")
 	expectedLast, _ := time.Parse(time.RFC3339, "2025-01-02T10:05:00.000Z") // From LastUpdated field
@@ -491,9 +517,12 @@ func TestStateManager(t *testing.T) {
 	})
 
 	t.Run("record import", func(t *testing.T) {
-		err := manager.RecordImport(ctx, SourceClaude, tmpFile.Name(), 10)
+		state, err := manager.NewImportState(SourceClaude, tmpFile.Name(), "", 10)
 		if err != nil {
-			t.Fatalf("RecordImport failed: %v", err)
+			t.Fatalf("NewImportState failed: %v", err)
+		}
+		if err := store.SetImportState(ctx, state); err != nil {
+			t.Fatalf("SetImportState failed: %v", err)
 		}
 
 		// Now status should be current
@@ -518,31 +547,6 @@ func TestStateManager(t *testing.T) {
 		}
 		if status != StatusModified {
 			t.Errorf("expected StatusModified, got %s", status)
-		}
-	})
-
-	t.Run("get imported files", func(t *testing.T) {
-		files, err := manager.GetImportedFiles(ctx, SourceClaude)
-		if err != nil {
-			t.Fatalf("GetImportedFiles failed: %v", err)
-		}
-		if len(files) != 1 {
-			t.Errorf("expected 1 imported file, got %d", len(files))
-		}
-	})
-
-	t.Run("clear source", func(t *testing.T) {
-		err := manager.ClearSource(ctx, SourceClaude)
-		if err != nil {
-			t.Fatalf("ClearSource failed: %v", err)
-		}
-
-		files, err := manager.GetImportedFiles(ctx, SourceClaude)
-		if err != nil {
-			t.Fatalf("GetImportedFiles failed: %v", err)
-		}
-		if len(files) != 0 {
-			t.Errorf("expected 0 imported files after clear, got %d", len(files))
 		}
 	})
 }
@@ -717,7 +721,7 @@ func TestImportDryRun(t *testing.T) {
 	}
 
 	// Verify no data was actually imported (dry run)
-	logs, _ := store.QueryLogs(ctx, "", "", "", "", time.Time{}, time.Now(), 100, 0)
+	logs, _ := store.QueryLogs(ctx, "", "", "", "", time.Time{}, time.Now(), storage.Page{Limit: 100})
 	if logs == nil || len(logs.Logs) != 0 {
 		t.Errorf("expected 0 logs after dry run, got %d", len(logs.Logs))
 	}
@@ -785,7 +789,7 @@ func TestImportWithSkipConfirm(t *testing.T) {
 	}
 
 	// Verify data was imported
-	logs, _ := store.QueryLogs(ctx, "", "", "", "", time.Time{}, time.Now(), 100, 0)
+	logs, _ := store.QueryLogs(ctx, "", "", "", "", time.Time{}, time.Now(), storage.Page{Limit: 100})
 	if logs == nil || len(logs.Logs) == 0 {
 		t.Error("expected logs to be imported")
 	}

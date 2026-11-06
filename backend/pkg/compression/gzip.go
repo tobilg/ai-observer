@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/tobilg/ai-observer/internal/api"
 )
 
 // GzipDecompressMiddleware decompresses gzip-encoded request bodies
@@ -13,7 +15,7 @@ func GzipDecompressMiddleware(next http.Handler) http.Handler {
 		if strings.Contains(r.Header.Get("Content-Encoding"), "gzip") {
 			reader, err := gzip.NewReader(r.Body)
 			if err != nil {
-				http.Error(w, "Failed to decompress request body", http.StatusBadRequest)
+				api.WriteError(w, http.StatusBadRequest, "failed to decompress request body: "+err.Error())
 				return
 			}
 			defer reader.Close()

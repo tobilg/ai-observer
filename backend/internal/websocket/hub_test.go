@@ -44,46 +44,25 @@ func TestHubClientRegistration(t *testing.T) {
 	hub := NewHub()
 	go hub.Run()
 
-	// Give hub time to start
-	time.Sleep(10 * time.Millisecond)
-
 	// Create and register a client
 	client := newMockClient(hub)
 	hub.register <- client
 
-	// Wait for registration to process
-	time.Sleep(10 * time.Millisecond)
-
-	// Check client count
-	if count := hub.ClientCount(); count != 1 {
-		t.Errorf("expected 1 client, got %d", count)
-	}
+	waitFor(t, func() bool { return hub.ClientCount() == 1 })
 }
 
 func TestHubClientUnregistration(t *testing.T) {
 	hub := NewHub()
 	go hub.Run()
 
-	time.Sleep(10 * time.Millisecond)
-
 	// Create and register a client
 	client := newMockClient(hub)
 	hub.register <- client
-
-	time.Sleep(10 * time.Millisecond)
-
-	if hub.ClientCount() != 1 {
-		t.Fatalf("expected 1 client before unregister, got %d", hub.ClientCount())
-	}
+	waitFor(t, func() bool { return hub.ClientCount() == 1 })
 
 	// Unregister the client
 	hub.unregister <- client
-
-	time.Sleep(10 * time.Millisecond)
-
-	if count := hub.ClientCount(); count != 0 {
-		t.Errorf("expected 0 clients after unregister, got %d", count)
-	}
+	waitFor(t, func() bool { return hub.ClientCount() == 0 })
 }
 
 func TestHubDoubleUnregister(t *testing.T) {
@@ -91,30 +70,20 @@ func TestHubDoubleUnregister(t *testing.T) {
 	hub := NewHub()
 	go hub.Run()
 
-	time.Sleep(10 * time.Millisecond)
-
 	client := newMockClient(hub)
 	hub.register <- client
-
-	time.Sleep(10 * time.Millisecond)
+	waitFor(t, func() bool { return hub.ClientCount() == 1 })
 
 	// Unregister twice - should not panic due to sync.Once in client.Close()
 	hub.unregister <- client
-	time.Sleep(10 * time.Millisecond)
+	hub.unregister <- client // only returns once Run handled the first one
 
-	hub.unregister <- client
-	time.Sleep(10 * time.Millisecond)
-
-	if count := hub.ClientCount(); count != 0 {
-		t.Errorf("expected 0 clients, got %d", count)
-	}
+	waitFor(t, func() bool { return hub.ClientCount() == 0 })
 }
 
 func TestHubBroadcast(t *testing.T) {
 	hub := NewHub()
 	go hub.Run()
-
-	time.Sleep(10 * time.Millisecond)
 
 	// Register multiple clients
 	client1 := newMockClient(hub)
@@ -124,12 +93,7 @@ func TestHubBroadcast(t *testing.T) {
 	hub.register <- client1
 	hub.register <- client2
 	hub.register <- client3
-
-	time.Sleep(20 * time.Millisecond)
-
-	if hub.ClientCount() != 3 {
-		t.Fatalf("expected 3 clients, got %d", hub.ClientCount())
-	}
+	waitFor(t, func() bool { return hub.ClientCount() == 3 })
 
 	// Broadcast a message
 	testMsg := Message{
@@ -137,9 +101,6 @@ func TestHubBroadcast(t *testing.T) {
 		Payload: []string{"hello", "world"},
 	}
 	hub.Broadcast(testMsg)
-
-	// Wait for broadcast to be processed
-	time.Sleep(50 * time.Millisecond)
 
 	// Check that all clients received the message
 	for i, client := range []*Client{client1, client2, client3} {
@@ -153,7 +114,7 @@ func TestHubBroadcast(t *testing.T) {
 			if received.Type != testMsg.Type {
 				t.Errorf("client %d: expected type %s, got %s", i+1, testMsg.Type, received.Type)
 			}
-		case <-time.After(100 * time.Millisecond):
+		case <-time.After(2 * time.Second):
 			t.Errorf("client %d: did not receive message", i+1)
 		}
 	}
@@ -163,12 +124,9 @@ func TestHubBroadcastOrder(t *testing.T) {
 	hub := NewHub()
 	go hub.Run()
 
-	time.Sleep(10 * time.Millisecond)
-
 	client := newMockClient(hub)
 	hub.register <- client
-
-	time.Sleep(10 * time.Millisecond)
+	waitFor(t, func() bool { return hub.ClientCount() == 1 })
 
 	// Send multiple messages
 	messages := []Message{
@@ -180,8 +138,6 @@ func TestHubBroadcastOrder(t *testing.T) {
 	for _, msg := range messages {
 		hub.Broadcast(msg)
 	}
-
-	time.Sleep(50 * time.Millisecond)
 
 	// Verify order
 	for i, expected := range messages {
@@ -195,7 +151,7 @@ func TestHubBroadcastOrder(t *testing.T) {
 			if received.Type != expected.Type {
 				t.Errorf("message %d: expected type %s, got %s", i+1, expected.Type, received.Type)
 			}
-		case <-time.After(100 * time.Millisecond):
+		case <-time.After(2 * time.Second):
 			t.Errorf("message %d: not received", i+1)
 		}
 	}
@@ -204,8 +160,6 @@ func TestHubBroadcastOrder(t *testing.T) {
 func TestHubConcurrentRegistration(t *testing.T) {
 	hub := NewHub()
 	go hub.Run()
-
-	time.Sleep(10 * time.Millisecond)
 
 	// Concurrently register many clients
 	numClients := 100
@@ -223,18 +177,12 @@ func TestHubConcurrentRegistration(t *testing.T) {
 	}
 
 	wg.Wait()
-	time.Sleep(100 * time.Millisecond)
-
-	if count := hub.ClientCount(); count != numClients {
-		t.Errorf("expected %d clients, got %d", numClients, count)
-	}
+	waitFor(t, func() bool { return hub.ClientCount() == numClients })
 }
 
 func TestHubConcurrentBroadcast(t *testing.T) {
 	hub := NewHub()
 	go hub.Run()
-
-	time.Sleep(10 * time.Millisecond)
 
 	// Register a few clients
 	numClients := 5
@@ -243,8 +191,7 @@ func TestHubConcurrentBroadcast(t *testing.T) {
 		clients[i] = newMockClient(hub)
 		hub.register <- clients[i]
 	}
-
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool { return hub.ClientCount() == numClients })
 
 	// Concurrently broadcast messages
 	numMessages := 50
@@ -259,27 +206,12 @@ func TestHubConcurrentBroadcast(t *testing.T) {
 	}
 
 	wg.Wait()
-	time.Sleep(100 * time.Millisecond)
 
-	// Count received messages per client
+	// Every client receives the messages (the buffer holds all 50)
 	for i, client := range clients {
-		count := 0
-		timeout := time.After(200 * time.Millisecond)
-	drain:
-		for {
-			select {
-			case <-client.send:
-				count++
-			case <-timeout:
-				break drain
-			default:
-				break drain
-			}
-		}
-
-		// All messages should have been received (some may be dropped if buffer full)
-		if count == 0 {
-			t.Errorf("client %d received 0 messages", i)
+		waitFor(t, func() bool { return len(client.send) == numMessages })
+		if got := len(client.send); got != numMessages {
+			t.Errorf("client %d received %d messages, want %d", i, got, numMessages)
 		}
 	}
 }
@@ -317,7 +249,27 @@ func TestHubBroadcastChannelFull(t *testing.T) {
 	select {
 	case <-done:
 		// Success - didn't block
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(2 * time.Second):
 		t.Error("Broadcast blocked when channel was full")
+	}
+}
+
+func TestHubDisconnectsSlowClients(t *testing.T) {
+	hub := NewHub()
+	go hub.Run()
+
+	slow := newMockClient(hub)
+	hub.register <- slow
+	waitFor(t, func() bool { return hub.ClientCount() == 1 })
+
+	// The client never reads: once its buffer is full it is dropped. Broadcast
+	// drops messages when the hub is behind, so keep sending until it is.
+	waitFor(t, func() bool {
+		hub.Broadcast(Message{Type: "fill"})
+		return hub.ClientCount() == 0
+	})
+
+	// Its send channel is closed, which ends its writePump
+	for range slow.send {
 	}
 }

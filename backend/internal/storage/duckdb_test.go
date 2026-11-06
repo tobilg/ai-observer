@@ -193,7 +193,7 @@ func TestQueryTraces(t *testing.T) {
 	from := now.Add(-1 * time.Hour)
 	to := now.Add(1 * time.Hour)
 
-	resp, err := store.QueryTraces(ctx, "", "", from, to, 10, 0)
+	resp, err := store.QueryTraces(ctx, "", "", from, to, Page{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryTraces failed: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestQueryTraces_WithServiceFilter(t *testing.T) {
 	from := now.Add(-1 * time.Hour)
 	to := now.Add(1 * time.Hour)
 
-	resp, err := store.QueryTraces(ctx, "service-a", "", from, to, 10, 0)
+	resp, err := store.QueryTraces(ctx, "service-a", "", from, to, Page{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryTraces failed: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestQueryTraces_EmptyResult(t *testing.T) {
 	from := time.Now().Add(-1 * time.Hour)
 	to := time.Now()
 
-	resp, err := store.QueryTraces(context.Background(), "", "", from, to, 10, 0)
+	resp, err := store.QueryTraces(context.Background(), "", "", from, to, Page{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryTraces failed: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestGetTraceSpans(t *testing.T) {
 	}
 	store.InsertSpans(ctx, spans)
 
-	traceSpans, err := store.GetTraceSpans(ctx, "trace-001", api.TraceKindOTelTrace)
+	traceSpans, err := store.TraceSpans(ctx, "trace-001")
 	if err != nil {
 		t.Fatalf("GetTraceSpans failed: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestGetTraceSpans_CopilotTraceID(t *testing.T) {
 		t.Fatalf("InsertSpans failed: %v", err)
 	}
 
-	resp, err := store.QueryTraces(ctx, "copilot-chat", "", now.Add(-time.Minute), now.Add(time.Minute), 10, 0)
+	resp, err := store.QueryTraces(ctx, "copilot-chat", "", now.Add(-time.Minute), now.Add(time.Minute), Page{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryTraces failed: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestGetTraceSpans_CopilotTraceID(t *testing.T) {
 		t.Fatalf("expected trace id %q, got %q", traceID, resp.Traces[0].TraceID)
 	}
 
-	traceSpans, err := store.GetTraceSpans(ctx, traceID, api.TraceKindOTelTrace)
+	traceSpans, err := store.TraceSpans(ctx, traceID)
 	if err != nil {
 		t.Fatalf("GetTraceSpans by trace id failed: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestGetTraceSpans_CopilotTraceID(t *testing.T) {
 		t.Fatalf("expected span trace id %q, got %q", traceID, traceSpans[0].TraceID)
 	}
 
-	traceSpans, err = store.GetTraceSpans(ctx, rootSpanID, api.TraceKindOTelTrace)
+	traceSpans, err = store.TraceSpans(ctx, rootSpanID)
 	if err != nil {
 		t.Fatalf("GetTraceSpans by root span id failed: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestGetTraceSpans_NotFound(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	spans, err := store.GetTraceSpans(context.Background(), "nonexistent-trace", api.TraceKindOTelTrace)
+	spans, err := store.TraceSpans(context.Background(), "nonexistent-trace")
 	if err != nil {
 		t.Fatalf("GetTraceSpans failed: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestQueryTraces_CodexUsesRawTraceRows(t *testing.T) {
 		t.Fatalf("InsertSpans failed: %v", err)
 	}
 
-	resp, err := store.QueryTraces(ctx, "codex_cli_rs", "", now.Add(-time.Minute), now.Add(time.Hour), 10, 0)
+	resp, err := store.QueryTraces(ctx, "codex_cli_rs", "", now.Add(-time.Minute), now.Add(time.Hour), Page{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryTraces failed: %v", err)
 	}
@@ -395,7 +395,7 @@ func TestQueryTraces_CodexUsesRawTraceRows(t *testing.T) {
 		t.Errorf("expected raw codex trace aggregated status ERROR, got %q", trace.Status)
 	}
 
-	traceSpans, err := store.GetTraceSpans(ctx, "codex-trace", api.TraceKindOTelTrace)
+	traceSpans, err := store.TraceSpans(ctx, "codex-trace")
 	if err != nil {
 		t.Fatalf("GetTraceSpans failed: %v", err)
 	}
@@ -421,7 +421,7 @@ func TestQueryTraces_CodexSearchReturnsRawTrace(t *testing.T) {
 		t.Fatalf("InsertSpans failed: %v", err)
 	}
 
-	resp, err := store.QueryTraces(ctx, "codex_cli_rs", "ripgrep", now.Add(-time.Minute), now.Add(time.Hour), 10, 0)
+	resp, err := store.QueryTraces(ctx, "codex_cli_rs", "ripgrep", now.Add(-time.Minute), now.Add(time.Hour), Page{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryTraces failed: %v", err)
 	}
@@ -452,7 +452,7 @@ func TestQueryTraces_CodexSearchMatchesSpanInsideTimeRange(t *testing.T) {
 		t.Fatalf("InsertSpans failed: %v", err)
 	}
 
-	resp, err := store.QueryTraces(ctx, "codex_cli_rs", "inside-window-hit", now.Add(-time.Minute), now.Add(time.Minute), 10, 0)
+	resp, err := store.QueryTraces(ctx, "codex_cli_rs", "inside-window-hit", now.Add(-time.Minute), now.Add(time.Minute), Page{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryTraces failed: %v", err)
 	}
@@ -482,7 +482,7 @@ func TestQueryTraces_MixedCodexAndNonCodexPagination(t *testing.T) {
 		t.Fatalf("InsertSpans failed: %v", err)
 	}
 
-	resp, err := store.QueryTraces(ctx, "", "", now.Add(-time.Minute), now.Add(time.Hour), 2, 1)
+	resp, err := store.QueryTraces(ctx, "", "", now.Add(-time.Minute), now.Add(time.Hour), Page{Limit: 2, Offset: 1})
 	if err != nil {
 		t.Fatalf("QueryTraces failed: %v", err)
 	}
@@ -643,7 +643,7 @@ func TestQueryLogs(t *testing.T) {
 	to := now.Add(1 * time.Hour)
 
 	// Query all logs
-	resp, err := store.QueryLogs(ctx, "", "", "", "", from, to, 10, 0)
+	resp, err := store.QueryLogs(ctx, "", "", "", "", from, to, Page{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryLogs failed: %v", err)
 	}
@@ -670,7 +670,7 @@ func TestQueryLogs_WithSeverityFilter(t *testing.T) {
 	from := now.Add(-1 * time.Hour)
 	to := now.Add(1 * time.Hour)
 
-	resp, err := store.QueryLogs(ctx, "", "ERROR", "", "", from, to, 10, 0)
+	resp, err := store.QueryLogs(ctx, "", "ERROR", "", "", from, to, Page{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryLogs failed: %v", err)
 	}
@@ -697,7 +697,7 @@ func TestQueryLogs_WithSearch(t *testing.T) {
 	from := now.Add(-1 * time.Hour)
 	to := now.Add(1 * time.Hour)
 
-	resp, err := store.QueryLogs(ctx, "", "", "", "database", from, to, 10, 0)
+	resp, err := store.QueryLogs(ctx, "", "", "", "database", from, to, Page{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryLogs failed: %v", err)
 	}
@@ -810,7 +810,7 @@ func TestQueryMetrics(t *testing.T) {
 	from := now.Add(-1 * time.Hour)
 	to := now.Add(1 * time.Hour)
 
-	resp, err := store.QueryMetrics(ctx, "", "", "", from, to, 10, 0)
+	resp, err := store.QueryMetrics(ctx, "", "", "", from, to, Page{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryMetrics failed: %v", err)
 	}
@@ -838,7 +838,7 @@ func TestQueryMetrics_WithFilters(t *testing.T) {
 	to := now.Add(1 * time.Hour)
 
 	// Filter by service
-	resp, err := store.QueryMetrics(ctx, "svc-a", "", "", from, to, 10, 0)
+	resp, err := store.QueryMetrics(ctx, "svc-a", "", "", from, to, Page{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryMetrics failed: %v", err)
 	}
@@ -847,7 +847,7 @@ func TestQueryMetrics_WithFilters(t *testing.T) {
 	}
 
 	// Filter by metric name
-	resp, err = store.QueryMetrics(ctx, "", "cpu_usage", "", from, to, 10, 0)
+	resp, err = store.QueryMetrics(ctx, "", "cpu_usage", "", from, to, Page{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryMetrics failed: %v", err)
 	}
@@ -856,7 +856,7 @@ func TestQueryMetrics_WithFilters(t *testing.T) {
 	}
 
 	// Filter by type
-	resp, err = store.QueryMetrics(ctx, "", "", "sum", from, to, 10, 0)
+	resp, err = store.QueryMetrics(ctx, "", "", "sum", from, to, Page{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryMetrics failed: %v", err)
 	}
@@ -961,7 +961,7 @@ func TestQueryTraces_Pagination(t *testing.T) {
 	to := now.Add(1 * time.Hour)
 
 	// Get first page
-	resp, err := store.QueryTraces(ctx, "", "", from, to, 2, 0)
+	resp, err := store.QueryTraces(ctx, "", "", from, to, Page{Limit: 2})
 	if err != nil {
 		t.Fatalf("QueryTraces failed: %v", err)
 	}
@@ -974,7 +974,7 @@ func TestQueryTraces_Pagination(t *testing.T) {
 	}
 
 	// Get second page
-	resp, err = store.QueryTraces(ctx, "", "", from, to, 2, 2)
+	resp, err = store.QueryTraces(ctx, "", "", from, to, Page{Limit: 2, Offset: 2})
 	if err != nil {
 		t.Fatalf("QueryTraces failed: %v", err)
 	}
@@ -1002,7 +1002,7 @@ func TestQueryLogs_Pagination(t *testing.T) {
 	from := now.Add(-1 * time.Hour)
 	to := now.Add(1 * time.Hour)
 
-	resp, err := store.QueryLogs(ctx, "", "", "", "", from, to, 2, 0)
+	resp, err := store.QueryLogs(ctx, "", "", "", "", from, to, Page{Limit: 2})
 	if err != nil {
 		t.Fatalf("QueryLogs failed: %v", err)
 	}
@@ -1340,43 +1340,40 @@ func TestQueryBatchMetricSeries_CodexAggregatePreservesModelLabels(t *testing.T)
 	}
 }
 
-func TestQueryMetricSeries_TrueCumulativeMetricStillUsesMaxMinusMin(t *testing.T) {
+// cumulativePoint is a CUMULATIVE sum point of true_cumulative_counter
+func cumulativePoint(ts time.Time, value float64, attrs map[string]string) api.MetricDataPoint {
+	cumulativeTemp := int32(2)
+	isMonotonic := true
+	return api.MetricDataPoint{
+		Timestamp:              ts,
+		ServiceName:            "svc",
+		MetricName:             "true_cumulative_counter",
+		MetricType:             "sum",
+		Value:                  ptrFloat64(value),
+		AggregationTemporality: &cumulativeTemp,
+		IsMonotonic:            &isMonotonic,
+		Attributes:             attrs,
+	}
+}
+
+func TestQueryMetricSeries_CumulativeIncreasesPerSeries(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
 	ctx := context.Background()
 	now := time.Now().Truncate(time.Minute)
-	cumulativeTemp := int32(2)
-	isMonotonic := true
+	a := map[string]string{"session.id": "a"}
+	b := map[string]string{"session.id": "b"}
 
 	metrics := []api.MetricDataPoint{
-		{
-			Timestamp:              now,
-			ServiceName:            "svc",
-			MetricName:             "true_cumulative_counter",
-			MetricType:             "sum",
-			Value:                  ptrFloat64(100),
-			AggregationTemporality: &cumulativeTemp,
-			IsMonotonic:            &isMonotonic,
-		},
-		{
-			Timestamp:              now.Add(10 * time.Second),
-			ServiceName:            "svc",
-			MetricName:             "true_cumulative_counter",
-			MetricType:             "sum",
-			Value:                  ptrFloat64(150),
-			AggregationTemporality: &cumulativeTemp,
-			IsMonotonic:            &isMonotonic,
-		},
-		{
-			Timestamp:              now.Add(20 * time.Second),
-			ServiceName:            "svc",
-			MetricName:             "true_cumulative_counter",
-			MetricType:             "sum",
-			Value:                  ptrFloat64(170),
-			AggregationTemporality: &cumulativeTemp,
-			IsMonotonic:            &isMonotonic,
-		},
+		// Session a: reported before the range, so only the increase counts
+		cumulativePoint(now.Add(-2*time.Hour), 100, a),
+		cumulativePoint(now, 150, a),
+		cumulativePoint(now.Add(10*time.Second), 170, a),
+		// Session b starts in the range and resets once
+		cumulativePoint(now.Add(5*time.Second), 30, b),
+		cumulativePoint(now.Add(15*time.Second), 50, b),
+		cumulativePoint(now.Add(25*time.Second), 5, b),
 	}
 	if err := store.InsertMetrics(ctx, metrics); err != nil {
 		t.Fatalf("InsertMetrics failed: %v", err)
@@ -1386,12 +1383,45 @@ func TestQueryMetricSeries_TrueCumulativeMetricStillUsesMaxMinusMin(t *testing.T
 	if err != nil {
 		t.Fatalf("QueryMetricSeries failed: %v", err)
 	}
-
 	if len(resp.Series) != 1 {
-		t.Fatalf("expected 1 cumulative series, got %d", len(resp.Series))
+		t.Fatalf("expected 1 series, got %d", len(resp.Series))
 	}
-	if got := resp.Series[0].DataPoints[0][1]; got != 70 {
-		t.Errorf("expected true cumulative aggregate max-min 70, got %v", got)
+	// a: 150-100 + 170-150 = 70; b: 30 + 20 + 5 (after the reset) = 55
+	if got := resp.Series[0].DataPoints[0][1]; got != 125 {
+		t.Errorf("cumulative aggregate = %v, want 125", got)
+	}
+
+	// Bucketed: the increases fall into the buckets of their points
+	resp, err = store.QueryMetricSeries(ctx, "true_cumulative_counter", "", now.Add(-time.Minute), now.Add(time.Minute), 60, false)
+	if err != nil {
+		t.Fatalf("QueryMetricSeries failed: %v", err)
+	}
+	var total float64
+	for _, point := range resp.Series[0].DataPoints {
+		total += point[1]
+	}
+	if total != 125 {
+		t.Errorf("sum of bucketed increases = %v, want 125", total)
+	}
+}
+
+func TestQueryMetricSeries_CapsBucketCount(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Minute)
+	if err := store.InsertMetrics(ctx, []api.MetricDataPoint{cumulativePoint(now, 1, nil)}); err != nil {
+		t.Fatalf("InsertMetrics failed: %v", err)
+	}
+
+	// One-second buckets over 90 days would be 7.8 million buckets
+	resp, err := store.QueryMetricSeries(ctx, "true_cumulative_counter", "", now.Add(-90*24*time.Hour), now.Add(time.Minute), 1, false)
+	if err != nil {
+		t.Fatalf("QueryMetricSeries failed: %v", err)
+	}
+	if n := len(resp.Series[0].DataPoints); n > maxSeriesBuckets+1 {
+		t.Errorf("got %d buckets, want at most %d", n, maxSeriesBuckets+1)
 	}
 }
 
@@ -1449,70 +1479,6 @@ func TestQueryMetricSeries_SumMetric(t *testing.T) {
 
 	if len(resp.Series) == 0 {
 		t.Error("expected at least one series for sum metric")
-	}
-}
-
-func TestGetLatestMetricValue(t *testing.T) {
-	store, cleanup := setupTestStore(t)
-	defer cleanup()
-
-	ctx := context.Background()
-	now := time.Now()
-
-	// Insert metrics
-	metrics := []api.MetricDataPoint{
-		{
-			Timestamp:   now.Add(-2 * time.Minute),
-			ServiceName: "test-service",
-			MetricName:  "counter",
-			MetricType:  "sum",
-			Value:       ptrFloat64(100.0),
-			Attributes:  map[string]string{"region": "us-east"},
-		},
-		{
-			Timestamp:   now.Add(-1 * time.Minute),
-			ServiceName: "test-service",
-			MetricName:  "counter",
-			MetricType:  "sum",
-			Value:       ptrFloat64(150.0),
-			Attributes:  map[string]string{"region": "us-east", "gen_ai.token.type": "input"},
-		},
-	}
-	store.InsertMetrics(ctx, metrics)
-
-	// Get latest value
-	value, found := store.GetLatestMetricValue(ctx, "counter", "test-service", map[string]string{"region": "us-east"})
-	if !found {
-		t.Fatal("expected to find latest metric value")
-	}
-
-	if value != 150.0 {
-		t.Errorf("expected value 150.0, got %f", value)
-	}
-
-	value, found = store.GetLatestMetricValue(ctx, "counter", "test-service", map[string]string{"gen_ai.token.type": "input"})
-	if !found {
-		t.Fatal("expected to find latest metric value by dotted attribute")
-	}
-	if value != 150.0 {
-		t.Errorf("expected dotted attribute value 150.0, got %f", value)
-	}
-
-	value, found = store.GetLatestMetricValue(ctx, "counter", "test-service", map[string]string{"region') OR 1=1--": "us-east"})
-	if found {
-		t.Errorf("expected invalid attribute lookup to be ignored, got value %f", value)
-	}
-}
-
-func TestGetLatestMetricValue_NotFound(t *testing.T) {
-	store, cleanup := setupTestStore(t)
-	defer cleanup()
-
-	ctx := context.Background()
-
-	value, found := store.GetLatestMetricValue(ctx, "nonexistent", "test-service", map[string]string{})
-	if found {
-		t.Errorf("expected not found, got value %f", value)
 	}
 }
 
@@ -1734,12 +1700,6 @@ func TestGetStats_CountsCodexAsRawTraces(t *testing.T) {
 		t.Fatalf("GetStats failed: %v", err)
 	}
 
-	if stats.RawTraceCount != 2 {
-		t.Errorf("expected 2 raw traces, got %d", stats.RawTraceCount)
-	}
-	if stats.CodexOperationCount != 0 {
-		t.Errorf("expected no codex operation count, got %d", stats.CodexOperationCount)
-	}
 	if stats.TraceCount != 2 {
 		t.Errorf("expected 2 displayed raw traces, got %d", stats.TraceCount)
 	}

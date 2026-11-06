@@ -32,6 +32,8 @@ export interface MetricsResponse {
   metrics: MetricDataPoint[]
   total: number
   hasMore: boolean
+  // Requests the next page (cursor parameter) when hasMore
+  nextCursor?: string
 }
 
 export interface TimeSeries {

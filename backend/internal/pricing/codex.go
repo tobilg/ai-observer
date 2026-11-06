@@ -28,6 +28,9 @@ func CalculateCodexCost(model string, inputTokens, cachedTokens, outputTokens in
 	cached := max(0, cachedTokens)
 	output := max(0, outputTokens)
 
+	// OpenAI input tokens include cached tokens, so input is the prompt length
+	pricing = pricing.forPromptSize(input)
+
 	// Cached tokens can't exceed input tokens
 	cached = min(cached, input)
 

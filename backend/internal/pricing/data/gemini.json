@@ -1,22 +1,59 @@
 {
   "provider": "google",
-  "lastUpdated": "2026-06-13T00:00:00Z",
+  "source": "https://models.dev (models.dev contributors, MIT License)",
+  "lastUpdated": "2026-11-05T00:00:00Z",
   "models": {
+    "gemini-4-argon": {
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 10,
+      "cacheReadCostPerMTok": 0.1
+    },
+    "gemini-3.8-flash": {
+      "inputCostPerMTok": 0.75,
+      "outputCostPerMTok": 3.75,
+      "cacheReadCostPerMTok": 0.075
+    },
+    "gemini-3.6-flash": {
+      "inputCostPerMTok": 0.75,
+      "outputCostPerMTok": 3.75,
+      "cacheReadCostPerMTok": 0.075
+    },
+    "gemini-3.5-flash-lite": {
+      "inputCostPerMTok": 0.3,
+      "outputCostPerMTok": 2.5,
+      "cacheReadCostPerMTok": 0.03
+    },
+    "gemini-omni-1.2-flash": {
+      "inputCostPerMTok": 1.5,
+      "outputCostPerMTok": 9
+    },
+    "gemini-omni-1.1-flash": {
+      "inputCostPerMTok": 1.5,
+      "outputCostPerMTok": 9,
+      "deprecated": true
+    },
     "gemini-3.1-pro-preview": {
       "aliases": ["gemini-3.1-pro-preview-customtools"],
       "inputCostPerMTok": 2,
       "outputCostPerMTok": 12,
-      "cacheReadCostPerMTok": 0.2
+      "cacheReadCostPerMTok": 0.2,
+      "longContext": {
+        "thresholdInputTokens": 200000,
+        "inputCostPerMTok": 4,
+        "outputCostPerMTok": 18,
+        "cacheReadCostPerMTok": 0.4
+      }
     },
     "gemini-3.1-flash-lite-preview": {
       "inputCostPerMTok": 0.25,
       "outputCostPerMTok": 1.5,
-      "cacheReadCostPerMTok": 0
+      "cacheReadCostPerMTok": 0.025,
+      "deprecated": true
     },
     "gemini-3.1-flash-lite": {
-      "inputCostPerMTok": 0.125,
-      "outputCostPerMTok": 0.75,
-      "cacheReadCostPerMTok": 0.0125
+      "inputCostPerMTok": 0.25,
+      "outputCostPerMTok": 1.5,
+      "cacheReadCostPerMTok": 0.025
     },
     "gemini-3-pro-preview": {
       "inputCostPerMTok": 2,
@@ -33,18 +70,27 @@
       "aliases": ["gemini-2.5-pro-latest"],
       "inputCostPerMTok": 1.25,
       "outputCostPerMTok": 10,
-      "cacheReadCostPerMTok": 0.125
+      "cacheReadCostPerMTok": 0.125,
+      "deprecated": true,
+      "longContext": {
+        "thresholdInputTokens": 200000,
+        "inputCostPerMTok": 2.5,
+        "outputCostPerMTok": 15,
+        "cacheReadCostPerMTok": 0.25
+      }
     },
     "gemini-2.5-flash": {
       "aliases": ["gemini-2.5-flash-latest"],
       "inputCostPerMTok": 0.3,
       "outputCostPerMTok": 2.5,
-      "cacheReadCostPerMTok": 0.03
+      "cacheReadCostPerMTok": 0.03,
+      "deprecated": true
     },
     "gemini-2.5-flash-preview-09-2025": {
       "inputCostPerMTok": 0.3,
       "outputCostPerMTok": 2.5,
-      "cacheReadCostPerMTok": 0.03
+      "cacheReadCostPerMTok": 0.03,
+      "deprecated": true
     },
     "gemini-2.5-flash-lite": {
       "aliases": ["gemini-2.5-flash-lite-latest"],
@@ -55,24 +101,110 @@
     "gemini-2.5-flash-lite-preview-09-2025": {
       "inputCostPerMTok": 0.1,
       "outputCostPerMTok": 0.4,
-      "cacheReadCostPerMTok": 0.01
+      "cacheReadCostPerMTok": 0.01,
+      "deprecated": true
     },
     "gemini-2.5-computer-use-preview-10-2025": {
       "inputCostPerMTok": 1.25,
       "outputCostPerMTok": 10,
-      "cacheReadCostPerMTok": 0
+      "deprecated": true,
+      "longContext": {
+        "thresholdInputTokens": 200000,
+        "inputCostPerMTok": 2.5,
+        "outputCostPerMTok": 15
+      }
     },
     "gemini-2.0-flash": {
       "aliases": ["gemini-2.0-flash-latest"],
       "inputCostPerMTok": 0.1,
       "outputCostPerMTok": 0.4,
-      "cacheReadCostPerMTok": 0.025
+      "cacheReadCostPerMTok": 0.025,
+      "deprecated": true
     },
     "gemini-2.0-flash-lite": {
       "aliases": ["gemini-2.0-flash-lite-latest"],
       "inputCostPerMTok": 0.075,
       "outputCostPerMTok": 0.3,
-      "cacheReadCostPerMTok": 0
+      "deprecated": true
+    },
+    "deep-research-max-preview-04-2026": {
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 12,
+      "cacheReadCostPerMTok": 0.2,
+      "longContext": {
+        "thresholdInputTokens": 200000,
+        "inputCostPerMTok": 4,
+        "outputCostPerMTok": 18,
+        "cacheReadCostPerMTok": 0.4
+      }
+    },
+    "deep-research-preview-04-2026": {
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 12,
+      "cacheReadCostPerMTok": 0.2,
+      "longContext": {
+        "thresholdInputTokens": 200000,
+        "inputCostPerMTok": 4,
+        "outputCostPerMTok": 18,
+        "cacheReadCostPerMTok": 0.4
+      }
+    },
+    "gemini-2.5-flash-image": {
+      "inputCostPerMTok": 0.3,
+      "outputCostPerMTok": 30,
+      "cacheReadCostPerMTok": 0.075,
+      "deprecated": true
+    },
+    "gemini-3-pro-image": {
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 120
+    },
+    "gemini-3.1-flash-image": {
+      "inputCostPerMTok": 0.5,
+      "outputCostPerMTok": 60
+    },
+    "gemini-3.1-flash-lite-image": {
+      "inputCostPerMTok": 0.25,
+      "outputCostPerMTok": 30
+    },
+    "gemini-3.1-flash-live-preview": {
+      "inputCostPerMTok": 0.75,
+      "outputCostPerMTok": 4.5
+    },
+    "gemini-3.5-flash": {
+      "inputCostPerMTok": 1.5,
+      "outputCostPerMTok": 9,
+      "cacheReadCostPerMTok": 0.15
+    },
+    "gemini-3.5-live-translate-preview": {
+      "inputCostPerMTok": 3.5,
+      "outputCostPerMTok": 21
+    },
+    "gemini-3.7-flash": {
+      "inputCostPerMTok": 0.75,
+      "outputCostPerMTok": 3.75,
+      "cacheReadCostPerMTok": 0.075
+    },
+    "gemini-flash-latest": {
+      "inputCostPerMTok": 0.75,
+      "outputCostPerMTok": 3.75,
+      "cacheReadCostPerMTok": 0.075
+    },
+    "gemini-flash-lite-latest": {
+      "inputCostPerMTok": 0.3,
+      "outputCostPerMTok": 2.5,
+      "cacheReadCostPerMTok": 0.03
+    },
+    "gemini-pro-latest": {
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 12,
+      "cacheReadCostPerMTok": 0.2,
+      "longContext": {
+        "thresholdInputTokens": 200000,
+        "inputCostPerMTok": 4,
+        "outputCostPerMTok": 18,
+        "cacheReadCostPerMTok": 0.4
+      }
     }
   }
 }

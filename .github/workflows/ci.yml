@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       docker_version:
-        description: 'Optional Docker version to publish, e.g. 0.6.0'
+        description: 'Optional Docker version to publish, e.g. 0.7.0'
         required: false
         type: string
 
@@ -29,21 +29,50 @@ jobs:
         with:
           go-version: '1.26.x'
 
+      # pnpm first: setup-node caches the pnpm store
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 10.34.7
+
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: '22'
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v5
-        with:
-          version: 10
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
 
       - name: Install dependencies
         run: make setup
 
       - name: Build frontend (required for backend embed)
         run: make frontend
+
+      - name: Check Go formatting
+        working-directory: backend
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Run go vet
+        working-directory: backend
+        run: go vet ./...
+
+      # Built with the job's Go (goinstall), so it can analyze Go 1.26 code.
+      # Keep the version in sync with GOLANGCI_LINT_VERSION in the Makefile.
+      - name: Lint backend
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.5.0
+          install-mode: goinstall
+          working-directory: backend
+
+      - name: Lint frontend
+        run: make frontend-lint
 
       - name: Run tests
         run: make test
@@ -79,15 +108,18 @@ jobs:
         with:
           go-version: '1.26.x'
 
+      # pnpm first: setup-node caches the pnpm store
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 10.34.7
+
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: '22'
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v5
-        with:
-          version: 10
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
 
       - name: Get version
         id: version
@@ -273,13 +305,21 @@ jobs:
         id: version
         run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
-      - name: Wait for release assets
-        run: sleep 30
-
+      # The asset can take a moment to become downloadable after the release
+      # job. curl -f fails on 404, so an error page is never hashed into the
+      # formula.
       - name: Download release asset
         run: |
-          curl -sL -o ai-observer.tar.gz \
-            "https://github.com/tobilg/ai-observer/releases/download/v${{ steps.version.outputs.version }}/ai-observer-darwin-arm64-v${{ steps.version.outputs.version }}.tar.gz"
+          url="https://github.com/tobilg/ai-observer/releases/download/v${{ steps.version.outputs.version }}/ai-observer-darwin-arm64-v${{ steps.version.outputs.version }}.tar.gz"
+          for attempt in $(seq 1 30); do
+            if curl -fsSL -o ai-observer.tar.gz "$url"; then
+              exit 0
+            fi
+            echo "Release asset not available yet (attempt $attempt), retrying in 10 s"
+            sleep 10
+          done
+          echo "Release asset not found: $url" >&2
+          exit 1
 
       - name: Calculate SHA256
         id: sha

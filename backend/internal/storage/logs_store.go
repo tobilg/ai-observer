@@ -3,10 +3,13 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/tobilg/ai-observer/internal/api"
+	"github.com/tobilg/ai-observer/internal/tools"
 )
 
 func (s *DuckDBStore) InsertLogs(ctx context.Context, logs []api.LogRecord) error {
@@ -14,150 +17,117 @@ func (s *DuckDBStore) InsertLogs(ctx context.Context, logs []api.LogRecord) erro
 		return nil
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("beginning transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	if err := insertLogsTx(ctx, tx, logs); err != nil {
-		return err
-	}
-
-	return tx.Commit()
+	return s.inWriteTx(ctx, func(w *writeTx) error {
+		return insertLogsTx(ctx, w, logs, "")
+	})
 }
 
-func insertLogsTx(ctx context.Context, tx *sql.Tx, logs []api.LogRecord) error {
-	if len(logs) == 0 {
-		return nil
-	}
+var logColumns = []string{
+	"Timestamp", "TraceId", "SpanId", "TraceFlags", "SeverityText",
+	"SeverityNumber", "ServiceName", "Body", "ResourceSchemaUrl",
+	"ResourceAttributes", "ScopeSchemaUrl", "ScopeName", "ScopeVersion",
+	"ScopeAttributes", "LogAttributes", "SessionId", "SessionIds", "SourceFile",
+}
 
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO otel_logs (
-			Timestamp, TraceId, SpanId, TraceFlags, SeverityText,
-			SeverityNumber, ServiceName, Body, ResourceSchemaUrl,
-			ResourceAttributes, ScopeSchemaUrl, ScopeName, ScopeVersion,
-			ScopeAttributes, LogAttributes
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`)
-	if err != nil {
-		return fmt.Errorf("preparing statement: %w", err)
-	}
-	defer stmt.Close()
-
-	for _, log := range logs {
-		_, err := stmt.ExecContext(ctx,
+// insertLogsTx appends logs. sourceFile is the session file they were read
+// from, or "" for OTLP telemetry (see replaceFileRecords). Their text is
+// redacted (w.redact); session IDs are read before.
+func insertLogsTx(ctx context.Context, w *writeTx, logs []api.LogRecord, sourceFile string) error {
+	return w.appendRows(ctx, "otel_logs", logColumns, len(logs), func(i int) []driver.Value {
+		log := logs[i]
+		sessionID, sessionIDs := sessionIDColumns(log.LogAttributes)
+		log.Body = w.redact.String(log.Body)
+		log.ResourceAttributes = w.redactShared(log.ResourceAttributes)
+		log.ScopeAttributes = w.redactShared(log.ScopeAttributes)
+		log.LogAttributes = w.redact.Map(log.LogAttributes)
+		return []driver.Value{
 			log.Timestamp,
-			nullString(log.TraceID),
-			nullString(log.SpanID),
+			nullableString(log.TraceID),
+			nullableString(log.SpanID),
 			log.TraceFlags,
-			nullString(log.SeverityText),
+			nullableString(log.SeverityText),
 			log.SeverityNumber,
 			log.ServiceName,
-			nullString(log.Body),
-			nullString(log.ResourceSchemaURL),
-			mapToString(log.ResourceAttributes),
-			nullString(log.ScopeSchemaURL),
-			nullString(log.ScopeName),
-			nullString(log.ScopeVersion),
-			mapToString(log.ScopeAttributes),
-			mapToString(log.LogAttributes),
-		)
-		if err != nil {
-			return fmt.Errorf("inserting log: %w", err)
+			nullableString(log.Body),
+			nullableString(log.ResourceSchemaURL),
+			rawJSON(mapToString(log.ResourceAttributes)),
+			nullableString(log.ScopeSchemaURL),
+			nullableString(log.ScopeName),
+			nullableString(log.ScopeVersion),
+			rawJSON(mapToString(log.ScopeAttributes)),
+			rawJSON(mapToString(log.LogAttributes)),
+			sessionID,
+			sessionIDs,
+			nullableString(sourceFile),
 		}
-	}
-
-	return nil
+	})
 }
 
-func (s *DuckDBStore) QueryLogs(ctx context.Context, service, severity, traceID, search string, from, to time.Time, limit, offset int) (*api.LogsResponse, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	// Format times as strings to avoid timezone issues with DuckDB's TIMESTAMP type
-	fromStr := formatTimeForDB(from)
-	toStr := formatTimeForDB(to)
-
-	query := `
-		SELECT
-			Timestamp, TraceId, SpanId, TraceFlags, SeverityText,
-			SeverityNumber, ServiceName, Body, ResourceSchemaUrl,
-			ResourceAttributes, ScopeSchemaUrl, ScopeName, ScopeVersion,
-			ScopeAttributes, LogAttributes
-		FROM otel_logs
-		WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
-	`
-	args := []interface{}{fromStr, toStr}
-
+// QueryLogs returns a page of the logs in [from, to] matching the filters,
+// newest first
+func (s *DuckDBStore) QueryLogs(ctx context.Context, service, severity, traceID, search string, from, to time.Time, page Page) (*api.LogsResponse, error) {
+	var where conditions
+	where.add("Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP", formatTimeForDB(from), formatTimeForDB(to))
 	if service != "" {
-		query += " AND ServiceName = ?"
-		args = append(args, service)
-	}
-
-	if severity != "" {
-		query += " AND SeverityText = ?"
-		args = append(args, severity)
-	}
-
-	if traceID != "" {
-		query += " AND TraceId = ?"
-		args = append(args, traceID)
-	}
-
-	if search != "" {
-		query += " AND (Body ILIKE ? OR ScopeName ILIKE ? OR SeverityText ILIKE ? OR CAST(LogAttributes AS VARCHAR) ILIKE ?)"
-		pattern := "%" + search + "%"
-		args = append(args, pattern, pattern, pattern, pattern)
-	}
-
-	// Get total count
-	countQuery := "SELECT COUNT(*) FROM otel_logs WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP"
-	countArgs := []interface{}{fromStr, toStr}
-	if service != "" {
-		countQuery += " AND ServiceName = ?"
-		countArgs = append(countArgs, service)
+		where.add("ServiceName = ?", service)
 	}
 	if severity != "" {
-		countQuery += " AND SeverityText = ?"
-		countArgs = append(countArgs, severity)
+		where.add("SeverityText = ?", severity)
 	}
 	if traceID != "" {
-		countQuery += " AND TraceId = ?"
-		countArgs = append(countArgs, traceID)
+		where.add("TraceId = ?", traceID)
 	}
 	if search != "" {
-		countQuery += " AND (Body ILIKE ? OR ScopeName ILIKE ? OR SeverityText ILIKE ? OR CAST(LogAttributes AS VARCHAR) ILIKE ?)"
-		pattern := "%" + search + "%"
-		countArgs = append(countArgs, pattern, pattern, pattern, pattern)
+		cond, args := containsCondition([]string{"Body", "ScopeName", "SeverityText", "CAST(LogAttributes AS VARCHAR)"}, search)
+		where.add(cond, args...)
+	}
+
+	limit, offset, err := pageLimit(page)
+	if err != nil {
+		return nil, err
 	}
 
 	var total int
-	if err := s.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM otel_logs"+where.clause("WHERE"), where.args...).Scan(&total); err != nil {
 		return nil, fmt.Errorf("counting logs: %w", err)
 	}
 
-	query += " ORDER BY Timestamp DESC"
-	query, args = appendLimitOffset(query, args, limit, offset)
+	pageWhere := where
+	if page.Cursor != "" {
+		c, err := decodeCursor(page.Cursor, 0)
+		if err != nil {
+			return nil, err
+		}
+		cond, args := newestFirstAfter("Timestamp", []string{"rowid"}, c.Time, []any{c.RowID})
+		pageWhere = where.and(cond, args...)
+	}
+	query := `
+		SELECT
+			rowid, Timestamp, TraceId, SpanId, TraceFlags, SeverityText,
+			SeverityNumber, ServiceName, Body, ResourceSchemaUrl,
+			ResourceAttributes, ScopeSchemaUrl, ScopeName, ScopeVersion,
+			ScopeAttributes, LogAttributes
+		FROM otel_logs` + pageWhere.clause("WHERE") + `
+		ORDER BY Timestamp DESC, rowid DESC
+		LIMIT ? OFFSET ?`
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.db.QueryContext(ctx, query, append(pageWhere.args, limit+1, offset)...)
 	if err != nil {
 		return nil, fmt.Errorf("querying logs: %w", err)
 	}
 	defer rows.Close()
 
 	var logs []api.LogRecord
+	var rowIDs []int64
 	for rows.Next() {
 		var log api.LogRecord
+		var rowID int64
 		var traceIDNull, spanIDNull, severityText, body, resourceSchemaURL sql.NullString
 		var scopeSchemaURL, scopeName, scopeVersion sql.NullString
 		var resourceAttrs, scopeAttrs, logAttrs interface{}
 
 		if err := rows.Scan(
-			&log.Timestamp, &traceIDNull, &spanIDNull, &log.TraceFlags, &severityText,
+			&rowID, &log.Timestamp, &traceIDNull, &spanIDNull, &log.TraceFlags, &severityText,
 			&log.SeverityNumber, &log.ServiceName, &body, &resourceSchemaURL,
 			&resourceAttrs, &scopeSchemaURL, &scopeName, &scopeVersion,
 			&scopeAttrs, &logAttrs,
@@ -178,31 +148,39 @@ func (s *DuckDBStore) QueryLogs(ctx context.Context, service, severity, traceID,
 		log.LogAttributes = scanJSONToMap(logAttrs)
 
 		logs = append(logs, log)
+		rowIDs = append(rowIDs, rowID)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating logs: %w", err)
 	}
 
-	return &api.LogsResponse{
-		Logs:    logs,
-		Total:   total,
-		HasMore: offset+len(logs) < total,
-	}, nil
+	resp := &api.LogsResponse{Logs: logs, Total: total}
+	if len(logs) > limit {
+		resp.Logs = logs[:limit]
+		resp.HasMore = true
+		last := limit - 1
+		resp.NextCursor = encodeCursor(pageCursor{Time: formatTimeForDB(logs[last].Timestamp), RowID: rowIDs[last]})
+	}
+	return resp, nil
 }
 
+// GetLogLevels counts all stored logs by severity
 func (s *DuckDBStore) GetLogLevels(ctx context.Context) (map[string]int64, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	return s.GetLogLevelsInRange(ctx, TimeRange{})
+}
 
+// GetLogLevelsInRange counts the logs in r by severity
+func (s *DuckDBStore) GetLogLevelsInRange(ctx context.Context, r TimeRange) (map[string]int64, error) {
+	filter, args := r.filter("Timestamp")
 	query := `
 		SELECT SeverityText, COUNT(*) as count
 		FROM otel_logs
-		WHERE SeverityText IS NOT NULL
+		WHERE SeverityText IS NOT NULL` + filter + `
 		GROUP BY SeverityText
 		ORDER BY count DESC
 	`
 
-	rows, err := s.db.QueryContext(ctx, query)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("querying log levels: %w", err)
 	}
@@ -224,390 +202,168 @@ func (s *DuckDBStore) GetLogLevels(ctx context.Context) (map[string]int64, error
 	return levels, nil
 }
 
-// QuerySessions returns sessions with transcript messages from all services
+// sessionModelExpr is the model a log record names (tools.ModelKeys). A
+// session shows the model of its latest record that names one.
+var sessionModelExpr = attributeValueExpr("LogAttributes", tools.ModelKeys)
+
+// attributeValueExpr is the SQL expression for the first non-empty value of
+// keys in the JSON attributes column
+func attributeValueExpr(column string, keys []string) string {
+	values := make([]string, len(keys))
+	for i, key := range keys {
+		values[i] = fmt.Sprintf(`NULLIF(json_extract_string(%s, '$."%s"'), '')`, column, key)
+	}
+	return "COALESCE(" + strings.Join(values, ", ") + ")"
+}
+
+// QuerySessions returns a page of the sessions with logs in [from, to], the
+// most recently active in the range first. Each session shows its whole
+// extent: start, last time, message count and latest model over all of its
+// logs, also those outside the range.
 // Supports: Claude Code (transcript.message), Gemini CLI (session.id), Codex CLI (conversation.id),
 // Copilot (session.id / gen_ai.conversation.id / copilot_chat.session_id), OpenCode (session.id)
-func (s *DuckDBStore) QuerySessions(ctx context.Context, service string, from, to time.Time, limit, offset int) (*api.SessionsResponse, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	fromStr := formatTimeForDB(from)
-	toStr := formatTimeForDB(to)
-
-	// Build the query to group by session ID across all services
-	// Different tools use different session identifiers:
-	// - Claude Code (imported): session.id with event.name = 'transcript.message'
-	// - Claude Code (OTLP): session.id in logAttributes
-	// - Gemini CLI: session.id in logAttributes
-	// - Codex CLI: conversation.id in logAttributes
-	// Note: Keys contain dots, use JSONPath with escaped quotes: $."key.name"
-	query := fmt.Sprintf(`
-		SELECT
-			%s as session_id,
-			ServiceName,
-			MIN(Timestamp) as start_time,
-			MAX(Timestamp) as last_time,
-			COUNT(*) as message_count,
-			COALESCE(
-				MAX(json_extract_string(LogAttributes, '$.model')),
-				MAX(json_extract_string(LogAttributes, '$."gen_ai.response.model"')),
-				MAX(json_extract_string(LogAttributes, '$."gen_ai.request.model"')),
-				MAX(json_extract_string(LogAttributes, '$."llm.model_name"'))
-			) as model
-		FROM otel_logs
-		WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
-		  AND json_valid(LogAttributes)
-		  AND %s
-	`, sessionIDCoalesceSQL("LogAttributes"), sessionIDPresentSQL("LogAttributes"))
-	args := []interface{}{fromStr, toStr}
-
+func (s *DuckDBStore) QuerySessions(ctx context.Context, service string, from, to time.Time, page Page) (*api.SessionsResponse, error) {
+	// SessionId is extracted from the tool-specific attributes (session.id,
+	// conversation.id, gen_ai.conversation.id, ...) when a log is stored
+	var where conditions
+	where.add("Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP", formatTimeForDB(from), formatTimeForDB(to))
+	where.add("SessionId IS NOT NULL")
 	if service != "" {
-		query += " AND ServiceName = ?"
-		args = append(args, service)
+		where.add("ServiceName = ?", service)
 	}
 
-	query += `
-		GROUP BY session_id, ServiceName
-		HAVING session_id IS NOT NULL
-		ORDER BY last_time DESC
-	`
-
-	// Get total count first
-	countQuery := fmt.Sprintf(`
-		SELECT COUNT(DISTINCT %s)
-		FROM otel_logs
-		WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
-		  AND json_valid(LogAttributes)
-		  AND %s
-	`, sessionIDCoalesceSQL("LogAttributes"), sessionIDPresentSQL("LogAttributes"))
-	countArgs := []interface{}{fromStr, toStr}
-	if service != "" {
-		countQuery += " AND ServiceName = ?"
-		countArgs = append(countArgs, service)
+	limit, offset, err := pageLimit(page)
+	if err != nil {
+		return nil, err
 	}
-
-	var total int
-	if err := s.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
-		return nil, fmt.Errorf("counting sessions: %w", err)
+	var after conditions
+	if page.Cursor != "" {
+		c, err := decodeCursor(page.Cursor, 2)
+		if err != nil {
+			return nil, err
+		}
+		cond, args := newestFirstAfter("last_active", []string{"SessionId", "ServiceName"}, c.Time, []any{c.Keys[0], c.Keys[1]})
+		after.add(cond, args...)
 	}
-
-	query, args = appendLimitOffset(query, args, limit, offset)
-
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	// The total is counted over the grouped sessions before the cursor
+	// condition, in the same scan as the page
+	query := `
+		WITH active AS (
+			SELECT SessionId, ServiceName, MAX(Timestamp) AS last_active
+			FROM otel_logs` + where.clause("WHERE") + `
+			GROUP BY SessionId, ServiceName
+		), counted AS (
+			SELECT *, COUNT(*) OVER () AS total FROM active
+		)
+		SELECT SessionId, ServiceName, last_active, total
+		FROM counted` + after.clause("WHERE") + `
+		ORDER BY last_active DESC, SessionId DESC, ServiceName DESC
+		LIMIT ? OFFSET ?`
+	rows, err := s.db.QueryContext(ctx, query, concatArgs(where.args, after.args, []any{limit + 1, offset})...)
 	if err != nil {
 		return nil, fmt.Errorf("querying sessions: %w", err)
 	}
 	defer rows.Close()
 
 	var sessions []api.Session
+	var lastActive []time.Time
+	total := -1
 	for rows.Next() {
 		var session api.Session
-		var sessionID, model sql.NullString
-
-		if err := rows.Scan(
-			&sessionID,
-			&session.ServiceName,
-			&session.StartTime,
-			&session.LastTime,
-			&session.MessageCount,
-			&model,
-		); err != nil {
+		var active time.Time
+		if err := rows.Scan(&session.SessionID, &session.ServiceName, &active, &total); err != nil {
 			return nil, fmt.Errorf("scanning session: %w", err)
 		}
-
-		session.SessionID = sessionID.String
-		session.Model = model.String
-
+		// Replaced by the session's whole extent below
+		session.StartTime, session.LastTime = active, active
 		sessions = append(sessions, session)
+		lastActive = append(lastActive, active)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating sessions: %w", err)
 	}
 
-	return &api.SessionsResponse{
-		Sessions: sessions,
-		Total:    total,
-		HasMore:  offset+len(sessions) < total,
-	}, nil
-}
+	if total < 0 {
+		// An empty page has no row to carry the total
+		if page.Cursor == "" && offset == 0 {
+			total = 0
+		} else {
+			countQuery := "SELECT COUNT(*) FROM (SELECT 1 FROM otel_logs" + where.clause("WHERE") + " GROUP BY SessionId, ServiceName)"
+			if err := s.db.QueryRowContext(ctx, countQuery, where.args...).Scan(&total); err != nil {
+				return nil, fmt.Errorf("counting sessions: %w", err)
+			}
+		}
+	}
 
-// GetSessionTranscript returns transcript messages for a session.
-// Copilot local sessions are listed from session-start logs but the conversation
-// content lives on GenAI spans, so matching spans are merged into the transcript.
-func (s *DuckDBStore) GetSessionTranscript(ctx context.Context, sessionID string) (*api.TranscriptResponse, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	logRows, err := s.querySessionLogsLocked(ctx, sessionID)
-	if err != nil {
+	resp := &api.SessionsResponse{Sessions: sessions, Total: total}
+	if len(sessions) > limit {
+		resp.Sessions = sessions[:limit]
+		resp.HasMore = true
+		last := sessions[limit-1]
+		resp.NextCursor = encodeCursor(pageCursor{
+			Time: formatTimeForDB(lastActive[limit-1]),
+			Keys: []string{last.SessionID, last.ServiceName},
+		})
+	}
+	if err := s.fillSessionExtents(ctx, resp.Sessions); err != nil {
 		return nil, err
 	}
-	// Imported transcripts already contain the conversation. Preserve their
-	// records, indices and bounds even when live telemetry also exists.
-	imported := false
-	for _, row := range logRows {
-		if row.Attrs["event.name"] == "transcript.message" {
-			imported = true
-			break
-		}
-	}
-	var spans []api.Span
-	if !imported {
-		spans, err = s.querySessionSpansLocked(ctx, sessionID)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if len(logRows) == 0 && len(spans) == 0 {
-		return nil, fmt.Errorf("session not found: %s", sessionID)
-	}
-
-	messages := mergeTranscriptMessages(logRows, transcriptMessagesFromSpans(spans, logRows))
-
-	serviceName, startTime, lastTime := sessionTranscriptBounds(logRows, spans)
-	return &api.TranscriptResponse{
-		SessionID:   sessionID,
-		ServiceName: serviceName,
-		StartTime:   startTime,
-		LastTime:    lastTime,
-		Messages:    messages,
-	}, nil
+	return resp, nil
 }
 
-func sessionTranscriptBounds(logRows []sessionLogRow, spans []api.Span) (string, time.Time, time.Time) {
-	var serviceName string
-	var startTime, lastTime time.Time
-
-	for _, row := range logRows {
-		if serviceName == "" {
-			serviceName = row.ServiceName
-		}
-		if startTime.IsZero() || row.Timestamp.Before(startTime) {
-			startTime = row.Timestamp
-		}
-		if lastTime.IsZero() || row.Timestamp.After(lastTime) {
-			lastTime = row.Timestamp
-		}
+// fillSessionExtents sets the start, last time, message count and latest
+// model of sessions from all of their logs
+func (s *DuckDBStore) fillSessionExtents(ctx context.Context, sessions []api.Session) error {
+	if len(sessions) == 0 {
+		return nil
 	}
-	for _, span := range spans {
-		if serviceName == "" {
-			serviceName = span.ServiceName
-		}
-		if startTime.IsZero() || span.Timestamp.Before(startTime) {
-			startTime = span.Timestamp
-		}
-		end := spanEndTime(span)
-		if lastTime.IsZero() || end.After(lastTime) {
-			lastTime = end
+	type sessionKey struct{ id, service string }
+	index := make(map[sessionKey]int, len(sessions))
+	ids := make(map[string]bool, len(sessions))
+	var placeholders []string
+	var args []any
+	for i, session := range sessions {
+		index[sessionKey{session.SessionID, session.ServiceName}] = i
+		if !ids[session.SessionID] {
+			ids[session.SessionID] = true
+			placeholders = append(placeholders, "?")
+			args = append(args, session.SessionID)
 		}
 	}
-	return serviceName, startTime, lastTime
-}
-
-// mapEventToRole converts event names to transcript roles
-func mapEventToRole(eventName, serviceName string) string {
-	switch eventName {
-	// Claude Code (imported transcripts)
-	case "transcript.message":
-		return "" // Role is in message.role attribute, handled separately
-
-	// Claude Code (OTLP)
-	case "user_prompt", "codex.user_prompt":
-		return "user"
-	case "api_request", "api_response", "codex.api_request":
-		return "assistant"
-	case "tool_result", "codex.tool_result":
-		return "tool_result"
-	case "tool_decision", "codex.tool_decision":
-		return "tool_use"
-	case "api_error", "session.created", "session.idle", "session.error", "commit":
-		return "system"
-
-	// Gemini CLI
-	case "gemini_cli.user_prompt":
-		return "user"
-	case "gemini_cli.api_request", "gemini_cli.api_response":
-		return "assistant"
-	case "gemini_cli.tool_call":
-		return "tool_use"
-
-	// GitHub Copilot
-	case "gen_ai.client.inference.operation.details", "copilot_chat.agent.turn":
-		return "assistant"
-	case "copilot_chat.tool.call":
-		return "tool_use"
-
-	// OpenCode OTEL plugin
-	case "opencode.user_prompt":
-		return "user"
-	case "opencode.api_request":
-		return "assistant"
-	case "opencode.tool_result":
-		return "tool_result"
-	case "opencode.tool_decision":
-		return "tool_use"
-	case "opencode.api_error", "opencode.session.created", "opencode.session.idle", "opencode.session.error", "opencode.commit":
-		return "system"
-
-	default:
-		return ""
+	query := `
+		SELECT
+			SessionId,
+			ServiceName,
+			MIN(Timestamp),
+			MAX(Timestamp),
+			COUNT(*),
+			arg_max(` + sessionModelExpr + `, Timestamp) FILTER (WHERE ` + sessionModelExpr + ` IS NOT NULL)
+		FROM otel_logs
+		WHERE SessionId IN (` + strings.Join(placeholders, ", ") + `)
+		GROUP BY SessionId, ServiceName`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("querying session extents: %w", err)
 	}
-}
-
-func getModelName(attrs map[string]string) string {
-	if model, ok := attrs["model"]; ok {
-		return model
-	}
-	if model, ok := attrs["gen_ai.response.model"]; ok {
-		return model
-	}
-	if model, ok := attrs["gen_ai.request.model"]; ok {
-		return model
-	}
-	if model, ok := attrs["llm.model_name"]; ok {
-		return model
-	}
-	return ""
-}
-
-// getToolName extracts tool name from attributes
-func getToolName(attrs map[string]string, eventName string) string {
-	if name, ok := attrs["tool.name"]; ok {
-		return name
-	}
-	if name, ok := attrs["gen_ai.tool.name"]; ok {
-		return name
-	}
-	if name, ok := attrs["tool_name"]; ok {
-		return name
-	}
-	if name, ok := attrs["function_name"]; ok {
-		return name
-	}
-	if name, ok := attrs["openinference.tool.name"]; ok {
-		return name
-	}
-	return ""
-}
-
-// getToolInput extracts tool input from attributes
-func getToolInput(attrs map[string]string) string {
-	if input, ok := attrs["tool.input"]; ok {
-		return input
-	}
-	if input, ok := attrs["gen_ai.tool.call.arguments"]; ok {
-		return input
-	}
-	if input, ok := attrs["tool_parameters"]; ok {
-		return input
-	}
-	if input, ok := attrs["tool.parameters"]; ok {
-		return input
-	}
-	// Codex CLI uses "arguments"
-	if input, ok := attrs["arguments"]; ok {
-		return input
-	}
-	return ""
-}
-
-// getToolOutput extracts tool output from attributes (for imported data and Codex OTLP)
-func getToolOutput(attrs map[string]string) string {
-	if output, ok := attrs["tool.output"]; ok {
-		return output
-	}
-	if output, ok := attrs["gen_ai.tool.call.result"]; ok {
-		return output
-	}
-	if output, ok := attrs["tool_result"]; ok {
-		return output
-	}
-	if output, ok := attrs["tool.result"]; ok {
-		return output
-	}
-	// Codex CLI OTLP sends actual output in "output" attribute
-	if output, ok := attrs["output"]; ok {
-		return output
-	}
-	return ""
-}
-
-// parseIntAttr parses an integer from a string attribute
-func parseIntAttr(attrs map[string]string, keys ...string) int {
-	for _, key := range keys {
-		if val, ok := attrs[key]; ok && val != "" {
-			var result int
-			fmt.Sscanf(val, "%d", &result)
-			return result
+	defer rows.Close()
+	for rows.Next() {
+		var key sessionKey
+		var start, last time.Time
+		var count int
+		var model sql.NullString
+		if err := rows.Scan(&key.id, &key.service, &start, &last, &count, &model); err != nil {
+			return fmt.Errorf("scanning session extent: %w", err)
 		}
-	}
-	return 0
-}
-
-// parseFloatAttr parses a float from a string attribute
-func parseFloatAttr(attrs map[string]string, keys ...string) float64 {
-	for _, key := range keys {
-		if val, ok := attrs[key]; ok && val != "" {
-			var result float64
-			fmt.Sscanf(val, "%f", &result)
-			return result
+		i, ok := index[key]
+		if !ok {
+			continue // the same session ID from a service not on the page
 		}
+		sessions[i].StartTime, sessions[i].LastTime = start, last
+		sessions[i].MessageCount = count
+		sessions[i].Model = model.String
 	}
-	return 0
-}
-
-// parseBoolAttr parses a boolean from a string attribute
-func parseBoolAttr(attrs map[string]string, keys ...string) *bool {
-	for _, key := range keys {
-		if val, ok := attrs[key]; ok {
-			result := val == "true" || val == "1"
-			return &result
-		}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterating session extents: %w", err)
 	}
 	return nil
-}
-
-// extractMessageContent extracts actual content from logAttributes based on event type
-func extractMessageContent(eventName string, attrs map[string]string, body string) string {
-	switch eventName {
-	case "user_prompt", "codex.user_prompt", "gemini_cli.user_prompt":
-		// User prompts have the actual text in the 'prompt' attribute
-		if prompt, ok := attrs["prompt"]; ok && prompt != "" {
-			return prompt
-		}
-		return body
-
-	case "transcript.message":
-		// Imported transcripts already have content in body
-		return body
-
-	case "codex.tool_result":
-		// Codex tool results have output in attributes
-		if output, ok := attrs["output"]; ok && output != "" {
-			return output
-		}
-		return body
-
-	case "gen_ai.client.inference.operation.details", "copilot_chat.agent.turn":
-		if output := extractGenAIMessageText(attrs["gen_ai.output.messages"], "assistant"); output != "" {
-			return output
-		}
-		if output, ok := attrs["gen_ai.output.messages"]; ok && output != "" {
-			return output
-		}
-		if input := extractGenAIMessageText(attrs["gen_ai.input.messages"], "user"); input != "" {
-			return input
-		}
-		return body
-
-	case "copilot_chat.tool.call":
-		if result, ok := attrs["gen_ai.tool.call.result"]; ok && result != "" {
-			return result
-		}
-		return body
-
-	default:
-		// For other events, use the body as-is
-		return body
-	}
 }

@@ -1,10 +1,12 @@
 package importer
 
 import (
-	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -176,24 +178,17 @@ func (p *CodexParser) ParseFile(ctx context.Context, path string) (*ImportResult
 	filename := filepath.Base(path)
 	result.SessionID = strings.TrimSuffix(filename, ".jsonl")
 
-	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
-
-	var sessionMeta *CodexSessionMeta
-	var currentModel string
-	var lastTokenCount *CodexTokenCount
+	codexState := CodexState{SessionID: result.SessionID}
 	var attribution RepositoryMetadata
-	messageIndex := 0 // Track message order for transcripts
 
-	for scanner.Scan() {
+	// Hash exactly the content that is parsed
+	hasher := sha256.New()
+	for line, err := range jsonlLinesCounted(io.TeeReader(file, hasher), &result.ParsedBytes) {
+		if err != nil {
+			return nil, fmt.Errorf("reading file: %w", err)
+		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
-		}
-
-		line := scanner.Text()
-		if strings.TrimSpace(line) == "" {
-			continue
 		}
 
 		var entry CodexJSONLEntry
@@ -220,313 +215,236 @@ func (p *CodexParser) ParseFile(ctx context.Context, path string) (*ImportResult
 			result.LastTime = ts
 		}
 
-		switch entry.Type {
-		case "session_meta":
-			var meta CodexSessionMeta
-			if err := json.Unmarshal(entry.Payload, &meta); err == nil {
-				sessionMeta = &meta
-				if meta.ID != "" {
-					result.SessionID = meta.ID
-				}
-				if meta.Model != "" {
-					currentModel = meta.Model
-				}
-
-				// Create session start log
-				logRecord := api.LogRecord{
-					Timestamp:      ts,
-					ServiceName:    SourceCodex.ServiceName(),
-					SeverityText:   "INFO",
-					SeverityNumber: 9,
-					Body:           "conversation_starts",
-					LogAttributes: map[string]string{
-						"event.name":     "codex.conversation_starts",
-						"session.id":     meta.ID,
-						"model":          meta.Model,
-						"model_provider": meta.ModelProvider,
-						"cli_version":    meta.CliVersion,
-						"import_source":  "local_jsonl",
-					},
-				}
-				if meta.Cwd != "" {
-					logRecord.LogAttributes["cwd"] = meta.Cwd
-				}
-				result.Logs = append(result.Logs, logRecord)
-				result.RecordCount++
-			}
-
-		case "event_msg":
-			var eventMsg CodexEventMsg
-			if err := json.Unmarshal(entry.Payload, &eventMsg); err != nil {
-				continue
-			}
-
-			switch eventMsg.Type {
-			case "token_count":
-				// Info is at the same level as type in the event_msg payload
-				if eventMsg.Info != nil && eventMsg.Info.TotalTokenUsage != nil {
-					tokenCount := eventMsg.Info.TotalTokenUsage
-
-					// Handle alternative field name for cached tokens
-					cachedTokens := tokenCount.CacheReadInputTokens
-					if cachedTokens == 0 {
-						cachedTokens = tokenCount.CachedInputTokens
-					}
-
-					// Calculate delta from last token count (Codex reports cumulative)
-					var deltaInput, deltaOutput, deltaCacheCreation, deltaCacheRead, deltaReasoning, deltaTool int
-
-					if lastTokenCount == nil {
-						deltaInput = tokenCount.InputTokens
-						deltaOutput = tokenCount.OutputTokens
-						deltaCacheCreation = tokenCount.CacheCreationInputTokens
-						deltaCacheRead = cachedTokens
-						deltaReasoning = tokenCount.ReasoningTokens
-						deltaTool = tokenCount.ToolTokens
-					} else {
-						lastCached := lastTokenCount.CacheReadInputTokens
-						if lastCached == 0 {
-							lastCached = lastTokenCount.CachedInputTokens
-						}
-						deltaInput = tokenCount.InputTokens - lastTokenCount.InputTokens
-						deltaOutput = tokenCount.OutputTokens - lastTokenCount.OutputTokens
-						deltaCacheCreation = tokenCount.CacheCreationInputTokens - lastTokenCount.CacheCreationInputTokens
-						deltaCacheRead = cachedTokens - lastCached
-						deltaReasoning = tokenCount.ReasoningTokens - lastTokenCount.ReasoningTokens
-						deltaTool = tokenCount.ToolTokens - lastTokenCount.ToolTokens
-					}
-
-					// Create metrics for non-zero deltas
-					if deltaInput > 0 {
-						result.Metrics = append(result.Metrics, CreateCodexTokenMetric(ts, currentModel, "input", float64(deltaInput)))
-					}
-					if deltaOutput > 0 {
-						result.Metrics = append(result.Metrics, CreateCodexTokenMetric(ts, currentModel, "output", float64(deltaOutput)))
-					}
-					if deltaCacheCreation > 0 {
-						result.Metrics = append(result.Metrics, CreateCodexTokenMetric(ts, currentModel, "cache_creation", float64(deltaCacheCreation)))
-					}
-					if deltaCacheRead > 0 {
-						result.Metrics = append(result.Metrics, CreateCodexTokenMetric(ts, currentModel, "cache_read", float64(deltaCacheRead)))
-					}
-					if deltaReasoning > 0 {
-						result.Metrics = append(result.Metrics, CreateCodexTokenMetric(ts, currentModel, "reasoning", float64(deltaReasoning)))
-					}
-					if deltaTool > 0 {
-						result.Metrics = append(result.Metrics, CreateCodexTokenMetric(ts, currentModel, "tool", float64(deltaTool)))
-					}
-
-					// Calculate and add cost metric
-					// Note: cache_read is used for cost calculation (cache_creation tokens are billed at input rate)
-					cost := pricing.CalculateCodexCost(currentModel, int64(deltaInput), int64(deltaCacheRead), int64(deltaOutput))
-					if cost != nil && *cost > 0 {
-						result.Metrics = append(result.Metrics, CreateCodexCostMetric(ts, currentModel, *cost))
-					}
-
-					lastTokenCount = tokenCount
-					result.RecordCount++
-				}
-
-			case "user_message", "agent_message":
-				// Create log record for messages
-				logRecord := api.LogRecord{
-					Timestamp:      ts,
-					ServiceName:    SourceCodex.ServiceName(),
-					SeverityText:   "INFO",
-					SeverityNumber: 9,
-					Body:           eventMsg.Type,
-					LogAttributes: map[string]string{
-						"event.name":    "codex." + eventMsg.Type,
-						"import_source": "local_jsonl",
-					},
-				}
-				if sessionMeta != nil {
-					logRecord.LogAttributes["session.id"] = sessionMeta.ID
-				}
-				result.Logs = append(result.Logs, logRecord)
-				result.RecordCount++
-			}
-
-		case "turn_context":
-			// Extract model from turn context if available
-			var turnCtx struct {
-				Model string `json:"model"`
-			}
-			if err := json.Unmarshal(entry.Payload, &turnCtx); err == nil {
-				if turnCtx.Model != "" {
-					currentModel = turnCtx.Model
-				}
-			}
-
-		case "response_item":
-			// Handle ResponseItem entries for transcript content
-			var respItem CodexResponseItem
-			if err := json.Unmarshal(entry.Payload, &respItem); err != nil {
-				continue
-			}
-
-			sessionID := result.SessionID
-			if sessionMeta != nil && sessionMeta.ID != "" {
-				sessionID = sessionMeta.ID
-			}
-
-			switch respItem.Type {
-			case "message":
-				// Extract text content from message
-				var textContent string
-				for _, content := range respItem.Content {
-					if content.Type == "input_text" || content.Type == "output_text" {
-						if textContent != "" {
-							textContent += "\n"
-						}
-						textContent += content.Text
-					}
-				}
-
-				// Only create log if we have actual content
-				if textContent == "" {
-					continue
-				}
-
-				// Map role to transcript role
-				role := respItem.Role
-				if role == "" {
-					role = "assistant"
-				}
-
-				logRecord := api.LogRecord{
-					Timestamp:      ts,
-					ServiceName:    SourceCodex.ServiceName(),
-					SeverityText:   "INFO",
-					SeverityNumber: 9,
-					Body:           textContent,
-					LogAttributes: map[string]string{
-						"event.name":    "transcript.message",
-						"session.id":    sessionID,
-						"message.index": fmt.Sprintf("%d", messageIndex),
-						"message.role":  role,
-						"import_source": "local_jsonl",
-					},
-				}
-				if currentModel != "" {
-					logRecord.LogAttributes["model"] = currentModel
-				}
-				result.Logs = append(result.Logs, logRecord)
-				result.RecordCount++
-				messageIndex++
-
-			case "function_call":
-				// Tool use entry
-				logRecord := api.LogRecord{
-					Timestamp:      ts,
-					ServiceName:    SourceCodex.ServiceName(),
-					SeverityText:   "INFO",
-					SeverityNumber: 9,
-					Body:           fmt.Sprintf("Tool call: %s", respItem.Name),
-					LogAttributes: map[string]string{
-						"event.name":    "transcript.message",
-						"session.id":    sessionID,
-						"message.index": fmt.Sprintf("%d", messageIndex),
-						"message.role":  "tool_use",
-						"tool.name":     respItem.Name,
-						"import_source": "local_jsonl",
-					},
-				}
-				if respItem.Arguments != "" {
-					logRecord.LogAttributes["tool.input"] = respItem.Arguments
-				}
-				if respItem.CallID != "" {
-					logRecord.LogAttributes["tool.call_id"] = respItem.CallID
-				}
-				result.Logs = append(result.Logs, logRecord)
-				result.RecordCount++
-				messageIndex++
-
-			case "function_call_output":
-				// Tool result entry
-				var outputContent string
-				// Try to parse output - it could be a string or a JSON object
-				if len(respItem.Output) > 0 {
-					// First try as string
-					var strOutput string
-					if err := json.Unmarshal(respItem.Output, &strOutput); err == nil {
-						outputContent = strOutput
-					} else {
-						// Otherwise use raw JSON
-						outputContent = string(respItem.Output)
-					}
-				}
-
-				logRecord := api.LogRecord{
-					Timestamp:      ts,
-					ServiceName:    SourceCodex.ServiceName(),
-					SeverityText:   "INFO",
-					SeverityNumber: 9,
-					Body:           outputContent,
-					LogAttributes: map[string]string{
-						"event.name":    "transcript.message",
-						"session.id":    sessionID,
-						"message.index": fmt.Sprintf("%d", messageIndex),
-						"message.role":  "tool_result",
-						"import_source": "local_jsonl",
-					},
-				}
-				if outputContent != "" {
-					logRecord.LogAttributes["tool.output"] = outputContent
-				}
-				if respItem.CallID != "" {
-					logRecord.LogAttributes["tool.call_id"] = respItem.CallID
-				}
-				result.Logs = append(result.Logs, logRecord)
-				result.RecordCount++
-				messageIndex++
-
-			case "reasoning":
-				// Extract reasoning summary text
-				var reasoningText string
-				for _, summary := range respItem.Summary {
-					if summary.Type == "summary_text" && summary.Text != "" {
-						if reasoningText != "" {
-							reasoningText += "\n"
-						}
-						reasoningText += summary.Text
-					}
-				}
-
-				if reasoningText == "" {
-					continue
-				}
-
-				logRecord := api.LogRecord{
-					Timestamp:      ts,
-					ServiceName:    SourceCodex.ServiceName(),
-					SeverityText:   "INFO",
-					SeverityNumber: 9,
-					Body:           reasoningText,
-					LogAttributes: map[string]string{
-						"event.name":    "transcript.message",
-						"session.id":    sessionID,
-						"message.index": fmt.Sprintf("%d", messageIndex),
-						"message.role":  "assistant", // Reasoning is from the assistant
-						"import_source": "local_jsonl",
-					},
-				}
-				if currentModel != "" {
-					logRecord.LogAttributes["model"] = currentModel
-				}
-				result.Logs = append(result.Logs, logRecord)
-				result.RecordCount++
-				messageIndex++
-			}
-		}
+		logs, metrics, records := ConvertCodexEntry(entry, ts, &codexState, "local_jsonl")
+		result.Logs = append(result.Logs, logs...)
+		result.Metrics = append(result.Metrics, metrics...)
+		result.RecordCount += records
 	}
 
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("reading file: %w", err)
-	}
+	result.FileHash = hex.EncodeToString(hasher.Sum(nil))
+	result.SessionID = codexState.SessionID
+	result.MessageCount = codexState.MessageIndex
 
 	attribution.Enrich(result.Metrics, result.Logs)
 	return result, nil
+}
+
+// CodexState is the context a Codex session carries from entry to entry. The
+// file watcher keeps it between runs as part of its parser state.
+type CodexState struct {
+	SessionID      string           `json:"sessionId"`
+	CurrentModel   string           `json:"currentModel"`
+	MessageIndex   int              `json:"messageIndex"`
+	LastTokenCount *CodexTokenCount `json:"lastTokenCount"`
+}
+
+// ConvertCodexEntry converts one entry of a Codex session file into records,
+// updating state. Import and watch both use it, so they store the same
+// records; importSource marks them ("local_jsonl" for imports,
+// "file_watcher" for watch). records counts the entries that were recorded.
+func ConvertCodexEntry(entry CodexJSONLEntry, ts time.Time, state *CodexState, importSource string) (logs []api.LogRecord, metrics []api.MetricDataPoint, records int) {
+	codexLog := func(body string, attrs map[string]string) api.LogRecord {
+		attrs["import_source"] = importSource
+		return api.LogRecord{
+			Timestamp:      ts,
+			ServiceName:    SourceCodex.ServiceName(),
+			SeverityText:   "INFO",
+			SeverityNumber: 9,
+			Body:           body,
+			LogAttributes:  attrs,
+		}
+	}
+	// transcript adds a transcript message with the next message index
+	transcript := func(body, role string, attrs map[string]string) {
+		attrs["event.name"] = "transcript.message"
+		attrs["session.id"] = state.SessionID
+		attrs["message.index"] = fmt.Sprintf("%d", state.MessageIndex)
+		attrs["message.role"] = role
+		logs = append(logs, codexLog(body, attrs))
+		records++
+		state.MessageIndex++
+	}
+
+	switch entry.Type {
+	case "session_meta":
+		var meta CodexSessionMeta
+		if err := json.Unmarshal(entry.Payload, &meta); err != nil {
+			return
+		}
+		if meta.ID != "" {
+			state.SessionID = meta.ID
+		}
+		if meta.Model != "" {
+			state.CurrentModel = meta.Model
+		}
+		attrs := map[string]string{
+			"event.name":     "codex.conversation_starts",
+			"session.id":     meta.ID,
+			"model":          meta.Model,
+			"model_provider": meta.ModelProvider,
+			"cli_version":    meta.CliVersion,
+		}
+		if meta.Cwd != "" {
+			attrs["cwd"] = meta.Cwd
+		}
+		logs = append(logs, codexLog("conversation_starts", attrs))
+		records++
+
+	case "event_msg":
+		var eventMsg CodexEventMsg
+		if err := json.Unmarshal(entry.Payload, &eventMsg); err != nil {
+			return
+		}
+		switch eventMsg.Type {
+		case "token_count":
+			// Info is at the same level as type in the event_msg payload
+			if eventMsg.Info != nil && eventMsg.Info.TotalTokenUsage != nil {
+				metrics = codexTokenMetrics(ts, state.CurrentModel, eventMsg.Info.TotalTokenUsage, state.LastTokenCount)
+				state.LastTokenCount = eventMsg.Info.TotalTokenUsage
+				records++
+			}
+		case "user_message", "agent_message":
+			attrs := map[string]string{"event.name": "codex." + eventMsg.Type}
+			if state.SessionID != "" {
+				attrs["session.id"] = state.SessionID
+			}
+			logs = append(logs, codexLog(eventMsg.Type, attrs))
+			records++
+		}
+
+	case "turn_context":
+		// Extract model from turn context if available
+		var turnCtx struct {
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal(entry.Payload, &turnCtx); err == nil && turnCtx.Model != "" {
+			state.CurrentModel = turnCtx.Model
+		}
+
+	case "response_item":
+		// ResponseItem entries hold the transcript content
+		var respItem CodexResponseItem
+		if err := json.Unmarshal(entry.Payload, &respItem); err != nil {
+			return
+		}
+		modelAttrs := func() map[string]string {
+			attrs := map[string]string{}
+			if state.CurrentModel != "" {
+				attrs["model"] = state.CurrentModel
+			}
+			return attrs
+		}
+
+		switch respItem.Type {
+		case "message":
+			var textContent string
+			for _, content := range respItem.Content {
+				if content.Type == "input_text" || content.Type == "output_text" {
+					if textContent != "" {
+						textContent += "\n"
+					}
+					textContent += content.Text
+				}
+			}
+			if textContent == "" {
+				return
+			}
+			role := respItem.Role
+			if role == "" {
+				role = "assistant"
+			}
+			transcript(textContent, role, modelAttrs())
+
+		case "function_call":
+			attrs := map[string]string{"tool.name": respItem.Name}
+			if respItem.Arguments != "" {
+				attrs["tool.input"] = respItem.Arguments
+			}
+			if respItem.CallID != "" {
+				attrs["tool.call_id"] = respItem.CallID
+			}
+			transcript(fmt.Sprintf("Tool call: %s", respItem.Name), "tool_use", attrs)
+
+		case "function_call_output":
+			// The output is a string or a JSON object
+			var outputContent string
+			if len(respItem.Output) > 0 {
+				var strOutput string
+				if err := json.Unmarshal(respItem.Output, &strOutput); err == nil {
+					outputContent = strOutput
+				} else {
+					outputContent = string(respItem.Output)
+				}
+			}
+			attrs := map[string]string{}
+			if outputContent != "" {
+				attrs["tool.output"] = outputContent
+			}
+			if respItem.CallID != "" {
+				attrs["tool.call_id"] = respItem.CallID
+			}
+			transcript(outputContent, "tool_result", attrs)
+
+		case "reasoning":
+			var reasoningText string
+			for _, summary := range respItem.Summary {
+				if summary.Type == "summary_text" && summary.Text != "" {
+					if reasoningText != "" {
+						reasoningText += "\n"
+					}
+					reasoningText += summary.Text
+				}
+			}
+			if reasoningText == "" {
+				return
+			}
+			transcript(reasoningText, "assistant", modelAttrs()) // Reasoning is from the assistant
+		}
+	}
+	return
+}
+
+// codexTokenMetrics returns the token and cost metrics of a token_count
+// event. Codex reports running totals, so the metrics hold the increase over
+// the previous event's totals (last, nil for the first event).
+func codexTokenMetrics(ts time.Time, model string, total, last *CodexTokenCount) []api.MetricDataPoint {
+	cached := func(c *CodexTokenCount) int {
+		// Handle alternative field name for cached tokens
+		if c.CacheReadInputTokens != 0 {
+			return c.CacheReadInputTokens
+		}
+		return c.CachedInputTokens
+	}
+	if last == nil {
+		last = &CodexTokenCount{}
+	}
+	deltaInput := total.InputTokens - last.InputTokens
+	deltaCacheRead := cached(total) - cached(last)
+	deltaOutput := total.OutputTokens - last.OutputTokens
+
+	var metrics []api.MetricDataPoint
+	for _, t := range []struct {
+		tokenType string
+		delta     int
+	}{
+		{"input", deltaInput},
+		{"output", deltaOutput},
+		{"cache_creation", total.CacheCreationInputTokens - last.CacheCreationInputTokens},
+		{"cache_read", deltaCacheRead},
+		{"reasoning", total.ReasoningTokens - last.ReasoningTokens},
+		{"tool", total.ToolTokens - last.ToolTokens},
+	} {
+		if t.delta > 0 {
+			metrics = append(metrics, CreateCodexTokenMetric(ts, model, t.tokenType, float64(t.delta)))
+		}
+	}
+
+	// cache_read is used for cost calculation (cache_creation tokens are billed at input rate)
+	cost := pricing.CalculateCodexCost(model, int64(deltaInput), int64(deltaCacheRead), int64(deltaOutput))
+	if cost != nil && *cost > 0 {
+		metrics = append(metrics, CreateCodexCostMetric(ts, model, *cost))
+	}
+	return metrics
 }
 
 // CreateCodexTokenMetric creates a token usage metric. Importers and watchers

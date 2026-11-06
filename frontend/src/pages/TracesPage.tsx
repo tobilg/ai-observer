@@ -5,8 +5,8 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
-import { DateRangePicker } from '@/components/ui/date-range-picker'
-import { DataPagination } from '@/components/ui/data-pagination'
+import { DateRangePicker } from '@/components/common/date-range-picker'
+import { DataPagination } from '@/components/common/data-pagination'
 import { WaterfallView } from '@/components/traces/WaterfallView'
 import { api } from '@/lib/api'
 import { isAbortError } from '@/lib/errors'
@@ -66,11 +66,21 @@ export function TracesPage() {
   })
 
   // Real-time data from WebSocket
-  const recentSpans = useTelemetryStore((state) => state.recentSpans)
+  const recentSpanTimes = useTelemetryStore((state) => state.recentSpanTimes)
   const clearRecentSpans = useTelemetryStore((state) => state.clearRecentSpans)
 
   // Pagination state with localStorage persistence
-  const { page, pageSize, offset, setPage, setPageSize, resetToFirstPage } = usePagination({
+  const {
+    page,
+    pageSize,
+    cursor,
+    hasNext,
+    setNextCursor,
+    nextPage,
+    previousPage,
+    setPageSize,
+    resetToFirstPage,
+  } = usePagination({
     defaultPageSize: 10,
     storageKey: PAGE_SIZE_STORAGE_KEY,
   })
@@ -80,8 +90,8 @@ export function TracesPage() {
 
   const [newTracesCount, setNewTracesCount] = useState(0)
   const hasNewSpans = useMemo(
-    () => recentSpans.some((span) => new Date(span.timestamp) > anchorTime),
-    [recentSpans, anchorTime]
+    () => recentSpanTimes.some((time) => time > anchorTime.getTime()),
+    [recentSpanTimes, anchorTime]
   )
 
   useEffect(() => {
@@ -109,10 +119,11 @@ export function TracesPage() {
           from: fromTime.toISOString(),
           to: toTime.toISOString(),
           limit: pageSize,
-          offset,
+          cursor,
         }, { signal: abortController.signal })
         setTraces(data.traces ?? [])
         setTotal(data.total ?? 0)
+        setNextCursor(data.nextCursor)
       } catch (err) {
         if (isAbortError(err)) {
           return // Ignore abort errors
@@ -128,7 +139,7 @@ export function TracesPage() {
     fetchTraces()
 
     return () => abortController.abort()
-  }, [service, debouncedSearch, fromTime, toTime, pageSize, offset])
+  }, [service, debouncedSearch, fromTime, toTime, pageSize, cursor, setNextCursor])
 
   useEffect(() => {
     if (!hasNewSpans) {
@@ -144,7 +155,6 @@ export function TracesPage() {
           from: anchorTime.toISOString(),
           to: new Date().toISOString(),
           limit: 1,
-          offset: 0,
         }, { signal: abortController.signal })
         if (!abortController.signal.aborted) {
           setNewTracesCount(data.total ?? 0)
@@ -379,8 +389,12 @@ export function TracesPage() {
               <DataPagination
                 page={page}
                 pageSize={pageSize}
+                itemCount={traces.length}
                 total={total}
-                onPageChange={setPage}
+                hasNext={hasNext}
+                onFirst={resetToFirstPage}
+                onPrevious={previousPage}
+                onNext={nextPage}
                 onPageSizeChange={setPageSize}
               />
             </>

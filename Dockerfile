@@ -13,7 +13,7 @@ LABEL stage=aiobserverbuilder
 RUN apt-get update && apt-get install -y build-essential pkg-config \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
-    && npm install -g pnpm@10 \
+    && npm install -g pnpm@10.34.7 \
     && rm -rf /var/lib/apt/lists/*
 
 ARG TARGETARCH
@@ -23,6 +23,13 @@ ARG BUILD_DATE
 ARG SOURCE_DATE_EPOCH
 
 WORKDIR /app
+
+# Dependencies first: these layers are rebuilt only when the manifests change
+COPY backend/go.mod backend/go.sum ./backend/
+RUN cd backend && go mod download
+COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./frontend/
+RUN cd frontend && pnpm install --frozen-lockfile --ignore-scripts && pnpm rebuild esbuild
+
 COPY . ./
 
 # Set build variables - VERSION, GIT_COMMIT, BUILD_DATE override Makefile defaults
@@ -32,9 +39,6 @@ ENV GOFLAGS="-trimpath -mod=readonly -buildvcs=false" \
     BUILD_DATE=${BUILD_DATE} \
     SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
     CI=true
-
-# Install dependencies
-RUN make setup
 
 # Build frontend + backend (frontend embeds into backend)
 # Makefile will use VERSION, GIT_COMMIT, BUILD_DATE from environment
@@ -56,6 +60,9 @@ VOLUME ["/app/data"]
 
 # Set default database path
 ENV AI_OBSERVER_DATABASE_PATH=/app/data/ai-observer.duckdb
+
+# Listen on all interfaces inside the container so published ports are reachable
+ENV AI_OBSERVER_HOST=0.0.0.0
 
 EXPOSE 8080 4318
 

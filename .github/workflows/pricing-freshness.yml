@@ -1,0 +1,32 @@
+name: Pricing freshness
+
+# Alerts when the built-in pricing data is more than 7 days old: the daily run
+# fails with an annotation per stale file, and GitHub sends its failed-workflow
+# notification (for scheduled runs, to whoever last changed the schedule).
+# Clear it with make pricing-update, which refreshes the prices from
+# models.dev, and a review of the diff (docs/pricing.md). The frozen GitHub
+# Models catalog is not checked.
+
+on:
+  schedule:
+    - cron: '17 6 * * *' # daily, 06:17 UTC
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'backend/internal/pricing/data/**'
+      - 'scripts/check-pricing-age.sh'
+      - '.github/workflows/pricing-freshness.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Pricing data age
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Check pricing data age
+        run: ./scripts/check-pricing-age.sh 7

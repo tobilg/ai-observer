@@ -5,10 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/tobilg/ai-observer/internal/config"
 	"github.com/tobilg/ai-observer/internal/deleter"
+	"github.com/tobilg/ai-observer/internal/importer"
 	"github.com/tobilg/ai-observer/internal/storage"
 	"github.com/tobilg/ai-observer/internal/tools"
 )
@@ -55,7 +55,7 @@ Options:
 		printFlags(fs)
 	}
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(reorderArgs(fs, args)); err != nil {
 		return nil, err
 	}
 
@@ -64,7 +64,7 @@ Options:
 }
 
 func runDelete(args []string) error {
-	flags, err := parseDeleteFlags(reorderArgs(args))
+	flags, err := parseDeleteFlags(args)
 	if err != nil {
 		return err
 	}
@@ -83,19 +83,16 @@ func runDelete(args []string) error {
 		return err
 	}
 
-	// Parse dates
-	fromTime, err := time.Parse("2006-01-02", flags.From)
+	// Parse dates (days in the local time zone, like import and export)
+	from, err := importer.ParseDateArg(flags.From)
 	if err != nil {
-		return fmt.Errorf("invalid --from date format: %v\nExpected format: YYYY-MM-DD", err)
+		return fmt.Errorf("invalid --from date: %v", err)
 	}
-
-	toTime, err := time.Parse("2006-01-02", flags.To)
+	to, err := importer.ParseToDateArg(flags.To)
 	if err != nil {
-		return fmt.Errorf("invalid --to date format: %v\nExpected format: YYYY-MM-DD", err)
+		return fmt.Errorf("invalid --to date: %v", err)
 	}
-
-	// Set to end of day for the 'to' date
-	toTime = toTime.Add(24*time.Hour - time.Nanosecond)
+	fromTime, toTime := *from, *to
 
 	// Validate date range
 	if fromTime.After(toTime) {

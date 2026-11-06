@@ -1,4 +1,4 @@
-.PHONY: all backend frontend backend-dev backend-test backend-lint backend-coverage frontend-dev frontend-test frontend-lint frontend-coverage dev clean test lint coverage setup help release-notes
+.PHONY: all backend frontend backend-dev backend-test backend-lint backend-coverage frontend-dev frontend-test frontend-lint frontend-coverage dev clean test lint coverage setup help release-notes pricing-update check-pricing
 
 # Version information
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -27,7 +27,6 @@ all: backend
 backend: frontend
 	@echo "Building backend..."
 	cd backend && \
-	go clean -cache && \
 	SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) GOFLAGS="$(GOFLAGS)" \
 	go build -ldflags "$(LDFLAGS)" -o ../bin/$(BINARY_NAME) ./cmd/server
 
@@ -43,9 +42,13 @@ backend-test:
 	@echo "Running backend tests..."
 	cd backend && go test -v ./...
 
+# golangci-lint version, keep in sync with the "Lint backend" step in .github/workflows/ci.yml.
+# Built with the local Go toolchain, so it can analyze code for the go.mod Go version.
+GOLANGCI_LINT_VERSION ?= v2.5.0
+
 backend-lint:
 	@echo "Linting backend..."
-	cd backend && golangci-lint run
+	cd backend && go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run
 
 # Frontend targets
 frontend:
@@ -74,9 +77,13 @@ test: backend-test frontend-test
 lint: backend-lint frontend-lint
 
 # Coverage targets
+# The toolchain's own go comes first in PATH: when go switches to the
+# toolchain go.mod asks for, -cover builds the covdata tool with the go found
+# in PATH, and an older local install fails ("compile: version ... does not
+# match go tool version ...")
 backend-coverage:
 	@echo "Generating backend coverage report..."
-	cd backend && go test -coverprofile=coverage.out ./...
+	cd backend && PATH="$$(go env GOROOT)/bin:$$PATH" go test -coverprofile=coverage.out ./...
 	cd backend && go tool cover -func=coverage.out
 	cd backend && go tool cover -html=coverage.out -o coverage.html
 	@echo "Backend coverage report: backend/coverage.html"
@@ -101,6 +108,15 @@ setup:
 	cd frontend && pnpm install --ignore-scripts
 	cd frontend && pnpm rebuild esbuild
 
+# Pricing data (docs/pricing.md)
+# Refresh the built-in prices from models.dev (review the diff)
+pricing-update: frontend
+	cd backend && go run ./cmd/server pricing update --output internal/pricing/data
+
+# Fail when a built-in pricing file is more than 7 days old (also run daily in CI)
+check-pricing:
+	@./scripts/check-pricing-age.sh 7
+
 # Release notes generation
 release-notes:
 	@./scripts/generate-release-notes.sh $(TAG)
@@ -122,4 +138,6 @@ help:
 	@echo "  clean             - Remove build artifacts"
 	@echo "  setup             - Install dependencies"
 	@echo "  release-notes     - Generate release notes with Claude (TAG=vX.X.X)"
+	@echo "  pricing-update    - Refresh the built-in prices from models.dev"
+	@echo "  check-pricing     - Fail when pricing data is more than 7 days old"
 	@echo "  help              - Show this help message"

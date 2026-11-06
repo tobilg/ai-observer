@@ -15,11 +15,39 @@ import (
 // StateManager handles import state tracking and deduplication
 type StateManager struct {
 	store *storage.DuckDBStore
+	// hashes remembers the files hashed so far, so the preview and the
+	// import of one run hash each changed file once
+	hashes map[string]hashedFile
+}
+
+// hashedFile is the hash of a file with the size and modification time it had
+type hashedFile struct {
+	size, modTimeNs int64
+	hash            string
 }
 
 // NewStateManager creates a new state manager
 func NewStateManager(store *storage.DuckDBStore) *StateManager {
-	return &StateManager{store: store}
+	return &StateManager{store: store, hashes: make(map[string]hashedFile)}
+}
+
+// fileHash returns the hash of the file at path, hashing it only if it
+// changed since it was last hashed
+func (m *StateManager) fileHash(path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	size, modTime := info.Size(), info.ModTime().UnixNano()
+	if h, ok := m.hashes[path]; ok && h.size == size && h.modTimeNs == modTime {
+		return h.hash, nil
+	}
+	hash, err := computeFileHash(path)
+	if err != nil {
+		return "", err
+	}
+	m.hashes[path] = hashedFile{size: size, modTimeNs: modTime, hash: hash}
+	return hash, nil
 }
 
 // FileStatus represents the import status of a file
@@ -33,62 +61,72 @@ const (
 
 // CheckFileStatus determines if a file needs to be imported
 func (m *StateManager) CheckFileStatus(ctx context.Context, source SourceType, filePath string) (FileStatus, error) {
-	// Get current file hash
-	currentHash, err := computeFileHash(filePath)
-	if err != nil {
-		return "", fmt.Errorf("computing file hash: %w", err)
-	}
+	status, _, err := m.fileStatus(ctx, source, filePath)
+	return status, err
+}
 
+// fileStatus determines if a file needs to be imported and returns its stored
+// import state (nil for a new file)
+func (m *StateManager) fileStatus(ctx context.Context, source SourceType, filePath string) (FileStatus, *storage.ImportState, error) {
 	// Get stored state
 	state, err := m.store.GetImportState(ctx, string(source), filePath)
 	if err != nil {
-		return "", fmt.Errorf("getting import state: %w", err)
+		return "", nil, fmt.Errorf("getting import state: %w", err)
 	}
 
-	// File has never been imported
+	// File has never been imported; no need to read it just to hash it
 	if state == nil {
-		return StatusNew, nil
+		return StatusNew, nil, nil
+	}
+
+	// An import of a date range left out records of the file
+	if state.Partial {
+		return StatusModified, state, nil
+	}
+
+	// Same size and modification time as when it was imported: unchanged,
+	// without reading the whole file to hash it
+	if state.FileSize > 0 {
+		if info, err := os.Stat(filePath); err == nil &&
+			info.Size() == state.FileSize && info.ModTime().UnixNano() == state.FileModTimeNs {
+			return StatusCurrent, state, nil
+		}
+	}
+
+	// Get current file hash
+	currentHash, err := m.fileHash(filePath)
+	if err != nil {
+		return "", nil, fmt.Errorf("computing file hash: %w", err)
 	}
 
 	// File has been modified
 	if state.FileHash != currentHash {
-		return StatusModified, nil
+		return StatusModified, state, nil
 	}
 
 	// File is current (already imported, no changes)
-	return StatusCurrent, nil
+	return StatusCurrent, state, nil
 }
 
-// RecordImport records that a file has been imported
-func (m *StateManager) RecordImport(ctx context.Context, source SourceType, filePath string, recordCount int) error {
-	hash, err := computeFileHash(filePath)
-	if err != nil {
-		return fmt.Errorf("computing file hash: %w", err)
+// NewImportState builds the import state recorded for a fully imported file.
+// fileHash should be the hash of the parsed content (ImportResult.FileHash);
+// if it is empty, the file is hashed as it is now.
+func (m *StateManager) NewImportState(source SourceType, filePath, fileHash string, recordCount int) (*storage.ImportState, error) {
+	if fileHash == "" {
+		hash, err := computeFileHash(filePath)
+		if err != nil {
+			return nil, fmt.Errorf("computing file hash: %w", err)
+		}
+		fileHash = hash
 	}
 
-	state := &storage.ImportState{
+	return &storage.ImportState{
 		Source:      string(source),
 		FilePath:    filePath,
-		FileHash:    hash,
+		FileHash:    fileHash,
 		ImportedAt:  time.Now(),
 		RecordCount: recordCount,
-	}
-
-	if err := m.store.SetImportState(ctx, state); err != nil {
-		return fmt.Errorf("setting import state: %w", err)
-	}
-
-	return nil
-}
-
-// ClearSource removes all import state for a source
-func (m *StateManager) ClearSource(ctx context.Context, source SourceType) error {
-	return m.store.ClearImportState(ctx, string(source))
-}
-
-// GetImportedFiles returns all imported files for a source
-func (m *StateManager) GetImportedFiles(ctx context.Context, source SourceType) ([]storage.ImportState, error) {
-	return m.store.ListImportedFiles(ctx, string(source))
+	}, nil
 }
 
 // computeFileHash computes the SHA256 hash of a file

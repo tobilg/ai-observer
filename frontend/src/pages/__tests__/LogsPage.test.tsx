@@ -25,7 +25,7 @@ vi.mock('sonner', () => ({
 vi.mock('@/stores/telemetryStore', () => ({
   useTelemetryStore: vi.fn((selector) => {
     const state = {
-      recentLogs: [],
+      recentLogTimes: [],
       clearRecentLogs: vi.fn(),
     }
     return selector(state)
@@ -287,5 +287,32 @@ describe('LogsPage', () => {
     await waitFor(() => {
       expect(screen.queryByText(/trace id/i)).not.toBeInTheDocument()
     })
+  })
+
+  it('requests the next page with the cursor of the current one, and goes back', async () => {
+    const user = userEvent.setup()
+    localStorage.setItem('ai-observer-logs-pageSize', '2')
+    vi.mocked(api.getLogs).mockImplementation(async (params) =>
+      params?.cursor
+        ? { logs: mockLogs.slice(2), total: 3, hasMore: false }
+        : { logs: mockLogs.slice(0, 2), total: 3, hasMore: true, nextCursor: 'cursor-2' }
+    )
+    renderLogsPage()
+
+    expect(await screen.findByText('1-2 of 3')).toBeInTheDocument()
+    expect(screen.getByLabelText('Go to previous page')).toHaveAttribute('aria-disabled', 'true')
+
+    await user.click(screen.getByLabelText('Go to next page'))
+
+    expect(await screen.findByText('3-3 of 3')).toBeInTheDocument()
+    expect(api.getLogs).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: 'cursor-2' }), expect.anything())
+    expect(screen.getByLabelText('Go to next page')).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.queryByLabelText('Go to last page')).not.toBeInTheDocument()
+
+    await user.click(screen.getByLabelText('Go to previous page'))
+
+    expect(await screen.findByText('1-2 of 3')).toBeInTheDocument()
+    expect(api.getLogs).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: undefined }), expect.anything())
+    localStorage.removeItem('ai-observer-logs-pageSize')
   })
 })

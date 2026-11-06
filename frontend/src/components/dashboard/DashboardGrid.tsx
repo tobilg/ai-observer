@@ -9,7 +9,9 @@ import {
 import type { DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, rectSortingStrategy } from '@dnd-kit/sortable'
 import { useIsMobile } from '@/hooks/use-mobile'
-import { useDashboardStore, getEmptyCells } from '@/stores/dashboardStore'
+import { useDashboardStore } from '@/stores/dashboardStore'
+import { getEmptyCells } from '@/lib/dashboardGrid'
+import { useShallow } from 'zustand/react/shallow'
 import { WidgetWrapper } from './widgets/WidgetWrapper'
 import { WidgetRenderer } from './widgets/WidgetRenderer'
 import { EmptyCellPlaceholder } from './widgets/EmptyCellPlaceholder'
@@ -73,7 +75,22 @@ export function DashboardGrid({ stats, recentTraces }: DashboardGridProps) {
     setAddPanelOpen,
     setTargetPosition,
     insertRowAt,
-  } = useDashboardStore()
+  } = useDashboardStore(
+    useShallow((s) => ({
+      widgets: s.widgets,
+      isEditMode: s.isEditMode,
+      timeSelection: s.timeSelection,
+      fromTime: s.fromTime,
+      toTime: s.toTime,
+      removeWidget: s.removeWidget,
+      reorderWidgets: s.reorderWidgets,
+      updateWidgetPositions: s.updateWidgetPositions,
+      moveWidgetToPosition: s.moveWidgetToPosition,
+      setAddPanelOpen: s.setAddPanelOpen,
+      setTargetPosition: s.setTargetPosition,
+      insertRowAt: s.insertRowAt,
+    }))
+  )
 
   const sensors = useSensors(
     useSensor(MouseSensor, {
@@ -104,7 +121,6 @@ export function DashboardGrid({ stats, recentTraces }: DashboardGridProps) {
       // Check if widget would fit within grid bounds and not overlap with other widgets
       // Note: We exclude the widget being moved since its current position will become free
       if (wouldOverlap(widget, overData.gridRow, overData.gridColumn, widgets, [widget.id])) {
-        console.log('Widget would overlap with existing widgets or exceed grid bounds')
         return
       }
 
@@ -167,7 +183,6 @@ export function DashboardGrid({ stats, recentTraces }: DashboardGridProps) {
         // Check if active widget fits in the row (max 4 columns)
         if (newActiveColumn + activeWidget.colSpan - 1 > 4) {
           // Doesn't fit, reject the move
-          console.log('Active widget does not fit when moving right')
           return
         }
       }
@@ -182,13 +197,11 @@ export function DashboardGrid({ stats, recentTraces }: DashboardGridProps) {
     // Validate: Check if active widget would overlap at its new position
     // Exclude both widgets being swapped from the overlap check
     if (wouldOverlap(activeWidget, newActiveRow, newActiveColumn, widgets, [activeWidget.id, overWidget.id])) {
-      console.log('Active widget would overlap at target position')
       return
     }
 
     // Validate: Check if over widget would overlap at its new position
     if (wouldOverlap(overWidget, newOverRow, newOverColumn, widgets, [activeWidget.id, overWidget.id])) {
-      console.log('Over widget would overlap at new position')
       return
     }
 

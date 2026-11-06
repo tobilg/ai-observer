@@ -172,7 +172,7 @@ func (s *fakeWatcherStore) SetWatchFields(_ context.Context, source, filePath st
 	return nil
 }
 
-func (s *fakeWatcherStore) InsertWatcherBatch(_ context.Context, _ []api.LogRecord, _ []api.MetricDataPoint, _ []api.Span, state *storage.ImportState) error {
+func (s *fakeWatcherStore) InsertWatcherBatch(_ context.Context, _ []api.LogRecord, _ []api.MetricDataPoint, _ []api.Span, state *storage.ImportState, _ bool) error {
 	s.batchCalls.Add(1)
 	if s.batchErr != nil {
 		return s.batchErr
@@ -180,4 +180,71 @@ func (s *fakeWatcherStore) InsertWatcherBatch(_ context.Context, _ []api.LogReco
 	copy := *state
 	s.persistedState = &copy
 	return nil
+}
+
+// blockingParser blocks its first parse until release is closed and records
+// how many parses ran at the same time
+type blockingParser struct {
+	fakeIncrementalParser
+	started  chan struct{}
+	release  chan struct{}
+	active   atomic.Int64
+	maxSeen  atomic.Int64
+	blockOne atomic.Bool
+}
+
+func (p *blockingParser) ParseIncremental(ctx context.Context, path string, state *storage.ImportState) (*IncrementalResult, error) {
+	n := p.active.Add(1)
+	defer p.active.Add(-1)
+	for {
+		seen := p.maxSeen.Load()
+		if n <= seen || p.maxSeen.CompareAndSwap(seen, n) {
+			break
+		}
+	}
+	if p.blockOne.CompareAndSwap(false, true) {
+		close(p.started)
+		<-p.release
+	}
+	return p.fakeIncrementalParser.ParseIncremental(ctx, path, state)
+}
+
+// Events for a file that is being processed must not start a second,
+// concurrent run: it would parse from the same offset and store duplicates.
+func TestWatcherDoesNotProcessSameFileConcurrently(t *testing.T) {
+	path := writeProcessorTestFile(t)
+	store := &fakeWatcherStore{}
+	parser := &blockingParser{
+		fakeIncrementalParser: fakeIncrementalParser{
+			result: &IncrementalResult{Logs: []api.LogRecord{{Timestamp: time.Now(), ServiceName: "codex_cli_rs"}}},
+			offset: 1,
+		},
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	w := newProcessorTestWatcher(store, parser, filepath.Dir(path))
+
+	w.scheduleProcess(path, w.tools[0])
+	<-parser.started
+
+	// Two more events while the first run is blocked
+	w.scheduleProcess(path, w.tools[0])
+	time.Sleep(10 * time.Millisecond)
+	w.scheduleProcess(path, w.tools[0])
+	time.Sleep(10 * time.Millisecond)
+
+	close(parser.release)
+	deadline := time.Now().Add(2 * time.Second)
+	for parser.calls.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(20 * time.Millisecond) // no further runs may follow
+	w.Stop()
+
+	if got := parser.maxSeen.Load(); got != 1 {
+		t.Errorf("max concurrent parses = %d, want 1", got)
+	}
+	if got := parser.calls.Load(); got != 2 {
+		t.Errorf("parses = %d, want 2 (the queued events coalesce into one re-run)", got)
+	}
 }

@@ -1,16 +1,181 @@
 {
   "provider": "openai",
-  "lastUpdated": "2026-03-29T00:00:00Z",
+  "source": "https://models.dev (models.dev contributors, MIT License)",
+  "lastUpdated": "2026-11-05T00:00:00Z",
   "models": {
-    "gpt-5.5": {
+    "gpt-6-astra": {
+      "inputCostPerMTok": 10,
+      "outputCostPerMTok": 50,
+      "cacheReadCostPerMTok": 1,
+      "cacheWriteCostPerMTok": 12.5,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 20,
+        "outputCostPerMTok": 75,
+        "cacheReadCostPerMTok": 2,
+        "cacheWriteCostPerMTok": 25
+      }
+    },
+    "gpt-6.1-sol": {
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 10,
+      "cacheReadCostPerMTok": 0.1,
+      "cacheWriteCostPerMTok": 2.5,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 4,
+        "outputCostPerMTok": 15,
+        "cacheReadCostPerMTok": 0.2,
+        "cacheWriteCostPerMTok": 5
+      }
+    },
+    "gpt-6.1-terra": {
+      "inputCostPerMTok": 1,
+      "outputCostPerMTok": 5,
+      "cacheReadCostPerMTok": 0.05,
+      "cacheWriteCostPerMTok": 1.25,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 2,
+        "outputCostPerMTok": 7.5,
+        "cacheReadCostPerMTok": 0.1,
+        "cacheWriteCostPerMTok": 2.5
+      }
+    },
+    "gpt-6-sol": {
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 10,
+      "cacheReadCostPerMTok": 0.2,
+      "cacheWriteCostPerMTok": 2.5,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 4,
+        "outputCostPerMTok": 15,
+        "cacheReadCostPerMTok": 0.4,
+        "cacheWriteCostPerMTok": 5
+      }
+    },
+    "gpt-6-luna": {
+      "inputCostPerMTok": 0.1,
+      "outputCostPerMTok": 0.5,
+      "cacheReadCostPerMTok": 0.01,
+      "cacheWriteCostPerMTok": 0.125,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 0.2,
+        "outputCostPerMTok": 0.75,
+        "cacheReadCostPerMTok": 0.02,
+        "cacheWriteCostPerMTok": 0.25
+      }
+    },
+    "gpt-5.6-sol": {
+      "inputCostPerMTok": 4,
+      "outputCostPerMTok": 20,
+      "cacheReadCostPerMTok": 0.4,
+      "cacheWriteCostPerMTok": 5,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 8,
+        "outputCostPerMTok": 30,
+        "cacheReadCostPerMTok": 0.8,
+        "cacheWriteCostPerMTok": 10
+      }
+    },
+    "gpt-5.6-terra": {
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 12,
+      "cacheReadCostPerMTok": 0.2,
+      "cacheWriteCostPerMTok": 2.5,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 4,
+        "outputCostPerMTok": 18,
+        "cacheReadCostPerMTok": 0.4,
+        "cacheWriteCostPerMTok": 5
+      }
+    },
+    "gpt-5.6-luna": {
+      "inputCostPerMTok": 0.2,
+      "outputCostPerMTok": 1.2,
+      "cacheReadCostPerMTok": 0.02,
+      "cacheWriteCostPerMTok": 0.25,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 0.4,
+        "outputCostPerMTok": 1.8,
+        "cacheReadCostPerMTok": 0.04,
+        "cacheWriteCostPerMTok": 0.5
+      }
+    },
+    "gpt-6-cyber": {
+      "inputCostPerMTok": 20,
+      "outputCostPerMTok": 100,
+      "cacheReadCostPerMTok": 2,
+      "cacheWriteCostPerMTok": 25
+    },
+    "gpt-5.6-cyber": {
+      "inputCostPerMTok": 12.5,
+      "outputCostPerMTok": 75,
+      "cacheReadCostPerMTok": 1.25,
+      "cacheWriteCostPerMTok": 15.625
+    },
+    "gpt-5.5-cyber": {
+      "inputCostPerMTok": 12.5,
+      "outputCostPerMTok": 75,
+      "cacheReadCostPerMTok": 1.25
+    },
+    "gpt-6-rosalind": {
+      "inputCostPerMTok": 15,
+      "outputCostPerMTok": 75,
+      "cacheReadCostPerMTok": 1.5,
+      "cacheWriteCostPerMTok": 18.75,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 30,
+        "outputCostPerMTok": 112.5,
+        "cacheReadCostPerMTok": 3,
+        "cacheWriteCostPerMTok": 37.5
+      }
+    },
+    "gpt-rosalind-research": {
+      "inputCostPerMTok": 5,
+      "outputCostPerMTok": 25,
+      "cacheReadCostPerMTok": 0.5
+    },
+    "gpt-rosalind-discovery": {
+      "inputCostPerMTok": 5,
+      "outputCostPerMTok": 25,
+      "cacheReadCostPerMTok": 0.5
+    },
+    "gpt-6-astra-law": {
+      "inputCostPerMTok": 10,
+      "outputCostPerMTok": 50,
+      "cacheReadCostPerMTok": 1
+    },
+    "chat-latest": {
       "inputCostPerMTok": 5,
       "outputCostPerMTok": 30,
       "cacheReadCostPerMTok": 0.5
     },
+    "gpt-5.5": {
+      "inputCostPerMTok": 5,
+      "outputCostPerMTok": 30,
+      "cacheReadCostPerMTok": 0.5,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 10,
+        "outputCostPerMTok": 45,
+        "cacheReadCostPerMTok": 1
+      }
+    },
     "gpt-5.5-pro": {
       "inputCostPerMTok": 30,
       "outputCostPerMTok": 180,
-      "cacheReadCostPerMTok": 0
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 60,
+        "outputCostPerMTok": 270
+      }
     },
     "gpt-5": {
       "inputCostPerMTok": 1.25,
@@ -30,7 +195,13 @@
     "gpt-5.4": {
       "inputCostPerMTok": 2.5,
       "outputCostPerMTok": 15,
-      "cacheReadCostPerMTok": 0.25
+      "cacheReadCostPerMTok": 0.25,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 5,
+        "outputCostPerMTok": 22.5,
+        "cacheReadCostPerMTok": 0.5
+      }
     },
     "gpt-5.4-mini": {
       "inputCostPerMTok": 0.75,
@@ -45,7 +216,11 @@
     "gpt-5.4-pro": {
       "inputCostPerMTok": 30,
       "outputCostPerMTok": 180,
-      "cacheReadCostPerMTok": 0
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 60,
+        "outputCostPerMTok": 270
+      }
     },
     "gpt-5-mini": {
       "inputCostPerMTok": 0.25,
@@ -59,57 +234,63 @@
     },
     "gpt-5-pro": {
       "inputCostPerMTok": 15,
-      "outputCostPerMTok": 120,
-      "cacheReadCostPerMTok": 0
+      "outputCostPerMTok": 120
     },
     "gpt-5.2-pro": {
       "inputCostPerMTok": 21,
-      "outputCostPerMTok": 168,
-      "cacheReadCostPerMTok": 0
+      "outputCostPerMTok": 168
     },
     "gpt-5-chat-latest": {
       "aliases": ["gpt-5-chat"],
       "inputCostPerMTok": 1.25,
       "outputCostPerMTok": 10,
-      "cacheReadCostPerMTok": 0.125
+      "cacheReadCostPerMTok": 0.125,
+      "deprecated": true
     },
     "gpt-5.1-chat-latest": {
       "aliases": ["gpt-5.1-chat"],
       "inputCostPerMTok": 1.25,
       "outputCostPerMTok": 10,
-      "cacheReadCostPerMTok": 0.125
+      "cacheReadCostPerMTok": 0.125,
+      "deprecated": true
     },
     "gpt-5.2-chat-latest": {
       "aliases": ["gpt-5.2-chat"],
       "inputCostPerMTok": 1.75,
       "outputCostPerMTok": 14,
-      "cacheReadCostPerMTok": 0.175
+      "cacheReadCostPerMTok": 0.175,
+      "deprecated": true
     },
     "gpt-5.3-chat-latest": {
       "aliases": ["gpt-5.3-chat"],
       "inputCostPerMTok": 1.75,
       "outputCostPerMTok": 14,
-      "cacheReadCostPerMTok": 0.175
+      "cacheReadCostPerMTok": 0.175,
+      "deprecated": true
     },
     "gpt-5-codex": {
       "inputCostPerMTok": 1.25,
       "outputCostPerMTok": 10,
-      "cacheReadCostPerMTok": 0.125
+      "cacheReadCostPerMTok": 0.125,
+      "deprecated": true
     },
     "gpt-5.1-codex": {
       "inputCostPerMTok": 1.25,
       "outputCostPerMTok": 10,
-      "cacheReadCostPerMTok": 0.125
+      "cacheReadCostPerMTok": 0.125,
+      "deprecated": true
     },
     "gpt-5.1-codex-max": {
       "inputCostPerMTok": 1.25,
       "outputCostPerMTok": 10,
-      "cacheReadCostPerMTok": 0.125
+      "cacheReadCostPerMTok": 0.125,
+      "deprecated": true
     },
     "gpt-5.1-codex-mini": {
       "inputCostPerMTok": 0.25,
       "outputCostPerMTok": 2,
-      "cacheReadCostPerMTok": 0.025
+      "cacheReadCostPerMTok": 0.025,
+      "deprecated": true
     },
     "gpt-5.3-codex": {
       "inputCostPerMTok": 1.75,
@@ -124,7 +305,8 @@
     "codex-mini-latest": {
       "inputCostPerMTok": 1.5,
       "outputCostPerMTok": 6,
-      "cacheReadCostPerMTok": 0.375
+      "cacheReadCostPerMTok": 0.375,
+      "deprecated": true
     },
     "gpt-4.1": {
       "inputCostPerMTok": 2,
@@ -139,7 +321,8 @@
     "gpt-4.1-nano": {
       "inputCostPerMTok": 0.1,
       "outputCostPerMTok": 0.4,
-      "cacheReadCostPerMTok": 0.025
+      "cacheReadCostPerMTok": 0.025,
+      "deprecated": true
     },
     "gpt-4o": {
       "inputCostPerMTok": 2.5,
@@ -149,7 +332,7 @@
     "gpt-4o-2024-05-13": {
       "inputCostPerMTok": 5,
       "outputCostPerMTok": 15,
-      "cacheReadCostPerMTok": 0
+      "deprecated": true
     },
     "gpt-4o-mini": {
       "inputCostPerMTok": 0.15,
@@ -159,32 +342,44 @@
     "gpt-4o-search-preview": {
       "inputCostPerMTok": 2.5,
       "outputCostPerMTok": 10,
-      "cacheReadCostPerMTok": 0
+      "deprecated": true
     },
     "gpt-4o-mini-search-preview": {
       "inputCostPerMTok": 0.15,
       "outputCostPerMTok": 0.6,
-      "cacheReadCostPerMTok": 0
+      "deprecated": true
     },
     "gpt-4o-realtime-preview": {
       "inputCostPerMTok": 5,
       "outputCostPerMTok": 20,
-      "cacheReadCostPerMTok": 2.5
+      "cacheReadCostPerMTok": 2.5,
+      "deprecated": true
     },
     "gpt-4o-mini-realtime-preview": {
       "inputCostPerMTok": 0.6,
       "outputCostPerMTok": 2.4,
-      "cacheReadCostPerMTok": 0.3
+      "cacheReadCostPerMTok": 0.3,
+      "deprecated": true
     },
     "gpt-4o-audio-preview": {
       "inputCostPerMTok": 2.5,
       "outputCostPerMTok": 10,
-      "cacheReadCostPerMTok": 0
+      "deprecated": true
     },
     "gpt-4o-mini-audio-preview": {
       "inputCostPerMTok": 0.15,
       "outputCostPerMTok": 0.6,
-      "cacheReadCostPerMTok": 0
+      "deprecated": true
+    },
+    "gpt-realtime-2.1": {
+      "inputCostPerMTok": 4,
+      "outputCostPerMTok": 24,
+      "cacheReadCostPerMTok": 0.4
+    },
+    "gpt-realtime-2.1-mini": {
+      "inputCostPerMTok": 0.6,
+      "outputCostPerMTok": 2.4,
+      "cacheReadCostPerMTok": 0.06
     },
     "gpt-realtime": {
       "inputCostPerMTok": 4,
@@ -196,35 +391,44 @@
       "outputCostPerMTok": 24,
       "cacheReadCostPerMTok": 0.4
     },
+    "gpt-realtime-1.5": {
+      "inputCostPerMTok": 4,
+      "outputCostPerMTok": 16,
+      "cacheReadCostPerMTok": 0.4
+    },
     "gpt-realtime-mini": {
       "inputCostPerMTok": 0.6,
       "outputCostPerMTok": 2.4,
       "cacheReadCostPerMTok": 0.06
     },
+    "gpt-audio-1.5": {
+      "inputCostPerMTok": 2.5,
+      "outputCostPerMTok": 10
+    },
     "gpt-audio": {
       "inputCostPerMTok": 2.5,
-      "outputCostPerMTok": 10,
-      "cacheReadCostPerMTok": 0
+      "outputCostPerMTok": 10
     },
     "gpt-audio-mini": {
       "inputCostPerMTok": 0.6,
-      "outputCostPerMTok": 2.4,
-      "cacheReadCostPerMTok": 0
+      "outputCostPerMTok": 2.4
     },
     "o1": {
       "inputCostPerMTok": 15,
       "outputCostPerMTok": 60,
-      "cacheReadCostPerMTok": 7.5
+      "cacheReadCostPerMTok": 7.5,
+      "deprecated": true
     },
     "o1-mini": {
       "inputCostPerMTok": 1.1,
       "outputCostPerMTok": 4.4,
-      "cacheReadCostPerMTok": 0.55
+      "cacheReadCostPerMTok": 0.55,
+      "deprecated": true
     },
     "o1-pro": {
       "inputCostPerMTok": 150,
       "outputCostPerMTok": 600,
-      "cacheReadCostPerMTok": 0
+      "deprecated": true
     },
     "o3": {
       "inputCostPerMTok": 2,
@@ -234,32 +438,97 @@
     "o3-mini": {
       "inputCostPerMTok": 1.1,
       "outputCostPerMTok": 4.4,
-      "cacheReadCostPerMTok": 0.55
+      "cacheReadCostPerMTok": 0.55,
+      "deprecated": true
     },
     "o3-pro": {
       "inputCostPerMTok": 20,
-      "outputCostPerMTok": 80,
-      "cacheReadCostPerMTok": 0
+      "outputCostPerMTok": 80
     },
     "o3-deep-research": {
       "inputCostPerMTok": 10,
       "outputCostPerMTok": 40,
-      "cacheReadCostPerMTok": 2.5
+      "cacheReadCostPerMTok": 2.5,
+      "deprecated": true
     },
     "o4-mini": {
       "inputCostPerMTok": 1.1,
       "outputCostPerMTok": 4.4,
-      "cacheReadCostPerMTok": 0.275
+      "cacheReadCostPerMTok": 0.275,
+      "deprecated": true
     },
     "o4-mini-deep-research": {
       "inputCostPerMTok": 2,
       "outputCostPerMTok": 8,
-      "cacheReadCostPerMTok": 0.5
+      "cacheReadCostPerMTok": 0.5,
+      "deprecated": true
     },
     "computer-use-preview": {
       "inputCostPerMTok": 3,
       "outputCostPerMTok": 12,
-      "cacheReadCostPerMTok": 0
+      "deprecated": true
+    },
+    "gpt-3.5-turbo": {
+      "inputCostPerMTok": 0.5,
+      "outputCostPerMTok": 1.5,
+      "deprecated": true
+    },
+    "gpt-4": {
+      "inputCostPerMTok": 30,
+      "outputCostPerMTok": 60,
+      "deprecated": true
+    },
+    "gpt-4-turbo": {
+      "inputCostPerMTok": 10,
+      "outputCostPerMTok": 30,
+      "deprecated": true
+    },
+    "gpt-4o-2024-08-06": {
+      "inputCostPerMTok": 2.5,
+      "outputCostPerMTok": 10,
+      "cacheReadCostPerMTok": 1.25
+    },
+    "gpt-4o-2024-11-20": {
+      "inputCostPerMTok": 2.5,
+      "outputCostPerMTok": 10,
+      "cacheReadCostPerMTok": 1.25
+    },
+    "gpt-5.3-codex-spark": {
+      "inputCostPerMTok": 1.75,
+      "outputCostPerMTok": 14,
+      "cacheReadCostPerMTok": 0.175
+    },
+    "gpt-5.6": {
+      "inputCostPerMTok": 4,
+      "outputCostPerMTok": 20,
+      "cacheReadCostPerMTok": 0.4,
+      "cacheWriteCostPerMTok": 5,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 8,
+        "outputCostPerMTok": 30,
+        "cacheReadCostPerMTok": 0.8,
+        "cacheWriteCostPerMTok": 10
+      }
+    },
+    "gpt-daybreak-blue-latest": {
+      "inputCostPerMTok": 4,
+      "outputCostPerMTok": 20,
+      "cacheReadCostPerMTok": 0.4,
+      "cacheWriteCostPerMTok": 5,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 8,
+        "outputCostPerMTok": 30,
+        "cacheReadCostPerMTok": 0.8,
+        "cacheWriteCostPerMTok": 10
+      }
+    },
+    "gpt-daybreak-red-latest": {
+      "inputCostPerMTok": 12.5,
+      "outputCostPerMTok": 75,
+      "cacheReadCostPerMTok": 1.25,
+      "cacheWriteCostPerMTok": 15.625
     }
   }
 }

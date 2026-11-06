@@ -1,10 +1,12 @@
 package importer
 
 import (
-	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -195,40 +197,31 @@ type claudePRLink struct {
 	Timestamp  time.Time
 }
 
-// collectSessionMeta does a first pass over raw JSONL lines to collect session-level metadata
-func (p *ClaudeParser) collectSessionMeta(lines []string) claudeSessionMeta {
-	meta := claudeSessionMeta{}
-	seenPRs := make(map[string]bool)
+// observe collects session-level metadata (git branch, cwd, repository
+// evidence and distinct PR links) from an entry
+func (m *claudeSessionMeta) observe(entry ClaudeJSONLEntry, seenPRs map[string]bool) {
+	m.ObserveClaude(entry)
 
-	for _, line := range lines {
-		var entry ClaudeJSONLEntry
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			continue
-		}
-		meta.ObserveClaude(entry)
-
-		if entry.Type == "pr-link" && entry.PRNumber > 0 {
-			ts, err := time.Parse(time.RFC3339Nano, entry.Timestamp)
-			if err != nil {
-				continue
-			}
-			repo := strings.TrimSpace(entry.PRRepository)
-			if repo == "" {
-				repo = githubRepoFromURL(entry.PRUrl)
-			}
-			if repo == "" {
-				continue
-			}
-			key := strings.ToLower(repo) + "#" + strconv.Itoa(entry.PRNumber)
-			if seenPRs[key] {
-				continue
-			}
-			seenPRs[key] = true
-
-			meta.PRLinks = append(meta.PRLinks, claudePRLink{Number: entry.PRNumber, URL: entry.PRUrl, Repository: repo, Timestamp: ts})
-		}
+	if entry.Type != "pr-link" || entry.PRNumber <= 0 {
+		return
 	}
-	return meta
+	ts, err := time.Parse(time.RFC3339Nano, entry.Timestamp)
+	if err != nil {
+		return
+	}
+	repo := strings.TrimSpace(entry.PRRepository)
+	if repo == "" {
+		repo = githubRepoFromURL(entry.PRUrl)
+	}
+	if repo == "" {
+		return
+	}
+	key := strings.ToLower(repo) + "#" + strconv.Itoa(entry.PRNumber)
+	if seenPRs[key] {
+		return
+	}
+	seenPRs[key] = true
+	m.PRLinks = append(m.PRLinks, claudePRLink{Number: entry.PRNumber, URL: entry.PRUrl, Repository: repo, Timestamp: ts})
 }
 
 // extractRepository returns the best repository identifier for a session.
@@ -262,39 +255,24 @@ func (p *ClaudeParser) ParseFile(ctx context.Context, path string) (*ImportResul
 	filename := filepath.Base(path)
 	result.SessionID = strings.TrimSuffix(filename, ".jsonl")
 
-	scanner := bufio.NewScanner(file)
-	// Increase buffer size for long lines
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
-
-	// Collect all non-empty lines
-	var lines []string
-	for scanner.Scan() {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		if line := scanner.Text(); strings.TrimSpace(line) != "" {
-			lines = append(lines, line)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("reading file: %w", err)
-	}
-
-	// First pass: collect session-level metadata (gitBranch, PR info, cwd)
-	meta := p.collectSessionMeta(lines)
-	repository := extractRepository(meta)
-
-	for _, pr := range meta.PRLinks {
-		result.Metrics = append(result.Metrics, createPRMetric(meta, pr))
-	}
+	// One pass over the file. Session-level metadata (git branch, cwd,
+	// repository, PR links) is collected while parsing; records are built
+	// without it and attributed once the whole file has been read, since
+	// evidence such as the repository can appear late in a session.
+	meta := claudeSessionMeta{}
+	seenPRs := make(map[string]bool)
+	noMeta := claudeSessionMeta{}
 
 	messageIndex := 0
 	seenRequests := make(map[string]bool) // For deduplication of metrics
 	activity := newClaudeActivity()
 
-	// Second pass: process records
-	for _, line := range lines {
+	// Hash exactly the content that is imported
+	hasher := sha256.New()
+	for line, err := range jsonlLinesCounted(io.TeeReader(file, hasher), &result.ParsedBytes) {
+		if err != nil {
+			return nil, fmt.Errorf("reading file: %w", err)
+		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
@@ -303,6 +281,7 @@ func (p *ClaudeParser) ParseFile(ctx context.Context, path string) (*ImportResul
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			continue
 		}
+		meta.observe(entry, seenPRs)
 
 		// Handle system/turn_duration entries for active time (no message field)
 		if entry.Type == "system" && entry.Subtype == "turn_duration" && entry.DurationMs > 0 {
@@ -318,7 +297,7 @@ func (p *ClaudeParser) ParseFile(ctx context.Context, path string) (*ImportResul
 					result.LastTime = ts
 				}
 				secs := entry.DurationMs / 1000.0
-				result.Metrics = append(result.Metrics, createActiveTimeMetric(ts, secs, meta, repository))
+				result.Metrics = append(result.Metrics, createActiveTimeMetric(ts, secs, noMeta, ""))
 			}
 			continue
 		}
@@ -360,10 +339,13 @@ func (p *ClaudeParser) ParseFile(ctx context.Context, path string) (*ImportResul
 		}
 
 		// Create transcript log records from message content
-		transcriptLogs := p.createTranscriptLogs(entry, ts, sessionID, meta, &messageIndex)
+		transcriptLogs := p.createTranscriptLogs(entry, ts, sessionID, noMeta, &messageIndex)
 		result.Logs = append(result.Logs, transcriptLogs...)
 
-		result.Metrics = append(result.Metrics, activity.process(entry, ts, sessionID, meta, repository)...)
+		// Activity needs the working directory to make edited paths relative;
+		// the entry's own cwd has been observed already
+		cwd := claudeSessionMeta{RepositoryMetadata: RepositoryMetadata{Cwd: meta.Cwd}}
+		result.Metrics = append(result.Metrics, activity.process(entry, ts, sessionID, cwd, "")...)
 
 		// Usage and individual tool actions have different identities. A content-only
 		// assistant entry must not consume the later usage record for its request.
@@ -377,66 +359,25 @@ func (p *ClaudeParser) ParseFile(ctx context.Context, path string) (*ImportResul
 				seenRequests[dedupKey] = true
 			}
 
-			// Create api_request log record
-			logRecord := api.LogRecord{
-				Timestamp:      ts,
-				ServiceName:    SourceClaude.ServiceName(),
-				SeverityText:   "INFO",
-				SeverityNumber: 9,
-				Body:           "api_request",
-				LogAttributes: map[string]string{
-					"event.name":    "claude_code.api_request",
-					"session.id":    sessionID,
-					"model":         entry.Message.Model,
-					"import_source": "local_jsonl",
-				},
-			}
-			if entry.Cwd != "" {
-				logRecord.LogAttributes["cwd"] = entry.Cwd
-			}
-			if entry.RequestID != "" {
-				logRecord.LogAttributes["request_id"] = entry.RequestID
-			}
-			if meta.GitBranch != "" {
-				logRecord.LogAttributes["git_branch"] = meta.GitBranch
-			}
-			if repository != "" {
-				logRecord.LogAttributes["repository"] = repository
-			}
-			result.Logs = append(result.Logs, logRecord)
-
-			// Token usage metrics
-			usage := entry.Message.Usage
-			model := entry.Message.Model
-
-			if usage.InputTokens > 0 {
-				result.Metrics = append(result.Metrics, createTokenMetrics(ts, model, "input", float64(usage.InputTokens), meta, repository)...)
-			}
-			if usage.OutputTokens > 0 {
-				result.Metrics = append(result.Metrics, createTokenMetrics(ts, model, "output", float64(usage.OutputTokens), meta, repository)...)
-			}
-			if usage.CacheCreationInputTokens > 0 {
-				result.Metrics = append(result.Metrics, createTokenMetrics(ts, model, "cacheCreation", float64(usage.CacheCreationInputTokens), meta, repository)...)
-			}
-			if usage.CacheReadInputTokens > 0 {
-				result.Metrics = append(result.Metrics, createTokenMetrics(ts, model, "cacheRead", float64(usage.CacheReadInputTokens), meta, repository)...)
-			}
-
-			// Cost metrics
-			tokenUsage := pricing.ClaudeTokenUsage{
-				InputTokens:              int64(usage.InputTokens),
-				OutputTokens:             int64(usage.OutputTokens),
-				CacheCreationInputTokens: int64(usage.CacheCreationInputTokens),
-				CacheReadInputTokens:     int64(usage.CacheReadInputTokens),
-			}
-			cost := pricing.GetClaudeCostWithMode(p.pricingMode, model, tokenUsage, entry.CostUSD)
-			if cost > 0 {
-				result.Metrics = append(result.Metrics, createCostMetrics(ts, model, cost, meta, repository)...)
-			}
+			log, metrics := p.usageRecords(entry, ts, sessionID, "local_jsonl", noMeta, "")
+			result.Logs = append(result.Logs, log)
+			result.Metrics = append(result.Metrics, metrics...)
 		}
 
 		result.RecordCount++
 	}
+	result.FileHash = hex.EncodeToString(hasher.Sum(nil))
+	result.MessageCount = messageIndex
+
+	// Attribute the session's records to its branch and repository. PR
+	// metrics carry the repository of their PR instead.
+	meta.Enrich(result.Metrics, result.Logs)
+	repository := extractRepository(meta)
+	prMetrics := make([]api.MetricDataPoint, 0, len(meta.PRLinks))
+	for _, pr := range meta.PRLinks {
+		prMetrics = append(prMetrics, createPRMetric(meta, pr))
+	}
+	result.Metrics = append(prMetrics, result.Metrics...)
 
 	// Every emitted event participates in file-level date filtering, including PR
 	// links which can occur after the last conversation message.
@@ -454,6 +395,64 @@ func (p *ClaudeParser) ParseFile(ctx context.Context, path string) (*ImportResul
 	}
 
 	return result, nil
+}
+
+// UsageRecords returns the api_request log and the token and cost metrics of
+// an assistant entry with usage, as the file watcher stores them. Imports use
+// the same records with the session's git branch and repository attached;
+// watch adds the repository to the whole batch.
+func (p *ClaudeParser) UsageRecords(entry ClaudeJSONLEntry, ts time.Time, sessionID string) (api.LogRecord, []api.MetricDataPoint) {
+	return p.usageRecords(entry, ts, sessionID, "file_watcher", claudeSessionMeta{}, "")
+}
+
+func (p *ClaudeParser) usageRecords(entry ClaudeJSONLEntry, ts time.Time, sessionID, importSource string, meta claudeSessionMeta, repository string) (api.LogRecord, []api.MetricDataPoint) {
+	attrs := sessionAttrs(meta, repository)
+	attrs["event.name"] = "claude_code.api_request"
+	attrs["session.id"] = sessionID
+	attrs["model"] = entry.Message.Model
+	attrs["import_source"] = importSource
+	if entry.Cwd != "" {
+		attrs["cwd"] = entry.Cwd
+	}
+	if entry.RequestID != "" {
+		attrs["request_id"] = entry.RequestID
+	}
+	log := api.LogRecord{
+		Timestamp:      ts,
+		ServiceName:    SourceClaude.ServiceName(),
+		SeverityText:   "INFO",
+		SeverityNumber: 9,
+		Body:           "api_request",
+		LogAttributes:  attrs,
+	}
+
+	usage := entry.Message.Usage
+	model := entry.Message.Model
+	var metrics []api.MetricDataPoint
+	for _, t := range []struct {
+		tokenType string
+		count     int
+	}{
+		{"input", usage.InputTokens},
+		{"output", usage.OutputTokens},
+		{"cacheCreation", usage.CacheCreationInputTokens},
+		{"cacheRead", usage.CacheReadInputTokens},
+	} {
+		if t.count > 0 {
+			metrics = append(metrics, createTokenMetrics(ts, model, t.tokenType, float64(t.count), meta, repository)...)
+		}
+	}
+
+	tokenUsage := pricing.ClaudeTokenUsage{
+		InputTokens:              int64(usage.InputTokens),
+		OutputTokens:             int64(usage.OutputTokens),
+		CacheCreationInputTokens: int64(usage.CacheCreationInputTokens),
+		CacheReadInputTokens:     int64(usage.CacheReadInputTokens),
+	}
+	if cost := pricing.GetClaudeCostWithMode(p.pricingMode, model, tokenUsage, entry.CostUSD); cost > 0 {
+		metrics = append(metrics, createCostMetrics(ts, model, cost, meta, repository)...)
+	}
+	return log, metrics
 }
 
 // CreateTranscriptLogs creates transcript log records from message content.
@@ -572,24 +571,6 @@ const (
 	claudeActiveTimeMetric           = "claude_code.active_time.total"
 )
 
-// CreateTokenMetric creates a token usage metric with the specified name.
-// This public form is used by the file watcher; ParseFile uses createTokenMetric
-// (private) which also attaches session attributes.
-func CreateTokenMetric(ts time.Time, metricName, model, tokenType string, value float64) api.MetricDataPoint {
-	return api.MetricDataPoint{
-		Timestamp:   ts,
-		ServiceName: SourceClaude.ServiceName(),
-		MetricName:  metricName,
-		MetricType:  "sum",
-		Value:       &value,
-		Attributes: map[string]string{
-			"type":          tokenType,
-			"model":         model,
-			"import_source": "local_jsonl",
-		},
-	}
-}
-
 // sessionAttrs builds the common session-level attributes (git_branch, repository).
 func sessionAttrs(meta claudeSessionMeta, repository string) map[string]string {
 	attrs := make(map[string]string)
@@ -618,38 +599,14 @@ func createTokenMetric(ts time.Time, metricName, model, tokenType string, value 
 	}
 }
 
-// CreateTokenMetrics creates both regular and user-facing token usage metrics.
-// JSONL data is already user-facing (only assistant messages with cache tokens),
-// so both metrics have identical values for consistency with OTLP-derived metrics.
-func CreateTokenMetrics(ts time.Time, model, tokenType string, value float64) []api.MetricDataPoint {
-	return []api.MetricDataPoint{
-		CreateTokenMetric(ts, ClaudeTokenUsageMetric, model, tokenType, value),
-		CreateTokenMetric(ts, ClaudeUserFacingTokenUsageMetric, model, tokenType, value),
-	}
-}
-
-// createTokenMetrics creates both regular and user-facing token usage metrics with session attributes.
+// createTokenMetrics creates both regular and user-facing token usage metrics
+// with session attributes. JSONL data is already user-facing (only assistant
+// messages with cache tokens), so both metrics have identical values for
+// consistency with OTLP-derived metrics.
 func createTokenMetrics(ts time.Time, model, tokenType string, value float64, meta claudeSessionMeta, repository string) []api.MetricDataPoint {
 	return []api.MetricDataPoint{
 		createTokenMetric(ts, ClaudeTokenUsageMetric, model, tokenType, value, meta, repository),
 		createTokenMetric(ts, ClaudeUserFacingTokenUsageMetric, model, tokenType, value, meta, repository),
-	}
-}
-
-// CreateCostMetric creates a cost metric with the specified name.
-// This public form is used by the file watcher; ParseFile uses createCostMetric
-// (private) which also attaches session attributes.
-func CreateCostMetric(ts time.Time, metricName, model string, value float64) api.MetricDataPoint {
-	return api.MetricDataPoint{
-		Timestamp:   ts,
-		ServiceName: SourceClaude.ServiceName(),
-		MetricName:  metricName,
-		MetricType:  "sum",
-		Value:       &value,
-		Attributes: map[string]string{
-			"model":         model,
-			"import_source": "local_jsonl",
-		},
 	}
 }
 
@@ -668,17 +625,8 @@ func createCostMetric(ts time.Time, metricName, model string, value float64, met
 	}
 }
 
-// CreateCostMetrics creates both regular and user-facing cost metrics.
-// JSONL data is already user-facing (only assistant messages with cache tokens),
-// so both metrics have identical values for consistency with OTLP-derived metrics.
-func CreateCostMetrics(ts time.Time, model string, value float64) []api.MetricDataPoint {
-	return []api.MetricDataPoint{
-		CreateCostMetric(ts, ClaudeCostMetric, model, value),
-		CreateCostMetric(ts, ClaudeUserFacingCostMetric, model, value),
-	}
-}
-
-// createCostMetrics creates both regular and user-facing cost metrics with session attributes.
+// createCostMetrics creates both regular and user-facing cost metrics with
+// session attributes; both have the same value (see createTokenMetrics).
 func createCostMetrics(ts time.Time, model string, value float64, meta claudeSessionMeta, repository string) []api.MetricDataPoint {
 	return []api.MetricDataPoint{
 		createCostMetric(ts, ClaudeCostMetric, model, value, meta, repository),

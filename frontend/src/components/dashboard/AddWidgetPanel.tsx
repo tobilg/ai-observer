@@ -16,26 +16,36 @@ import { Separator } from '@/components/ui/separator'
 import { Badge } from '@/components/ui/badge'
 import { Plus, Layers, BarChart3 } from 'lucide-react'
 import { useDashboardStore } from '@/stores/dashboardStore'
+import { useShallow } from 'zustand/react/shallow'
 import { api } from '@/lib/api'
 import {
   WIDGET_DEFINITIONS,
   type CreateWidgetRequest,
   type WidgetDefinition,
 } from '@/types/dashboard'
-import {
-  getMetricMetadata,
-  getSourceDisplayName,
-  getServiceDisplayName,
-  METRIC_CATALOG,
-  type SourceTool,
-} from '@/lib/metricMetadata'
-
-function isSharedGenAIMetric(metricName: string): boolean {
-  return metricName.startsWith('gen_ai.')
-}
+import { getMetricMetadata, getServiceDisplayName } from '@/lib/metricMetadata'
+import { groupMetricsBySource } from '@/lib/metricGroups'
+import { nextFreePosition, widgetFitError } from '@/lib/dashboardGrid'
+import { MetricOptions } from '@/components/common/metric-options'
 
 export function AddWidgetPanel() {
-  const { isAddPanelOpen, setAddPanelOpen, widgets, addWidget, targetPosition, setTargetPosition } = useDashboardStore()
+  const {
+    isAddPanelOpen,
+    setAddPanelOpen,
+    widgets,
+    addWidget,
+    targetPosition,
+    setTargetPosition,
+  } = useDashboardStore(
+    useShallow((s) => ({
+      isAddPanelOpen: s.isAddPanelOpen,
+      setAddPanelOpen: s.setAddPanelOpen,
+      widgets: s.widgets,
+      addWidget: s.addWidget,
+      targetPosition: s.targetPosition,
+      setTargetPosition: s.setTargetPosition,
+    }))
+  )
   const [services, setServices] = useState<string[]>([])
   const [metricNames, setMetricNames] = useState<string[]>([])
   const [selectedService, setSelectedService] = useState<string>('')
@@ -54,60 +64,11 @@ export function AddWidgetPanel() {
     [selectedMetric]
   )
 
-  const getSourceFromService = useCallback((service: string): SourceTool | null => {
-    const normalized = service.toLowerCase().replace(/-/g, '_')
-    if (normalized.includes('claude')) return 'claude_code'
-    if (normalized.includes('gemini')) return 'gemini_cli'
-    if (normalized.includes('codex')) return 'codex_cli_rs'
-    if (normalized.includes('copilot')) return 'github_copilot'
-    if (normalized.includes('opencode')) return 'opencode'
-    return null
-  }, [])
-
   // Group metric names by source
-  const groupedMetrics = useMemo(() => {
-    const groups: Record<SourceTool | 'other', string[]> = {
-      claude_code: [],
-      gemini_cli: [],
-      codex_cli_rs: [],
-      github_copilot: [],
-      opencode: [],
-      unknown: [],
-      other: [],
-    }
-    const filterSource = selectedService ? getSourceFromService(selectedService) : null
-
-    const allMetricNames = new Set<string>()
-    for (const metric of METRIC_CATALOG) {
-      if (
-        !filterSource ||
-        metric.source === filterSource ||
-        (isSharedGenAIMetric(metric.name) && (filterSource === 'gemini_cli' || filterSource === 'github_copilot' || filterSource === 'opencode'))
-      ) {
-        allMetricNames.add(metric.name)
-      }
-    }
-
-    for (const name of metricNames) {
-      allMetricNames.add(name)
-    }
-
-    for (const name of allMetricNames) {
-      const meta = getMetricMetadata(name)
-      const source = filterSource && isSharedGenAIMetric(name) ? filterSource : meta.source
-      if (source === 'unknown') {
-        groups.other.push(name)
-      } else {
-        groups[source].push(name)
-      }
-    }
-
-    for (const key of Object.keys(groups) as (SourceTool | 'other')[]) {
-      groups[key].sort()
-    }
-
-    return groups
-  }, [metricNames, selectedService, getSourceFromService])
+  const groupedMetrics = useMemo(
+    () => groupMetricsBySource(metricNames, selectedService),
+    [metricNames, selectedService]
+  )
 
   const handleMetricChange = useCallback((metricName: string) => {
     setSelectedMetric(metricName)
@@ -177,72 +138,23 @@ export function AddWidgetPanel() {
     fetchMetricNames()
   }, [selectedService, selectedMetric, handleMetricChange])
 
-  // Calculate available columns at a specific position
-  const getAvailableColumns = useCallback((gridRow: number, gridColumn: number): number => {
-    // Get occupied cells for the specific row
-    const occupiedInRow = new Set<number>()
-    for (const w of widgets) {
-      // Check if widget occupies any cells in this row
-      const widgetStartRow = w.gridRow
-      const widgetEndRow = w.gridRow + w.rowSpan - 1
-      if (gridRow >= widgetStartRow && gridRow <= widgetEndRow) {
-        for (let c = w.gridColumn; c < w.gridColumn + w.colSpan; c++) {
-          occupiedInRow.add(c)
-        }
-      }
+  // The position of a new widget, or null (after telling why) when the chosen
+  // position has too few free columns
+  const placeWidget = (colSpan: number) => {
+    if (!targetPosition) {
+      return nextFreePosition(widgets)
     }
-
-    // Count consecutive free columns starting from gridColumn
-    let available = 0
-    for (let col = gridColumn; col <= 4; col++) {
-      if (occupiedInRow.has(col)) break
-      available++
+    const fitError = widgetFitError(widgets, targetPosition, colSpan)
+    if (fitError) {
+      toast.error('Widget does not fit', { description: fitError })
+      return null
     }
-    return available
-  }, [widgets])
-
-  // Calculate next available grid position
-  const getNextPosition = () => {
-    if (widgets.length === 0) {
-      return { gridColumn: 1, gridRow: 1 }
-    }
-
-    // Find the maximum row
-    const maxRow = Math.max(...widgets.map((w) => w.gridRow))
-
-    // Find widgets on the last row and determine the next column
-    const widgetsOnLastRow = widgets.filter((w) => w.gridRow === maxRow)
-    const occupiedColumns = new Set<number>()
-    for (const w of widgetsOnLastRow) {
-      for (let i = 0; i < w.colSpan; i++) {
-        occupiedColumns.add(w.gridColumn + i)
-      }
-    }
-
-    // Find first available column on last row
-    for (let col = 1; col <= 4; col++) {
-      if (!occupiedColumns.has(col)) {
-        return { gridColumn: col, gridRow: maxRow }
-      }
-    }
-
-    // No space on last row, go to next row
-    return { gridColumn: 1, gridRow: maxRow + 1 }
+    return targetPosition
   }
 
   const handleAddBuiltinWidget = async (definition: WidgetDefinition) => {
-    const position = targetPosition || getNextPosition()
-
-    // Check if widget fits at target position
-    if (targetPosition) {
-      const availableCols = getAvailableColumns(position.gridRow, position.gridColumn)
-      if (definition.defaultColSpan > availableCols) {
-        toast.error('Widget does not fit', {
-          description: `This widget requires ${definition.defaultColSpan} column${definition.defaultColSpan > 1 ? 's' : ''}, but only ${availableCols} column${availableCols !== 1 ? 's are' : ' is'} available at this position.`,
-        })
-        return
-      }
-    }
+    const position = placeWidget(definition.defaultColSpan)
+    if (!position) return
 
     setAdding(true)
     try {
@@ -271,18 +183,8 @@ export function AddWidgetPanel() {
     const definition = WIDGET_DEFINITIONS.find((d) => d.type === selectedWidgetType)
     if (!definition) return
 
-    const position = targetPosition || getNextPosition()
-
-    // Check if widget fits at target position
-    if (targetPosition) {
-      const availableCols = getAvailableColumns(position.gridRow, position.gridColumn)
-      if (definition.defaultColSpan > availableCols) {
-        toast.error('Widget does not fit', {
-          description: `This widget requires ${definition.defaultColSpan} column${definition.defaultColSpan > 1 ? 's' : ''}, but only ${availableCols} column${availableCols !== 1 ? 's are' : ' is'} available at this position.`,
-        })
-        return
-      }
-    }
+    const position = placeWidget(definition.defaultColSpan)
+    if (!position) return
 
     setAdding(true)
     try {
@@ -406,48 +308,7 @@ export function AddWidgetPanel() {
                   onChange={(e) => handleMetricChange(e.target.value)}
                 >
                   <option value="">Select a metric</option>
-                  {groupedMetrics.claude_code.length > 0 && (
-                    <optgroup label={getSourceDisplayName('claude_code')}>
-                      {groupedMetrics.claude_code.map((name) => (
-                        <option key={name} value={name}>{getMetricMetadata(name).displayName}</option>
-                      ))}
-                    </optgroup>
-                  )}
-                  {groupedMetrics.gemini_cli.length > 0 && (
-                    <optgroup label={getSourceDisplayName('gemini_cli')}>
-                      {groupedMetrics.gemini_cli.map((name) => (
-                        <option key={name} value={name}>{getMetricMetadata(name).displayName}</option>
-                      ))}
-                    </optgroup>
-                  )}
-                  {groupedMetrics.codex_cli_rs.length > 0 && (
-                    <optgroup label={getSourceDisplayName('codex_cli_rs')}>
-                      {groupedMetrics.codex_cli_rs.map((name) => (
-                        <option key={name} value={name}>{getMetricMetadata(name).displayName}</option>
-                      ))}
-                    </optgroup>
-                  )}
-                  {groupedMetrics.github_copilot.length > 0 && (
-                    <optgroup label={getSourceDisplayName('github_copilot')}>
-                      {groupedMetrics.github_copilot.map((name) => (
-                        <option key={name} value={name}>{getMetricMetadata(name).displayName}</option>
-                      ))}
-                    </optgroup>
-                  )}
-                  {groupedMetrics.opencode.length > 0 && (
-                    <optgroup label={getSourceDisplayName('opencode')}>
-                      {groupedMetrics.opencode.map((name) => (
-                        <option key={name} value={name}>{getMetricMetadata(name).displayName}</option>
-                      ))}
-                    </optgroup>
-                  )}
-                  {groupedMetrics.other.length > 0 && (
-                    <optgroup label="Other">
-                      {groupedMetrics.other.map((name) => (
-                        <option key={name} value={name}>{getMetricMetadata(name).displayName}</option>
-                      ))}
-                    </optgroup>
-                  )}
+                  <MetricOptions groups={groupedMetrics} />
                 </Select>
               </div>
 

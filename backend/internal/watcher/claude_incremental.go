@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tobilg/ai-observer/internal/api"
 	"github.com/tobilg/ai-observer/internal/importer"
 	"github.com/tobilg/ai-observer/internal/pricing"
 	"github.com/tobilg/ai-observer/internal/storage"
@@ -20,7 +19,46 @@ import (
 type claudeParserState struct {
 	Repository   *importer.RepositoryMetadata `json:"repository,omitempty"`
 	MessageIndex int                          `json:"messageIndex"`
-	SeenRequests map[string]bool              `json:"seenRequests"`
+	// RecentRequests are the latest usage dedup keys, oldest first
+	RecentRequests []string `json:"recentRequests,omitempty"`
+	// SeenRequests holds all keys in states written by earlier versions
+	SeenRequests map[string]bool `json:"seenRequests,omitempty"`
+
+	seen map[string]bool // index of RecentRequests
+}
+
+// maxRecentRequests bounds the usage dedup keys kept in the parser state,
+// which is rewritten on every update. Claude Code repeats a message's usage
+// on the lines of the same turn, so only recent keys are needed.
+const maxRecentRequests = 1000
+
+// indexRequests prepares the dedup keys after decoding, taking over the keys
+// of an earlier version's state
+func (s *claudeParserState) indexRequests() {
+	keys := s.RecentRequests
+	for key := range s.SeenRequests {
+		keys = append(keys, key)
+	}
+	s.SeenRequests = nil
+	s.RecentRequests = nil
+	s.seen = make(map[string]bool)
+	for _, key := range keys {
+		s.addRequest(key)
+	}
+}
+
+func (s *claudeParserState) seenRequest(key string) bool { return s.seen[key] }
+
+func (s *claudeParserState) addRequest(key string) {
+	if s.seen[key] {
+		return
+	}
+	s.seen[key] = true
+	s.RecentRequests = append(s.RecentRequests, key)
+	if len(s.RecentRequests) > maxRecentRequests {
+		delete(s.seen, s.RecentRequests[0])
+		s.RecentRequests = s.RecentRequests[1:]
+	}
 }
 
 type claudeIncrementalParser struct {
@@ -47,14 +85,10 @@ func (p *claudeIncrementalParser) ParseIncremental(ctx context.Context, filePath
 	var parserState claudeParserState
 	if workingState.ParserState != "" {
 		if err := json.Unmarshal([]byte(workingState.ParserState), &parserState); err != nil {
-			parserState = claudeParserState{SeenRequests: make(map[string]bool)}
+			parserState = claudeParserState{}
 		}
-	} else {
-		parserState = claudeParserState{SeenRequests: make(map[string]bool)}
 	}
-	if parserState.SeenRequests == nil {
-		parserState.SeenRequests = make(map[string]bool)
-	}
+	parserState.indexRequests()
 	if parserState.MessageIndex == 0 && workingState.MessageCount > 0 {
 		parserState.MessageIndex = workingState.MessageCount
 	}
@@ -69,7 +103,7 @@ func (p *claudeIncrementalParser) ParseIncremental(ctx context.Context, filePath
 			parserState.Repository.ObserveClaude(entry)
 			// Empty legacy state also lacks the full import's usage dedup keys.
 			if entry.Type == "assistant" && entry.Message != nil && entry.Message.Usage != nil && entry.Message.ID != "" && entry.RequestID != "" {
-				parserState.SeenRequests[entry.Message.ID+":"+entry.RequestID] = true
+				parserState.addRequest(entry.Message.ID + ":" + entry.RequestID)
 			}
 		}); err != nil {
 			return nil, err
@@ -168,63 +202,19 @@ func (p *claudeIncrementalParser) ParseIncremental(ctx context.Context, filePath
 		if entry.Type == "assistant" && entry.Message.Usage != nil {
 			dedupKey := fmt.Sprintf("%s:%s", entry.Message.ID, entry.RequestID)
 			if entry.Message.ID != "" && entry.RequestID != "" {
-				if parserState.SeenRequests[dedupKey] {
+				if parserState.seenRequest(dedupKey) {
 					commitLine()
 					if readErr == io.EOF {
 						break
 					}
 					continue
 				}
-				parserState.SeenRequests[dedupKey] = true
+				parserState.addRequest(dedupKey)
 			}
 
-			logRecord := api.LogRecord{
-				Timestamp:      ts,
-				ServiceName:    importer.SourceClaude.ServiceName(),
-				SeverityText:   "INFO",
-				SeverityNumber: 9,
-				Body:           "api_request",
-				LogAttributes: map[string]string{
-					"event.name":    "claude_code.api_request",
-					"session.id":    entrySessionID,
-					"model":         entry.Message.Model,
-					"import_source": "file_watcher",
-				},
-			}
-			if entry.Cwd != "" {
-				logRecord.LogAttributes["cwd"] = entry.Cwd
-			}
-			if entry.RequestID != "" {
-				logRecord.LogAttributes["request_id"] = entry.RequestID
-			}
-			result.Logs = append(result.Logs, logRecord)
-
-			usage := entry.Message.Usage
-			model := entry.Message.Model
-
-			if usage.InputTokens > 0 {
-				result.Metrics = append(result.Metrics, importer.CreateTokenMetrics(ts, model, "input", float64(usage.InputTokens))...)
-			}
-			if usage.OutputTokens > 0 {
-				result.Metrics = append(result.Metrics, importer.CreateTokenMetrics(ts, model, "output", float64(usage.OutputTokens))...)
-			}
-			if usage.CacheCreationInputTokens > 0 {
-				result.Metrics = append(result.Metrics, importer.CreateTokenMetrics(ts, model, "cacheCreation", float64(usage.CacheCreationInputTokens))...)
-			}
-			if usage.CacheReadInputTokens > 0 {
-				result.Metrics = append(result.Metrics, importer.CreateTokenMetrics(ts, model, "cacheRead", float64(usage.CacheReadInputTokens))...)
-			}
-
-			tokenUsage := pricing.ClaudeTokenUsage{
-				InputTokens:              int64(usage.InputTokens),
-				OutputTokens:             int64(usage.OutputTokens),
-				CacheCreationInputTokens: int64(usage.CacheCreationInputTokens),
-				CacheReadInputTokens:     int64(usage.CacheReadInputTokens),
-			}
-			cost := pricing.GetClaudeCostWithMode(p.pricingMode, model, tokenUsage, entry.CostUSD)
-			if cost > 0 {
-				result.Metrics = append(result.Metrics, importer.CreateCostMetrics(ts, model, cost)...)
-			}
+			log, metrics := claudeParser.UsageRecords(entry, ts, entrySessionID)
+			result.Logs = append(result.Logs, log)
+			result.Metrics = append(result.Metrics, metrics...)
 		}
 
 		workingState.RecordCount++

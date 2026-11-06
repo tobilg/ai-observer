@@ -1,7 +1,7 @@
 import { cn } from '@/lib/utils'
 import { formatTimestamp } from '@/lib/utils'
 import { ToolCallBlock } from './ToolCallBlock'
-import { Markdown } from '@/components/ui/markdown'
+import { Markdown } from '@/components/common/markdown'
 import type { TranscriptMessage } from '@/types/sessions'
 import { User, Bot, Coins, Clock, Zap } from 'lucide-react'
 

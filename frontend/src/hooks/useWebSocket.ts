@@ -1,20 +1,23 @@
 import { useEffect, useState, useSyncExternalStore, useCallback } from 'react'
-import { useTelemetryStore } from '@/stores/telemetryStore'
-import type { Span } from '@/types/traces'
-import type { MetricDataPoint } from '@/types/metrics'
-import type { LogRecord } from '@/types/logs'
+import { useTelemetryStore, type StoredNotification } from '@/stores/telemetryStore'
 
 interface WebSocketMessage {
   type: 'traces' | 'metrics' | 'logs'
   timestamp: string
-  payload: unknown
+  payload: StoredNotification
 }
+
+// Reconnect delays grow from 1 s to 30 s while the server cannot be reached
+// (or rejects the connection, e.g. without the auth cookie)
+const RECONNECT_BASE_MS = 1000
+const RECONNECT_MAX_MS = 30000
 
 // Singleton WebSocket manager
 class WebSocketManager {
   private ws: WebSocket | null = null
   private url: string = ''
   private reconnectTimeout: number | null = null
+  private reconnectAttempts = 0
   private listeners: Set<() => void> = new Set()
   private _isConnected: boolean = false
   private _error: string | null = null
@@ -60,19 +63,17 @@ class WebSocketManager {
         ? `${protocol}//${window.location.host}${url}`
         : url
 
-      console.log('WebSocket connecting to:', wsUrl)
       this.ws = new WebSocket(wsUrl)
 
       this.ws.onopen = () => {
+        this.reconnectAttempts = 0
         this._isConnected = true
         this._error = null
-        console.log('WebSocket connected')
         this.notify()
       }
 
       this.ws.onclose = (event) => {
         this._isConnected = false
-        console.log('WebSocket disconnected', event.code, event.reason)
         this.notify()
 
         // Only reconnect if not a clean close
@@ -108,10 +109,12 @@ class WebSocketManager {
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout)
     }
+    const delay = Math.min(RECONNECT_BASE_MS * 2 ** this.reconnectAttempts, RECONNECT_MAX_MS)
+    this.reconnectAttempts++
+    // Up to 20% jitter, so tabs do not reconnect in lockstep
     this.reconnectTimeout = window.setTimeout(() => {
-      console.log('Attempting to reconnect...')
       this.connect(this.url)
-    }, 3000)
+    }, delay * (1 + Math.random() * 0.2))
   }
 
   disconnect() {
@@ -156,13 +159,13 @@ export function useWebSocket(url: string = '/ws') {
   const handleMessage = useCallback((message: WebSocketMessage) => {
     switch (message.type) {
       case 'traces':
-        addSpans(message.payload as Span[])
+        addSpans(message.payload)
         break
       case 'metrics':
-        addMetrics(message.payload as MetricDataPoint[])
+        addMetrics(message.payload)
         break
       case 'logs':
-        addLogs(message.payload as LogRecord[])
+        addLogs(message.payload)
         break
     }
   }, [addSpans, addMetrics, addLogs])
@@ -187,6 +190,15 @@ export function useWebSocket(url: string = '/ws') {
   }, [url, handleMessage])
 
   return { isConnected, error }
+}
+
+// useWebSocketConnected reports whether the shared WebSocket is connected,
+// without connecting it (Layout's useWebSocket does that)
+export function useWebSocketConnected(): boolean {
+  return useSyncExternalStore(
+    (callback) => wsManager.subscribe(callback),
+    () => wsManager.isConnected
+  )
 }
 
 // Export for manual control if needed

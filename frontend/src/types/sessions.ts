@@ -11,6 +11,8 @@ export interface SessionsResponse {
   sessions: Session[]
   total: number
   hasMore: boolean
+  // Requests the next page (cursor parameter) when hasMore
+  nextCursor?: string
 }
 
 export interface TranscriptMessage {

@@ -5,8 +5,8 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
-import { DateRangePicker } from '@/components/ui/date-range-picker'
-import { DataPagination } from '@/components/ui/data-pagination'
+import { DateRangePicker } from '@/components/common/date-range-picker'
+import { DataPagination } from '@/components/common/data-pagination'
 import { api } from '@/lib/api'
 import { isAbortError } from '@/lib/errors'
 import { formatTimestamp, getSeverityColor, cn } from '@/lib/utils'
@@ -45,7 +45,17 @@ export function LogsPage() {
   })
 
   // Pagination state with localStorage persistence
-  const { page, pageSize, offset, setPage, setPageSize, resetToFirstPage } = usePagination({
+  const {
+    page,
+    pageSize,
+    cursor,
+    hasNext,
+    setNextCursor,
+    nextPage,
+    previousPage,
+    setPageSize,
+    resetToFirstPage,
+  } = usePagination({
     defaultPageSize: 10,
     storageKey: PAGE_SIZE_STORAGE_KEY,
   })
@@ -54,13 +64,11 @@ export function LogsPage() {
   const [anchorTime, setAnchorTime] = useState<Date>(() => new Date())
 
   // Real-time logs from WebSocket (kept separate, not merged)
-  const recentLogs = useTelemetryStore((state) => state.recentLogs)
+  const recentLogTimes = useTelemetryStore((state) => state.recentLogTimes)
   const clearRecentLogs = useTelemetryStore((state) => state.clearRecentLogs)
 
   // Count new logs since anchor time
-  const newLogsCount = recentLogs.filter(
-    (log) => new Date(log.timestamp) > anchorTime
-  ).length
+  const newLogsCount = recentLogTimes.filter((time) => time > anchorTime.getTime()).length
 
   useEffect(() => {
     const fetchServices = async () => {
@@ -88,10 +96,11 @@ export function LogsPage() {
           from: fromTime?.toISOString(),
           to: toTime.toISOString(),
           limit: pageSize,
-          offset,
+          cursor,
         }, { signal: abortController.signal })
         setLogs(data.logs ?? [])
         setTotal(data.total ?? 0)
+        setNextCursor(data.nextCursor)
       } catch (err) {
         if (isAbortError(err)) {
           return // Ignore abort errors
@@ -107,7 +116,7 @@ export function LogsPage() {
     fetchLogs()
 
     return () => abortController.abort()
-  }, [service, severity, debouncedSearch, fromTime, toTime, pageSize, offset])
+  }, [service, severity, debouncedSearch, fromTime, toTime, pageSize, cursor, setNextCursor])
 
   const handleTimeSelectionChange = (selection: TimeSelection) => {
     resetToFirstPage()
@@ -313,8 +322,12 @@ export function LogsPage() {
               <DataPagination
                 page={page}
                 pageSize={pageSize}
+                itemCount={logs.length}
                 total={total}
-                onPageChange={setPage}
+                hasNext={hasNext}
+                onFirst={resetToFirstPage}
+                onPrevious={previousPage}
+                onNext={nextPage}
                 onPageSizeChange={setPageSize}
               />
             </>

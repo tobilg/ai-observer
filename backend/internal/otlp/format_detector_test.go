@@ -93,34 +93,30 @@ func TestGetDecoderWithDetection(t *testing.T) {
 		body        []byte
 		contentType string
 		wantJSON    bool
-		wantFormat  Format
 	}{
 		{
 			name:        "JSON body with protobuf content-type",
 			body:        []byte(`{"resourceLogs":[]}`),
 			contentType: "application/x-protobuf",
 			wantJSON:    true,
-			wantFormat:  FormatJSON,
 		},
 		{
 			name:        "JSON body with JSON content-type",
 			body:        []byte(`{"resourceLogs":[]}`),
 			contentType: "application/json",
 			wantJSON:    true,
-			wantFormat:  FormatJSON,
 		},
 		{
 			name:        "Protobuf body with protobuf content-type",
 			body:        []byte{0x0A, 0x10, 0x00},
 			contentType: "application/x-protobuf",
 			wantJSON:    false,
-			wantFormat:  FormatProtobuf,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			decoder, reader, format, err := GetDecoderWithDetection(bytes.NewReader(tt.body), tt.contentType)
+			decoder, reader, err := GetDecoderWithDetection(bytes.NewReader(tt.body), tt.contentType)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -128,10 +124,6 @@ func TestGetDecoderWithDetection(t *testing.T) {
 			_, isJSON := decoder.(*JSONDecoder)
 			if isJSON != tt.wantJSON {
 				t.Errorf("expected JSON decoder=%v, got %v", tt.wantJSON, isJSON)
-			}
-
-			if format != tt.wantFormat {
-				t.Errorf("expected format %v, got %v", tt.wantFormat, format)
 			}
 
 			// Verify reader contains original data

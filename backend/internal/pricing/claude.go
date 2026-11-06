@@ -66,6 +66,10 @@ func CalculateClaudeCost(model string, usage ClaudeTokenUsage) *float64 {
 	cacheCreation := max(0, usage.CacheCreationInputTokens)
 	cacheRead := max(0, usage.CacheReadInputTokens)
 
+	// Anthropic prices long prompts by their full length, cache reads and
+	// writes included (input_tokens excludes them)
+	pricing = pricing.forPromptSize(input + cacheCreation + cacheRead)
+
 	// Calculate cost
 	// Input tokens are the base input minus any cache tokens
 	// Cache creation is charged at cache write rate

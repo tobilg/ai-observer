@@ -1,10 +1,15 @@
 package server
 
 import (
+	"net/http"
+
 	"github.com/go-chi/chi/v5"
+	"github.com/tobilg/ai-observer/internal/api"
 	"github.com/tobilg/ai-observer/internal/frontend"
 	"github.com/tobilg/ai-observer/internal/handlers"
 	"github.com/tobilg/ai-observer/internal/logger"
+	"github.com/tobilg/ai-observer/internal/mcpserver"
+	"github.com/tobilg/ai-observer/internal/version"
 )
 
 func (s *Server) setupRoutes(h *handlers.Handlers) error {
@@ -22,7 +27,7 @@ func (s *Server) setupRoutes(h *handlers.Handlers) error {
 		r.Get("/traces", h.QueryTraces)
 		r.Get("/traces/recent", h.QueryRecentTraces)
 		r.Get("/traces/{traceId}", h.GetTrace)
-		r.Get("/traces/{traceId}/spans", h.GetTraceSpans)
+		r.Get("/traces/{traceId}/spans", h.GetTrace)
 
 		// Metrics
 		r.Get("/metrics", h.QueryMetrics)
@@ -41,6 +46,7 @@ func (s *Server) setupRoutes(h *handlers.Handlers) error {
 
 		// Services
 		r.Get("/services", h.ListServices)
+		r.Get("/providers", h.ListProviders)
 
 		// Stats
 		r.Get("/stats", h.GetStats)
@@ -64,6 +70,18 @@ func (s *Server) setupRoutes(h *handlers.Handlers) error {
 
 	// Health check (port 8080)
 	s.apiRouter.Get("/health", h.Health)
+
+	// MCP endpoint for agents (AI_OBSERVER_MCP=true or --mcp), on the API
+	// port behind its Host, Origin and token checks. Its requests have no
+	// timeout, so they end when the server shuts down.
+	if s.config.MCPEnabled {
+		s.apiRouter.Handle(mcpserver.Path, endOnStop(s.stopping, mcpserver.NewHandler(s.storage, version.Version)))
+	} else {
+		// Not the dashboard page, which a client would take for a reply
+		s.apiRouter.Handle(mcpserver.Path, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			api.WriteError(w, http.StatusNotFound, "the MCP endpoint is disabled: start AI Observer with --mcp or AI_OBSERVER_MCP=true")
+		}))
+	}
 
 	// Serve embedded frontend (catch-all, must be last)
 	spaHandler, err := frontend.NewSPAHandler()

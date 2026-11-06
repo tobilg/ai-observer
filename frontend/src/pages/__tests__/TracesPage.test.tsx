@@ -27,7 +27,7 @@ vi.mock('sonner', () => ({
 vi.mock('@/stores/telemetryStore', () => ({
   useTelemetryStore: vi.fn((selector) => {
     const state = {
-      recentSpans: [],
+      recentSpanTimes: [],
       clearRecentSpans: vi.fn(),
     }
     return selector(state)

@@ -6,116 +6,12 @@ import type {
   DashboardWidget,
   CreateWidgetRequest,
   WidgetPosition,
-  EmptyCell,
   TimeSelection,
 } from '@/types/dashboard'
 import { TIMEFRAME_OPTIONS, isAbsoluteTimeSelection } from '@/types/dashboard'
 import type { DashboardExport } from '@/types/dashboard-export'
 import { generateUniqueName, deriveWidgetTitle } from '@/lib/dashboard-export'
-
-// Grid utility functions
-function getOccupiedCells(widgets: DashboardWidget[]): Set<string> {
-  const occupied = new Set<string>()
-  for (const w of widgets) {
-    for (let r = w.gridRow; r < w.gridRow + w.rowSpan; r++) {
-      for (let c = w.gridColumn; c < w.gridColumn + w.colSpan; c++) {
-        occupied.add(`${r}-${c}`)
-      }
-    }
-  }
-  return occupied
-}
-
-// Get visible empty cell placeholders - one per contiguous empty space
-export function getEmptyCells(widgets: DashboardWidget[], maxColumns: number = 4): EmptyCell[] {
-  if (widgets.length === 0) {
-    // Return a single full-width placeholder for empty dashboard
-    return [{ gridRow: 1, gridColumn: 1, colSpan: maxColumns }]
-  }
-
-  const occupied = getOccupiedCells(widgets)
-  const maxRow = Math.max(...widgets.map((w) => w.gridRow + w.rowSpan - 1), 1)
-  const emptyCells: EmptyCell[] = []
-
-  // Check all rows up to maxRow + 1 (add one extra row for new widgets)
-  for (let row = 1; row <= maxRow + 1; row++) {
-    let consecutiveStart: number | null = null
-    let consecutiveCount = 0
-
-    for (let col = 1; col <= maxColumns; col++) {
-      if (!occupied.has(`${row}-${col}`)) {
-        if (consecutiveStart === null) consecutiveStart = col
-        consecutiveCount++
-      } else {
-        // End of contiguous empty space - add one placeholder for the whole span
-        if (consecutiveCount > 0) {
-          emptyCells.push({
-            gridRow: row,
-            gridColumn: consecutiveStart!,
-            colSpan: consecutiveCount,
-          })
-        }
-        consecutiveStart = null
-        consecutiveCount = 0
-      }
-    }
-    // Handle row end - add placeholder for remaining empty cells
-    if (consecutiveCount > 0) {
-      emptyCells.push({
-        gridRow: row,
-        gridColumn: consecutiveStart!,
-        colSpan: consecutiveCount,
-      })
-    }
-  }
-  return emptyCells
-}
-
-// Get additional drop zones for smaller widgets within larger empty spans
-// (e.g., allow dropping a 1-col widget at any position within a 4-col empty span)
-export function getEmptySpans(widgets: DashboardWidget[]): EmptyCell[] {
-  if (widgets.length === 0) {
-    // Additional drop zones for single-column widgets in empty dashboard
-    return [
-      { gridRow: 1, gridColumn: 1, colSpan: 1 },
-      { gridRow: 1, gridColumn: 2, colSpan: 1 },
-      { gridRow: 1, gridColumn: 3, colSpan: 1 },
-      { gridRow: 1, gridColumn: 4, colSpan: 1 },
-    ]
-  }
-
-  const occupied = getOccupiedCells(widgets)
-  const maxRow = Math.max(...widgets.map((w) => w.gridRow + w.rowSpan - 1), 1)
-  const spans: EmptyCell[] = []
-
-  for (let row = 1; row <= maxRow + 1; row++) {
-    let consecutiveStart: number | null = null
-    let consecutiveCount = 0
-
-    for (let col = 1; col <= 4; col++) {
-      if (!occupied.has(`${row}-${col}`)) {
-        if (consecutiveStart === null) consecutiveStart = col
-        consecutiveCount++
-      } else {
-        // For spans > 1, add individual cell drop zones
-        if (consecutiveCount > 1) {
-          for (let c = consecutiveStart!; c < consecutiveStart! + consecutiveCount; c++) {
-            spans.push({ gridRow: row, gridColumn: c, colSpan: 1 })
-          }
-        }
-        consecutiveStart = null
-        consecutiveCount = 0
-      }
-    }
-    // Handle row end
-    if (consecutiveCount > 1) {
-      for (let c = consecutiveStart!; c < consecutiveStart! + consecutiveCount; c++) {
-        spans.push({ gridRow: row, gridColumn: c, colSpan: 1 })
-      }
-    }
-  }
-  return spans
-}
+import { reorderWidgets } from '@/lib/dashboardGrid'
 
 interface DashboardState {
   // Current dashboard
@@ -443,18 +339,26 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       isDefault: false,
     })
 
-    // Create all widgets with derived titles
-    for (const widget of exportData.widgets) {
-      const title = deriveWidgetTitle(widget)
-      await api.createWidget(dashboard.id, {
-        widgetType: widget.widgetType,
-        title,
-        gridColumn: widget.gridColumn,
-        gridRow: widget.gridRow,
-        colSpan: widget.colSpan,
-        rowSpan: widget.rowSpan,
-        config: widget.config,
+    // Create all widgets with derived titles. If one fails, remove the
+    // dashboard again instead of leaving a partial copy behind.
+    try {
+      for (const widget of exportData.widgets) {
+        const title = deriveWidgetTitle(widget)
+        await api.createWidget(dashboard.id, {
+          widgetType: widget.widgetType,
+          title,
+          gridColumn: widget.gridColumn,
+          gridRow: widget.gridRow,
+          colSpan: widget.colSpan,
+          rowSpan: widget.rowSpan,
+          config: widget.config,
+        })
+      }
+    } catch (error) {
+      await api.deleteDashboard(dashboard.id).catch((cleanupError) => {
+        console.error('Failed to remove partially imported dashboard:', cleanupError)
       })
+      throw error
     }
 
     // Refresh dashboard list
@@ -557,60 +461,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   },
 
   reorderWidgets: (activeId: string, overId: string) => {
-    const { widgets } = get()
-    const activeWidget = widgets.find((w) => w.id === activeId)
-    const overWidget = widgets.find((w) => w.id === overId)
-
-    if (!activeWidget || !overWidget) return
-
-    let newActiveColumn: number
-    let newActiveRow: number
-    let newOverColumn: number
-    let newOverRow: number
-
-    if (activeWidget.gridRow === overWidget.gridRow) {
-      // Same row - smart reposition based on direction
-      const isMovingLeft = activeWidget.gridColumn > overWidget.gridColumn
-
-      if (isMovingLeft) {
-        // Moving left: active takes over's position, over moves right of active
-        newActiveColumn = overWidget.gridColumn
-        newActiveRow = overWidget.gridRow
-        newOverColumn = newActiveColumn + activeWidget.colSpan
-        newOverRow = newActiveRow
-
-        // Check if over widget fits in the row (max 4 columns)
-        if (newOverColumn + overWidget.colSpan - 1 > 4) {
-          // Doesn't fit, move to next row
-          newOverColumn = 1
-          newOverRow = newActiveRow + 1
-        }
-      } else {
-        // Moving right: over takes active's position, active moves right of over's new position
-        newOverColumn = activeWidget.gridColumn
-        newOverRow = activeWidget.gridRow
-        newActiveColumn = newOverColumn + overWidget.colSpan
-        newActiveRow = overWidget.gridRow
-      }
-    } else {
-      // Different rows - just swap positions
-      newActiveColumn = overWidget.gridColumn
-      newActiveRow = overWidget.gridRow
-      newOverColumn = activeWidget.gridColumn
-      newOverRow = activeWidget.gridRow
-    }
-
-    const updatedWidgets = widgets.map((w) => {
-      if (w.id === activeId) {
-        return { ...w, gridColumn: newActiveColumn, gridRow: newActiveRow }
-      }
-      if (w.id === overId) {
-        return { ...w, gridColumn: newOverColumn, gridRow: newOverRow }
-      }
-      return w
-    })
-
-    set({ widgets: updatedWidgets })
+    set({ widgets: reorderWidgets(get().widgets, activeId, overId) })
   },
 
   moveWidgetToPosition: (widgetId: string, gridRow: number, gridColumn: number) => {

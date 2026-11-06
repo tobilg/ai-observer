@@ -2,6 +2,8 @@ package importer
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -95,24 +97,24 @@ type GeminiSession struct {
 
 // GeminiMessage represents a message in the session
 type GeminiMessage struct {
-	ID        string            `json:"id"`
-	Timestamp string            `json:"timestamp"`
-	Type      string            `json:"type"` // "user", "gemini", "info", "error", "warning"
-	Content   string            `json:"content,omitempty"`
-	Tokens    *GeminiTokens     `json:"tokens,omitempty"`
-	Model     string            `json:"model,omitempty"`
-	ToolCalls []GeminiToolCall  `json:"toolCalls,omitempty"`
+	ID        string           `json:"id"`
+	Timestamp string           `json:"timestamp"`
+	Type      string           `json:"type"` // "user", "gemini", "info", "error", "warning"
+	Content   string           `json:"content,omitempty"`
+	Tokens    *GeminiTokens    `json:"tokens,omitempty"`
+	Model     string           `json:"model,omitempty"`
+	ToolCalls []GeminiToolCall `json:"toolCalls,omitempty"`
 }
 
 // GeminiToolCall represents a tool call in a message
 type GeminiToolCall struct {
-	ID          string              `json:"id"`
-	Name        string              `json:"name"`
-	Args        json.RawMessage     `json:"args,omitempty"`
-	Result      []GeminiToolResult  `json:"result,omitempty"`
-	Status      string              `json:"status,omitempty"`
-	Timestamp   string              `json:"timestamp,omitempty"`
-	DisplayName string              `json:"displayName,omitempty"`
+	ID          string             `json:"id"`
+	Name        string             `json:"name"`
+	Args        json.RawMessage    `json:"args,omitempty"`
+	Result      []GeminiToolResult `json:"result,omitempty"`
+	Status      string             `json:"status,omitempty"`
+	Timestamp   string             `json:"timestamp,omitempty"`
+	DisplayName string             `json:"displayName,omitempty"`
 }
 
 // GeminiToolResult represents the result of a tool call
@@ -122,8 +124,8 @@ type GeminiToolResult struct {
 
 // GeminiFunctionResponse represents the function response
 type GeminiFunctionResponse struct {
-	ID       string                    `json:"id"`
-	Name     string                    `json:"name"`
+	ID       string                      `json:"id"`
+	Name     string                      `json:"name"`
 	Response *GeminiFunctionResponseData `json:"response,omitempty"`
 }
 
@@ -154,9 +156,13 @@ func (p *GeminiParser) ParseFile(ctx context.Context, path string) (*ImportResul
 		return nil, fmt.Errorf("parsing JSON: %w", err)
 	}
 
+	hash := sha256.Sum256(data)
 	result := &ImportResult{
-		FilePath:  path,
-		SessionID: session.SessionID,
+		FilePath:     path,
+		SessionID:    session.SessionID,
+		FileHash:     hex.EncodeToString(hash[:]),
+		ParsedBytes:  int64(len(data)),
+		MessageCount: len(session.Messages),
 	}
 
 	// Parse start time
@@ -174,177 +180,193 @@ func (p *GeminiParser) ParseFile(ctx context.Context, path string) (*ImportResul
 	}
 
 	// Process messages
-	messageIndex := 0
-	for _, msg := range session.Messages {
+	records, err := ConvertGeminiMessages(ctx, &session, 0, "local_jsonl")
+	if err != nil {
+		return nil, err
+	}
+	result.Logs = records.Logs
+	result.Metrics = records.Metrics
+	result.RecordCount = len(records.Logs)
+	if !records.FirstTime.IsZero() && (result.FirstTime.IsZero() || records.FirstTime.Before(result.FirstTime)) {
+		result.FirstTime = records.FirstTime
+	}
+	if records.LastTime.After(result.LastTime) {
+		result.LastTime = records.LastTime
+	}
+
+	return result, nil
+}
+
+// GeminiRecords are the records converted from Gemini session messages
+type GeminiRecords struct {
+	Logs    []api.LogRecord
+	Metrics []api.MetricDataPoint
+	// FirstTime and LastTime are the earliest and latest converted message
+	FirstTime, LastTime time.Time
+}
+
+// ConvertGeminiMessages converts the messages of session from index start on.
+// Import and watch both use it, so they store the same records; importSource
+// marks the logs ("local_jsonl" for imports, "file_watcher" for watch).
+// Transcript indexes count the records of all messages, so they do not depend
+// on whether a session was imported at once or watched message by message.
+func ConvertGeminiMessages(ctx context.Context, session *GeminiSession, start int, importSource string) (*GeminiRecords, error) {
+	records := &GeminiRecords{}
+	logIndex := 0
+	for i, msg := range session.Messages {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 
-		// Parse message timestamp
 		ts, err := ParseGeminiTime(msg.Timestamp)
 		if err != nil {
 			continue
 		}
-
-		// Update time range
-		if result.FirstTime.IsZero() || ts.Before(result.FirstTime) {
-			result.FirstTime = ts
-		}
-		if ts.After(result.LastTime) {
-			result.LastTime = ts
+		logs := geminiMessageLogs(session, msg, ts, logIndex, importSource)
+		logIndex += len(logs)
+		if i < start {
+			continue
 		}
 
-		// Create transcript log record with actual content
-		logRecord := api.LogRecord{
-			Timestamp:      ts,
-			ServiceName:    SourceGemini.ServiceName(),
-			SeverityText:   MapGeminiSeverity(msg.Type),
-			SeverityNumber: MapGeminiSeverityNumber(msg.Type),
-			Body:           msg.Content, // Actual message content!
-			LogAttributes: map[string]string{
-				"event.name":    "transcript.message",
-				"session.id":    session.SessionID,
-				"message.id":    msg.ID,
-				"message.index": fmt.Sprintf("%d", messageIndex),
-				"message.role":  MapGeminiTypeToRole(msg.Type),
-				"import_source": "local_jsonl",
-			},
+		if records.FirstTime.IsZero() || ts.Before(records.FirstTime) {
+			records.FirstTime = ts
 		}
-		if msg.Model != "" {
-			logRecord.LogAttributes["model"] = msg.Model
+		if ts.After(records.LastTime) {
+			records.LastTime = ts
 		}
-		if session.ProjectHash != "" {
-			logRecord.LogAttributes["project_hash"] = session.ProjectHash
-		}
-		// Add token counts to attributes for transcript display
-		if msg.Tokens != nil {
-			if msg.Tokens.Input > 0 {
-				logRecord.LogAttributes["input_tokens"] = fmt.Sprintf("%d", msg.Tokens.Input)
-			}
-			if msg.Tokens.Output > 0 {
-				logRecord.LogAttributes["output_tokens"] = fmt.Sprintf("%d", msg.Tokens.Output)
-			}
-			if msg.Tokens.Cached > 0 {
-				logRecord.LogAttributes["cache_read_input_tokens"] = fmt.Sprintf("%d", msg.Tokens.Cached)
-			}
-		}
-		result.Logs = append(result.Logs, logRecord)
-		result.RecordCount++
-		messageIndex++
-
-		// Create separate log entries for tool calls
-		for _, toolCall := range msg.ToolCalls {
-			toolTs := ts // Use message timestamp as fallback
-			if toolCall.Timestamp != "" {
-				if parsed, err := ParseGeminiTime(toolCall.Timestamp); err == nil {
-					toolTs = parsed
-				}
-			}
-
-			// Tool use entry
-			toolUseAttrs := map[string]string{
-				"event.name":    "transcript.message",
-				"session.id":    session.SessionID,
-				"message.index": fmt.Sprintf("%d", messageIndex),
-				"message.role":  "tool_use",
-				"tool.name":     toolCall.Name,
-				"import_source": "local_jsonl",
-			}
-			if len(toolCall.Args) > 0 {
-				toolUseAttrs["tool.input"] = string(toolCall.Args)
-			}
-			toolUseLog := api.LogRecord{
-				Timestamp:      toolTs,
-				ServiceName:    SourceGemini.ServiceName(),
-				SeverityText:   "INFO",
-				SeverityNumber: 9,
-				Body:           fmt.Sprintf("Tool call: %s", toolCall.Name),
-				LogAttributes:  toolUseAttrs,
-			}
-			result.Logs = append(result.Logs, toolUseLog)
-			result.RecordCount++
-			messageIndex++
-
-			// Tool result entry (if we have a result)
-			if len(toolCall.Result) > 0 && toolCall.Result[0].FunctionResponse != nil {
-				fr := toolCall.Result[0].FunctionResponse
-				toolOutput := ""
-				if fr.Response != nil {
-					toolOutput = fr.Response.Output
-				}
-
-				toolResultAttrs := map[string]string{
-					"event.name":    "transcript.message",
-					"session.id":    session.SessionID,
-					"message.index": fmt.Sprintf("%d", messageIndex),
-					"message.role":  "tool_result",
-					"tool.name":     toolCall.Name,
-					"import_source": "local_jsonl",
-				}
-				if toolCall.Status != "" {
-					toolResultAttrs["success"] = fmt.Sprintf("%v", toolCall.Status == "success")
-				}
-				if toolOutput != "" {
-					toolResultAttrs["tool.output"] = toolOutput
-				}
-
-				toolResultLog := api.LogRecord{
-					Timestamp:      toolTs,
-					ServiceName:    SourceGemini.ServiceName(),
-					SeverityText:   "INFO",
-					SeverityNumber: 9,
-					Body:           toolOutput,
-					LogAttributes:  toolResultAttrs,
-				}
-				result.Logs = append(result.Logs, toolResultLog)
-				result.RecordCount++
-				messageIndex++
-			}
-		}
-
-		// Create metrics for gemini messages with tokens
+		records.Logs = append(records.Logs, logs...)
 		if msg.Type == "gemini" && msg.Tokens != nil {
-			tokens := msg.Tokens
-			model := msg.Model
-			var totalCost float64
+			records.Metrics = append(records.Metrics, geminiMessageMetrics(ts, msg.Model, msg.Tokens)...)
+		}
+	}
+	return records, nil
+}
 
-			if tokens.Input > 0 {
-				result.Metrics = append(result.Metrics, CreateGeminiTokenMetric(ts, model, "input", float64(tokens.Input)))
-				if cost := pricing.CalculateGeminiCostForTokenType(model, "input", int64(tokens.Input)); cost != nil {
-					totalCost += *cost
-				}
-			}
-			if tokens.Output > 0 {
-				result.Metrics = append(result.Metrics, CreateGeminiTokenMetric(ts, model, "output", float64(tokens.Output)))
-				if cost := pricing.CalculateGeminiCostForTokenType(model, "output", int64(tokens.Output)); cost != nil {
-					totalCost += *cost
-				}
-			}
-			if tokens.Cached > 0 {
-				result.Metrics = append(result.Metrics, CreateGeminiTokenMetric(ts, model, "cached", float64(tokens.Cached)))
-				if cost := pricing.CalculateGeminiCostForTokenType(model, "cache", int64(tokens.Cached)); cost != nil {
-					totalCost += *cost
-				}
-			}
-			if tokens.Thoughts > 0 {
-				result.Metrics = append(result.Metrics, CreateGeminiTokenMetric(ts, model, "thoughts", float64(tokens.Thoughts)))
-				if cost := pricing.CalculateGeminiCostForTokenType(model, "thought", int64(tokens.Thoughts)); cost != nil {
-					totalCost += *cost
-				}
-			}
-			if tokens.Tool > 0 {
-				result.Metrics = append(result.Metrics, CreateGeminiTokenMetric(ts, model, "tool", float64(tokens.Tool)))
-				// Tool tokens don't have direct cost
-			}
+// geminiMessageLogs returns the transcript logs of one message: the message
+// itself, and a tool use and tool result entry per tool call
+func geminiMessageLogs(session *GeminiSession, msg GeminiMessage, ts time.Time, index int, importSource string) []api.LogRecord {
+	attrs := map[string]string{
+		"event.name":    "transcript.message",
+		"session.id":    session.SessionID,
+		"message.id":    msg.ID,
+		"message.index": fmt.Sprintf("%d", index),
+		"message.role":  MapGeminiTypeToRole(msg.Type),
+		"import_source": importSource,
+	}
+	if msg.Model != "" {
+		attrs["model"] = msg.Model
+	}
+	if session.ProjectHash != "" {
+		attrs["project_hash"] = session.ProjectHash
+	}
+	// Token counts for the transcript display
+	if msg.Tokens != nil {
+		if msg.Tokens.Input > 0 {
+			attrs["input_tokens"] = fmt.Sprintf("%d", msg.Tokens.Input)
+		}
+		if msg.Tokens.Output > 0 {
+			attrs["output_tokens"] = fmt.Sprintf("%d", msg.Tokens.Output)
+		}
+		if msg.Tokens.Cached > 0 {
+			attrs["cache_read_input_tokens"] = fmt.Sprintf("%d", msg.Tokens.Cached)
+		}
+	}
+	logs := []api.LogRecord{{
+		Timestamp:      ts,
+		ServiceName:    SourceGemini.ServiceName(),
+		SeverityText:   MapGeminiSeverity(msg.Type),
+		SeverityNumber: MapGeminiSeverityNumber(msg.Type),
+		Body:           msg.Content,
+		LogAttributes:  attrs,
+	}}
 
-			// Add cost metric if we calculated any cost
-			if totalCost > 0 {
-				result.Metrics = append(result.Metrics, CreateGeminiCostMetric(ts, model, totalCost))
+	for _, toolCall := range msg.ToolCalls {
+		toolTs := ts // Use message timestamp as fallback
+		if toolCall.Timestamp != "" {
+			if parsed, err := ParseGeminiTime(toolCall.Timestamp); err == nil {
+				toolTs = parsed
 			}
+		}
+
+		toolUseAttrs := map[string]string{
+			"event.name":    "transcript.message",
+			"session.id":    session.SessionID,
+			"message.index": fmt.Sprintf("%d", index+len(logs)),
+			"message.role":  "tool_use",
+			"tool.name":     toolCall.Name,
+			"import_source": importSource,
+		}
+		if len(toolCall.Args) > 0 {
+			toolUseAttrs["tool.input"] = string(toolCall.Args)
+		}
+		logs = append(logs, api.LogRecord{
+			Timestamp:      toolTs,
+			ServiceName:    SourceGemini.ServiceName(),
+			SeverityText:   "INFO",
+			SeverityNumber: 9,
+			Body:           fmt.Sprintf("Tool call: %s", toolCall.Name),
+			LogAttributes:  toolUseAttrs,
+		})
+
+		if len(toolCall.Result) == 0 || toolCall.Result[0].FunctionResponse == nil {
+			continue
+		}
+		fr := toolCall.Result[0].FunctionResponse
+		toolOutput := ""
+		if fr.Response != nil {
+			toolOutput = fr.Response.Output
+		}
+		toolResultAttrs := map[string]string{
+			"event.name":    "transcript.message",
+			"session.id":    session.SessionID,
+			"message.index": fmt.Sprintf("%d", index+len(logs)),
+			"message.role":  "tool_result",
+			"tool.name":     toolCall.Name,
+			"import_source": importSource,
+		}
+		if toolCall.Status != "" {
+			toolResultAttrs["success"] = fmt.Sprintf("%v", toolCall.Status == "success")
+		}
+		if toolOutput != "" {
+			toolResultAttrs["tool.output"] = toolOutput
+		}
+		logs = append(logs, api.LogRecord{
+			Timestamp:      toolTs,
+			ServiceName:    SourceGemini.ServiceName(),
+			SeverityText:   "INFO",
+			SeverityNumber: 9,
+			Body:           toolOutput,
+			LogAttributes:  toolResultAttrs,
+		})
+	}
+	return logs
+}
+
+// geminiMessageMetrics returns the token usage and cost metrics of one
+// response. Token types are named like Gemini CLI's own telemetry (input,
+// output, cache, thought, tool), so imported and live data form the same series.
+func geminiMessageMetrics(ts time.Time, model string, tokens *GeminiTokens) []api.MetricDataPoint {
+	var metrics []api.MetricDataPoint
+	for _, t := range []struct {
+		tokenType string
+		count     int
+	}{
+		{pricing.GeminiTokenTypeInput, tokens.Input},
+		{pricing.GeminiTokenTypeOutput, tokens.Output},
+		{pricing.GeminiTokenTypeCache, tokens.Cached},
+		{pricing.GeminiTokenTypeThought, tokens.Thoughts},
+		{pricing.GeminiTokenTypeTool, tokens.Tool},
+	} {
+		if t.count > 0 {
+			metrics = append(metrics, CreateGeminiTokenMetric(ts, model, t.tokenType, float64(t.count)))
 		}
 	}
 
-	return result, nil
+	cost := pricing.CalculateGeminiCost(model, int64(tokens.Input), int64(tokens.Cached), int64(tokens.Output), int64(tokens.Thoughts))
+	if cost != nil && *cost > 0 {
+		metrics = append(metrics, CreateGeminiCostMetric(ts, model, *cost))
+	}
+	return metrics
 }
 
 // ParseGeminiTime parses various time formats used by Gemini

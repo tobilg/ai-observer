@@ -24,9 +24,9 @@ describe('useWebSocket', () => {
   beforeEach(() => {
     // Reset store
     useTelemetryStore.setState({
-      recentSpans: [],
-      recentMetrics: [],
-      recentLogs: [],
+      recentSpanTimes: [],
+      metricsReceivedCount: 0,
+      recentLogTimes: [],
     })
 
     // Disconnect any existing connection
@@ -82,20 +82,11 @@ describe('useWebSocket', () => {
         mockWs.simulateMessage({
           type: 'traces',
           timestamp: new Date().toISOString(),
-          payload: [
-            {
-              traceId: 'trace-1',
-              spanId: 'span-1',
-              spanName: 'test',
-              serviceName: 'service',
-              timestamp: new Date().toISOString(),
-              duration: 1000,
-            },
-          ],
+          payload: { count: 1, services: ['service'], timestamps: [Date.now()] },
         })
       })
 
-      expect(useTelemetryStore.getState().recentSpans).toHaveLength(1)
+      expect(useTelemetryStore.getState().recentSpanTimes).toHaveLength(1)
     })
 
     it('routes metrics messages to store', async () => {
@@ -111,19 +102,11 @@ describe('useWebSocket', () => {
         mockWs.simulateMessage({
           type: 'metrics',
           timestamp: new Date().toISOString(),
-          payload: [
-            {
-              metricName: 'test_metric',
-              serviceName: 'service',
-              metricType: 'gauge',
-              timestamp: new Date().toISOString(),
-              value: 42,
-            },
-          ],
+          payload: { count: 1, services: ['service'], timestamps: [Date.now()] },
         })
       })
 
-      expect(useTelemetryStore.getState().recentMetrics).toHaveLength(1)
+      expect(useTelemetryStore.getState().metricsReceivedCount).toBe(1)
     })
 
     it('routes logs messages to store', async () => {
@@ -139,18 +122,11 @@ describe('useWebSocket', () => {
         mockWs.simulateMessage({
           type: 'logs',
           timestamp: new Date().toISOString(),
-          payload: [
-            {
-              body: 'Test log',
-              serviceName: 'service',
-              severityText: 'INFO',
-              timestamp: new Date().toISOString(),
-            },
-          ],
+          payload: { count: 1, services: ['service'], timestamps: [Date.now()] },
         })
       })
 
-      expect(useTelemetryStore.getState().recentLogs).toHaveLength(1)
+      expect(useTelemetryStore.getState().recentLogTimes).toHaveLength(1)
     })
   })
 })
@@ -204,6 +180,31 @@ describe('webSocketManager', () => {
   })
 
   describe('disconnect', () => {
+    it('waits longer after each failed reconnect', () => {
+      vi.useFakeTimers()
+      try {
+        // A connection that fails before it opens schedules a reconnect
+        webSocketManager.connect('/ws')
+        const first = getMockWebSocket()
+        first.close(1006)
+
+        vi.advanceTimersByTime(999)
+        expect(getMockWebSocket()).toBe(first)
+        vi.advanceTimersByTime(250)
+        const second = getMockWebSocket()
+        expect(second).not.toBe(first)
+        second.close(1006)
+
+        // The second delay is twice the first
+        vi.advanceTimersByTime(1999)
+        expect(getMockWebSocket()).toBe(second)
+        vi.advanceTimersByTime(450)
+        expect(getMockWebSocket()).not.toBe(second)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
     it('closes WebSocket connection', async () => {
       webSocketManager.connect('/ws')
 
@@ -289,7 +290,7 @@ describe('webSocketManager', () => {
       const testMessage = {
         type: 'traces',
         timestamp: new Date().toISOString(),
-        payload: [],
+        payload: { count: 0, services: [], timestamps: [] },
       }
 
       mockWs.simulateMessage(testMessage)

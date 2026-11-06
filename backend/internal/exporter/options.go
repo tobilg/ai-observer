@@ -2,6 +2,8 @@ package exporter
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -16,8 +18,8 @@ const (
 	SourceCodex         SourceType = SourceType(tools.Codex)
 	SourceGemini        SourceType = SourceType(tools.Gemini)
 	SourceOpenCode      SourceType = SourceType(tools.OpenCode)
-	SourceCopilotVSCode SourceType = "copilot-chat"
-	SourceCopilotCLI    SourceType = "github-copilot"
+	SourceCopilotVSCode SourceType = SourceType(tools.CopilotVSCode)
+	SourceCopilotCLI    SourceType = SourceType(tools.CopilotCLI)
 	SourceAll           SourceType = "all" // Export-specific: no filter
 )
 
@@ -32,6 +34,25 @@ type Options struct {
 	DryRun      bool       // Preview without exporting
 	SkipConfirm bool       // Skip confirmation prompt
 	Verbose     bool       // Show detailed progress
+
+	// Out receives progress, previews and prompts and In the confirmation
+	// answer; nil means stdout and stdin
+	Out io.Writer
+	In  io.Reader
+}
+
+func (o Options) out() io.Writer {
+	if o.Out == nil {
+		return os.Stdout
+	}
+	return o.Out
+}
+
+func (o Options) in() io.Reader {
+	if o.In == nil {
+		return os.Stdin
+	}
+	return o.In
 }
 
 // ServiceName returns the ServiceName filter value for this source
@@ -75,25 +96,17 @@ func (s *Summary) IsEmpty() bool {
 
 // ParseSourceArg parses the source argument from CLI
 func ParseSourceArg(s string) (SourceType, error) {
-	switch strings.ToLower(s) {
-	case "claude-code":
-		return SourceClaude, nil
-	case "codex":
-		return SourceCodex, nil
-	case "gemini":
-		return SourceGemini, nil
-	case "opencode":
-		return SourceOpenCode, nil
-	case "copilot-chat", "github-copilot":
-		return SourceType(strings.ToLower(s)), nil
-	case "all":
+	name := strings.ToLower(s)
+	if name == string(SourceAll) {
 		return SourceAll, nil
-	default:
-		return "", fmt.Errorf("invalid source: %s (valid: claude-code, codex, gemini, opencode, copilot-chat, github-copilot, all)", s)
 	}
+	if tool, ok := tools.Parse(name); ok {
+		return SourceType(tool), nil
+	}
+	return "", fmt.Errorf("invalid source: %s (valid: %s)", s, strings.Join(ValidSources(), ", "))
 }
 
 // ValidSources returns a list of valid source names for help text
 func ValidSources() []string {
-	return []string{"claude-code", "codex", "gemini", "opencode", "copilot-chat", "github-copilot", "all"}
+	return append(tools.Names(), string(SourceAll))
 }

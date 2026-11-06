@@ -98,7 +98,7 @@ func (e *Exporter) Export(ctx context.Context, opts Options) (*Summary, error) {
 
 	// Export traces
 	if e.verbose {
-		fmt.Print("Exporting traces... ")
+		fmt.Fprint(opts.out(), "Exporting traces... ")
 	}
 	tracesCount, err := e.exportToParquet(ctx, "otel_traces", tracesPath, opts.FromDate, opts.ToDate, service)
 	if err != nil {
@@ -107,12 +107,12 @@ func (e *Exporter) Export(ctx context.Context, opts Options) (*Summary, error) {
 	summary.TracesCount = tracesCount
 	summary.OutputFiles = append(summary.OutputFiles, tracesPath)
 	if e.verbose {
-		fmt.Printf("done (%d rows)\n", tracesCount)
+		fmt.Fprintf(opts.out(), "done (%d rows)\n", tracesCount)
 	}
 
 	// Export logs
 	if e.verbose {
-		fmt.Print("Exporting logs... ")
+		fmt.Fprint(opts.out(), "Exporting logs... ")
 	}
 	logsCount, err := e.exportToParquet(ctx, "otel_logs", logsPath, opts.FromDate, opts.ToDate, service)
 	if err != nil {
@@ -121,12 +121,12 @@ func (e *Exporter) Export(ctx context.Context, opts Options) (*Summary, error) {
 	summary.LogsCount = logsCount
 	summary.OutputFiles = append(summary.OutputFiles, logsPath)
 	if e.verbose {
-		fmt.Printf("done (%d rows)\n", logsCount)
+		fmt.Fprintf(opts.out(), "done (%d rows)\n", logsCount)
 	}
 
 	// Export metrics
 	if e.verbose {
-		fmt.Print("Exporting metrics... ")
+		fmt.Fprint(opts.out(), "Exporting metrics... ")
 	}
 	metricsCount, err := e.exportToParquet(ctx, "otel_metrics", metricsPath, opts.FromDate, opts.ToDate, service)
 	if err != nil {
@@ -135,12 +135,12 @@ func (e *Exporter) Export(ctx context.Context, opts Options) (*Summary, error) {
 	summary.MetricsCount = metricsCount
 	summary.OutputFiles = append(summary.OutputFiles, metricsPath)
 	if e.verbose {
-		fmt.Printf("done (%d rows)\n", metricsCount)
+		fmt.Fprintf(opts.out(), "done (%d rows)\n", metricsCount)
 	}
 
 	// Create views database
 	if e.verbose {
-		fmt.Print("Creating views database... ")
+		fmt.Fprint(opts.out(), "Creating views database... ")
 	}
 	viewsDBPath := e.generateViewsDBPath(opts)
 	if err := e.createViewsDatabase(ctx, viewsDBPath); err != nil {
@@ -148,13 +148,13 @@ func (e *Exporter) Export(ctx context.Context, opts Options) (*Summary, error) {
 	}
 	summary.OutputFiles = append(summary.OutputFiles, viewsDBPath)
 	if e.verbose {
-		fmt.Println("done")
+		fmt.Fprintln(opts.out(), "done")
 	}
 
 	// Create ZIP archive if requested
 	if opts.CreateZip {
 		if e.verbose {
-			fmt.Print("Creating ZIP archive... ")
+			fmt.Fprint(opts.out(), "Creating ZIP archive... ")
 		}
 		zipPath := e.generateZipPath(opts)
 		if err := CreateZipArchive(opts.OutputDir, summary.OutputFiles, zipPath); err != nil {
@@ -169,7 +169,7 @@ func (e *Exporter) Export(ctx context.Context, opts Options) (*Summary, error) {
 		// Update output files to only include ZIP
 		summary.OutputFiles = []string{zipPath}
 		if e.verbose {
-			fmt.Println("done")
+			fmt.Fprintln(opts.out(), "done")
 		}
 	}
 
@@ -195,16 +195,16 @@ func (e *Exporter) generateZipPath(opts Options) string {
 	return filepath.Join(opts.OutputDir, filename)
 }
 
-// PrintPreview prints the export preview to stdout
+// PrintPreview prints the export preview to opts.Out
 func PrintPreview(summary *Summary, opts Options) {
-	fmt.Println()
-	fmt.Println("Export Preview")
-	fmt.Println("==============")
+	fmt.Fprintln(opts.out())
+	fmt.Fprintln(opts.out(), "Export Preview")
+	fmt.Fprintln(opts.out(), "==============")
 
 	if opts.FromFiles {
-		fmt.Printf("Source: %s (from files)\n", opts.Source)
+		fmt.Fprintf(opts.out(), "Source: %s (from files)\n", opts.Source)
 	} else {
-		fmt.Printf("Source: %s (from database)\n", opts.Source)
+		fmt.Fprintf(opts.out(), "Source: %s (from database)\n", opts.Source)
 	}
 
 	if opts.FromDate != nil || opts.ToDate != nil {
@@ -216,43 +216,43 @@ func PrintPreview(summary *Summary, opts Options) {
 		if opts.ToDate != nil {
 			to = opts.ToDate.Format("2006-01-02")
 		}
-		fmt.Printf("Time range: %s to %s\n", from, to)
+		fmt.Fprintf(opts.out(), "Time range: %s to %s\n", from, to)
 	} else {
-		fmt.Println("Time range: all")
+		fmt.Fprintln(opts.out(), "Time range: all")
 	}
 
-	fmt.Println()
-	fmt.Println("Data to export:")
-	fmt.Printf("  Traces:  %d spans\n", summary.TracesCount)
-	fmt.Printf("  Logs:    %d records\n", summary.LogsCount)
-	fmt.Printf("  Metrics: %d data points\n", summary.MetricsCount)
+	fmt.Fprintln(opts.out())
+	fmt.Fprintln(opts.out(), "Data to export:")
+	fmt.Fprintf(opts.out(), "  Traces:  %d spans\n", summary.TracesCount)
+	fmt.Fprintf(opts.out(), "  Logs:    %d records\n", summary.LogsCount)
+	fmt.Fprintf(opts.out(), "  Metrics: %d data points\n", summary.MetricsCount)
 
-	fmt.Println()
-	fmt.Printf("Output directory: %s\n", opts.OutputDir)
-	fmt.Println("Files to create:")
-	fmt.Println("  - traces.parquet")
-	fmt.Println("  - logs.parquet")
-	fmt.Println("  - metrics.parquet")
-	fmt.Printf("  - ai-observer-export-%s-%s.duckdb\n", opts.Source, opts.DateRangeString())
+	fmt.Fprintln(opts.out())
+	fmt.Fprintf(opts.out(), "Output directory: %s\n", opts.OutputDir)
+	fmt.Fprintln(opts.out(), "Files to create:")
+	fmt.Fprintln(opts.out(), "  - traces.parquet")
+	fmt.Fprintln(opts.out(), "  - logs.parquet")
+	fmt.Fprintln(opts.out(), "  - metrics.parquet")
+	fmt.Fprintf(opts.out(), "  - ai-observer-export-%s-%s.duckdb\n", opts.Source, opts.DateRangeString())
 
 	if opts.CreateZip {
-		fmt.Printf("  - ai-observer-export-%s-%s.zip (all files combined)\n", opts.Source, opts.DateRangeString())
+		fmt.Fprintf(opts.out(), "  - ai-observer-export-%s-%s.zip (all files combined)\n", opts.Source, opts.DateRangeString())
 	}
 }
 
-// PrintResult prints the export result to stdout
+// PrintResult prints the export result to opts.Out
 func PrintResult(summary *Summary, opts Options) {
-	fmt.Println()
-	fmt.Println("Export complete!")
-	fmt.Printf("Output: %s (%d files, %s)\n", opts.OutputDir, len(summary.OutputFiles), formatSize(summary.TotalSize))
+	fmt.Fprintln(opts.out())
+	fmt.Fprintln(opts.out(), "Export complete!")
+	fmt.Fprintf(opts.out(), "Output: %s (%d files, %s)\n", opts.OutputDir, len(summary.OutputFiles), formatSize(summary.TotalSize))
 }
 
 // ConfirmExport prompts the user for confirmation
-func ConfirmExport() bool {
-	fmt.Println()
-	fmt.Print("Continue? [y/N] ")
+func ConfirmExport(opts Options) bool {
+	fmt.Fprintln(opts.out())
+	fmt.Fprint(opts.out(), "Continue? [y/N] ")
 
-	reader := bufio.NewReader(os.Stdin)
+	reader := bufio.NewReader(opts.in())
 	response, err := reader.ReadString('\n')
 	if err != nil {
 		return false
@@ -279,7 +279,7 @@ func Run(ctx context.Context, store *storage.DuckDBStore, opts Options) error {
 
 	// Check if there's anything to export
 	if summary.IsEmpty() {
-		fmt.Println("No data found to export.")
+		fmt.Fprintln(opts.out(), "No data found to export.")
 		return nil
 	}
 
@@ -288,20 +288,20 @@ func Run(ctx context.Context, store *storage.DuckDBStore, opts Options) error {
 
 	// If dry-run, stop here
 	if opts.DryRun {
-		fmt.Println()
-		fmt.Println("Dry run - no files created.")
+		fmt.Fprintln(opts.out())
+		fmt.Fprintln(opts.out(), "Dry run - no files created.")
 		return nil
 	}
 
 	// Ask for confirmation unless --yes flag is set
 	if !opts.SkipConfirm {
-		if !ConfirmExport() {
-			fmt.Println("Aborted.")
+		if !ConfirmExport(opts) {
+			fmt.Fprintln(opts.out(), "Aborted.")
 			return nil
 		}
 	}
 
-	fmt.Println()
+	fmt.Fprintln(opts.out())
 
 	// Execute export
 	result, err := exporter.Export(ctx, opts)

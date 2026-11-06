@@ -22,6 +22,7 @@ import {
   useSidebar,
 } from '@/components/ui/sidebar'
 import { useDashboardStore } from '@/stores/dashboardStore'
+import { useShallow } from 'zustand/react/shallow'
 import { DashboardDialog } from '@/components/dashboard/DashboardDialog'
 import { DeleteDashboardDialog } from '@/components/dashboard/DeleteDashboardDialog'
 import { toast } from 'sonner'
@@ -48,7 +49,18 @@ export function SidebarDashboards() {
     renameDashboard,
     deleteDashboardById,
     setAsDefault,
-  } = useDashboardStore()
+  } = useDashboardStore(
+    useShallow((s) => ({
+      dashboards: s.dashboards,
+      dashboardsLoading: s.dashboardsLoading,
+      loadDashboards: s.loadDashboards,
+      createNewDashboard: s.createNewDashboard,
+      importDashboard: s.importDashboard,
+      renameDashboard: s.renameDashboard,
+      deleteDashboardById: s.deleteDashboardById,
+      setAsDefault: s.setAsDefault,
+    }))
+  )
 
   // Load dashboards on mount
   useEffect(() => {

@@ -1,10 +1,10 @@
 package otlp
 
 import (
-	"strconv"
 	"time"
 
 	"github.com/tobilg/ai-observer/internal/api"
+	"github.com/tobilg/ai-observer/internal/attrval"
 	"github.com/tobilg/ai-observer/internal/pricing"
 )
 
@@ -40,11 +40,11 @@ func ExtractCodexMetrics(
 	}
 
 	// Extract token counts
-	inputTokens := parseIntAttr(logAttrs, "input_token_count")
-	outputTokens := parseIntAttr(logAttrs, "output_token_count")
-	cachedTokens := parseIntAttr(logAttrs, "cached_token_count")
-	reasoningTokens := parseIntAttr(logAttrs, "reasoning_token_count")
-	toolTokens := parseIntAttr(logAttrs, "tool_token_count")
+	inputTokens := int64(attrval.Int(logAttrs, "input_token_count"))
+	outputTokens := int64(attrval.Int(logAttrs, "output_token_count"))
+	cachedTokens := int64(attrval.Int(logAttrs, "cached_token_count"))
+	reasoningTokens := int64(attrval.Int(logAttrs, "reasoning_token_count"))
+	toolTokens := int64(attrval.Int(logAttrs, "tool_token_count"))
 
 	// If no tokens at all, skip
 	if inputTokens == 0 && outputTokens == 0 && cachedTokens == 0 && reasoningTokens == 0 && toolTokens == 0 {
@@ -135,14 +135,4 @@ func ExtractCodexMetrics(
 // Delegates to the pricing package for actual calculation.
 func CalculateCodexCost(model string, inputTokens, cachedTokens, outputTokens int64) *float64 {
 	return pricing.CalculateCodexCost(model, inputTokens, cachedTokens, outputTokens)
-}
-
-// parseIntAttr parses an integer attribute from a string map
-func parseIntAttr(attrs map[string]string, key string) int64 {
-	if val, ok := attrs[key]; ok {
-		if i, err := strconv.ParseInt(val, 10, 64); err == nil {
-			return i
-		}
-	}
-	return 0
 }

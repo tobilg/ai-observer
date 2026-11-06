@@ -12,12 +12,18 @@ import (
 type Store interface {
 	GetImportState(ctx context.Context, source, filePath string) (*storage.ImportState, error)
 	SetWatchFields(ctx context.Context, source, filePath string, byteOffset int64, messageCount int, parserState string) error
-	InsertWatcherBatch(ctx context.Context, logs []api.LogRecord, metrics []api.MetricDataPoint, spans []api.Span, state *storage.ImportState) error
+	InsertWatcherBatch(ctx context.Context, logs []api.LogRecord, metrics []api.MetricDataPoint, spans []api.Span, state *storage.ImportState, replace bool) error
 }
 
 // IncrementalParser processes new data from a file since the last known state.
 type IncrementalParser interface {
 	ParseIncremental(ctx context.Context, filePath string, state *storage.ImportState) (*IncrementalResult, error)
+}
+
+// endMessageCounter is implemented by incremental parsers that resume by
+// message count instead of byte offset (Gemini rewrites its session files).
+type endMessageCounter interface {
+	EndMessageCount(filePath string) (int, error)
 }
 
 // IncrementalResult contains the parsed records from an incremental parse.

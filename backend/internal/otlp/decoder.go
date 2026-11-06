@@ -40,10 +40,10 @@ func GetDecoder(contentType string) (Decoder, error) {
 // and returns the appropriate decoder along with a new reader for the body.
 // This is useful when the Content-Type header doesn't match the actual content.
 // Also returns the detected format for logging purposes.
-func GetDecoderWithDetection(r io.Reader, contentType string) (Decoder, io.Reader, Format, error) {
+func GetDecoderWithDetection(r io.Reader, contentType string) (Decoder, io.Reader, error) {
 	format, newReader, err := DetectFormat(r)
 	if err != nil {
-		return nil, nil, FormatUnknown, fmt.Errorf("detecting format: %w", err)
+		return nil, nil, fmt.Errorf("detecting format: %w", err)
 	}
 
 	// Log if detected format differs from Content-Type header
@@ -63,11 +63,11 @@ func GetDecoderWithDetection(r io.Reader, contentType string) (Decoder, io.Reade
 		var err error
 		decoder, err = GetDecoder(contentType)
 		if err != nil {
-			return nil, nil, format, err
+			return nil, nil, err
 		}
 	}
 
-	return decoder, newReader, format, nil
+	return decoder, newReader, nil
 }
 
 // getExpectedFormat returns the expected format based on Content-Type header

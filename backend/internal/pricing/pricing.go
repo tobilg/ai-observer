@@ -21,6 +21,16 @@ type ModelPricing struct {
 	LongContextPricing     *ModelPricing
 }
 
+// forPromptSize returns the pricing that applies to a request whose prompt has
+// promptTokens tokens: the long-context tier above its threshold, otherwise p.
+// What counts toward the prompt differs by provider, so callers compute it.
+func (p *ModelPricing) forPromptSize(promptTokens int64) *ModelPricing {
+	if p.LongContextPricing != nil && p.LongContextThreshold > 0 && promptTokens > p.LongContextThreshold {
+		return p.LongContextPricing
+	}
+	return p
+}
+
 // ModelEntry represents the JSON format for a model's pricing (per million tokens)
 type ModelEntry struct {
 	Aliases               []string          `json:"aliases,omitempty"`
@@ -43,7 +53,9 @@ type LongContextEntry struct {
 
 // PricingData represents the root structure of a pricing JSON file
 type PricingData struct {
-	Provider    Provider              `json:"provider"`
+	Provider Provider `json:"provider"`
+	// Source credits where the prices come from, if not from the providers
+	Source      string                `json:"source,omitempty"`
 	LastUpdated string                `json:"lastUpdated"`
 	Models      map[string]ModelEntry `json:"models"`
 }

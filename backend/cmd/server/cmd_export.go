@@ -65,7 +65,7 @@ Options:
 		printFlags(fs)
 	}
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(reorderArgs(fs, args)); err != nil {
 		return nil, err
 	}
 
@@ -74,7 +74,7 @@ Options:
 }
 
 func runExport(args []string) error {
-	flags, err := parseExportFlags(reorderArgs(args))
+	flags, err := parseExportFlags(args)
 	if err != nil {
 		return err
 	}

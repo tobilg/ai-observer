@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -28,6 +29,25 @@ type Options struct {
 	To          time.Time
 	Service     string // Optional filter by service name
 	SkipConfirm bool   // Skip confirmation prompt (--yes flag)
+
+	// Out receives summaries and prompts and In the confirmation answer;
+	// nil means stdout and stdin
+	Out io.Writer
+	In  io.Reader
+}
+
+func (o Options) out() io.Writer {
+	if o.Out == nil {
+		return os.Stdout
+	}
+	return o.Out
+}
+
+func (o Options) in() io.Reader {
+	if o.In == nil {
+		return os.Stdin
+	}
+	return o.In
 }
 
 // Summary contains the results of a delete operation
@@ -124,61 +144,64 @@ func Execute(ctx context.Context, store *storage.DuckDBStore, opts Options) (*Su
 	return summary, nil
 }
 
-// PrintSummary prints the delete summary to stdout
+// PrintSummary prints the delete summary to opts.Out
 func PrintSummary(summary *Summary, opts Options) {
-	fmt.Println("Delete Summary")
-	fmt.Println("==============")
-	fmt.Printf("Time range: %s to %s\n", opts.From.Format("2006-01-02"), opts.To.Format("2006-01-02"))
+	out := opts.out()
+	fmt.Fprintln(out, "Delete Summary")
+	fmt.Fprintln(out, "==============")
+	fmt.Fprintf(out, "Time range: %s to %s\n", opts.From.Format("2006-01-02"), opts.To.Format("2006-01-02"))
 
 	if opts.Service != "" {
-		fmt.Printf("Service: %s\n", opts.Service)
+		fmt.Fprintf(out, "Service: %s\n", opts.Service)
 	} else {
-		fmt.Println("Service: all")
+		fmt.Fprintln(out, "Service: all")
 	}
 
-	fmt.Println()
-	fmt.Println("Records to be deleted:")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Records to be deleted:")
 
 	switch opts.Scope {
 	case ScopeLogs:
-		fmt.Printf("  Logs:    %d\n", summary.LogCount)
+		fmt.Fprintf(out, "  Logs:    %d\n", summary.LogCount)
 	case ScopeMetrics:
-		fmt.Printf("  Metrics: %d\n", summary.MetricCount)
+		fmt.Fprintf(out, "  Metrics: %d\n", summary.MetricCount)
 	case ScopeTraces:
-		fmt.Printf("  Traces:  %d (spans: %d)\n", summary.TraceCount, summary.SpanCount)
+		fmt.Fprintf(out, "  Traces:  %d (spans: %d)\n", summary.TraceCount, summary.SpanCount)
 	case ScopeAll:
-		fmt.Printf("  Logs:    %d\n", summary.LogCount)
-		fmt.Printf("  Metrics: %d\n", summary.MetricCount)
-		fmt.Printf("  Traces:  %d (spans: %d)\n", summary.TraceCount, summary.SpanCount)
+		fmt.Fprintf(out, "  Logs:    %d\n", summary.LogCount)
+		fmt.Fprintf(out, "  Metrics: %d\n", summary.MetricCount)
+		fmt.Fprintf(out, "  Traces:  %d (spans: %d)\n", summary.TraceCount, summary.SpanCount)
 	}
 }
 
-// PrintResult prints the deletion result to stdout
+// PrintResult prints the deletion result to opts.Out
 func PrintResult(summary *Summary, opts Options) {
-	fmt.Println()
-	fmt.Println("Deletion complete:")
+	out := opts.out()
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Deletion complete:")
 
 	switch opts.Scope {
 	case ScopeLogs:
-		fmt.Printf("  Logs deleted:    %d\n", summary.LogCount)
+		fmt.Fprintf(out, "  Logs deleted:    %d\n", summary.LogCount)
 	case ScopeMetrics:
-		fmt.Printf("  Metrics deleted: %d\n", summary.MetricCount)
+		fmt.Fprintf(out, "  Metrics deleted: %d\n", summary.MetricCount)
 	case ScopeTraces:
-		fmt.Printf("  Spans deleted:   %d\n", summary.SpanCount)
+		fmt.Fprintf(out, "  Spans deleted:   %d\n", summary.SpanCount)
 	case ScopeAll:
-		fmt.Printf("  Logs deleted:    %d\n", summary.LogCount)
-		fmt.Printf("  Metrics deleted: %d\n", summary.MetricCount)
-		fmt.Printf("  Spans deleted:   %d\n", summary.SpanCount)
+		fmt.Fprintf(out, "  Logs deleted:    %d\n", summary.LogCount)
+		fmt.Fprintf(out, "  Metrics deleted: %d\n", summary.MetricCount)
+		fmt.Fprintf(out, "  Spans deleted:   %d\n", summary.SpanCount)
 	}
 }
 
-// ConfirmDelete prompts the user for confirmation
-func ConfirmDelete() bool {
-	fmt.Println()
-	fmt.Println("This action cannot be undone.")
-	fmt.Print("Continue? [y/N] ")
+// ConfirmDelete asks for confirmation on opts.In
+func ConfirmDelete(opts Options) bool {
+	out := opts.out()
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "This action cannot be undone.")
+	fmt.Fprint(out, "Continue? [y/N] ")
 
-	reader := bufio.NewReader(os.Stdin)
+	reader := bufio.NewReader(opts.in())
 	response, err := reader.ReadString('\n')
 	if err != nil {
 		return false
@@ -203,7 +226,7 @@ func Run(ctx context.Context, store *storage.DuckDBStore, opts Options) error {
 
 	// Check if there's anything to delete
 	if summary.IsEmpty() {
-		fmt.Println("No records found in the specified time range.")
+		fmt.Fprintln(opts.out(), "No records found in the specified time range.")
 		return nil
 	}
 
@@ -212,8 +235,8 @@ func Run(ctx context.Context, store *storage.DuckDBStore, opts Options) error {
 
 	// Ask for confirmation unless --yes flag is set
 	if !opts.SkipConfirm {
-		if !ConfirmDelete() {
-			fmt.Println("Aborted.")
+		if !ConfirmDelete(opts) {
+			fmt.Fprintln(opts.out(), "Aborted.")
 			return nil
 		}
 	}
@@ -226,6 +249,10 @@ func Run(ctx context.Context, store *storage.DuckDBStore, opts Options) error {
 
 	// Print result
 	PrintResult(result, opts)
+
+	// Deleting keeps the import state, so a plain import skips the files
+	fmt.Fprintln(opts.out(), "\nImported session files stay marked as imported. To restore their records,")
+	fmt.Fprintln(opts.out(), "run `ai-observer import <tool> --force`: it replaces each file's remaining records.")
 
 	return nil
 }

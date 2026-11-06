@@ -2,6 +2,7 @@ package deleter
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,7 +70,7 @@ func TestParseScope(t *testing.T) {
 		{"metrics", ScopeMetrics, false},
 		{"traces", ScopeTraces, false},
 		{"all", ScopeAll, false},
-		{"LOGS", ScopeLogs, false},   // case insensitive
+		{"LOGS", ScopeLogs, false},     // case insensitive
 		{"Traces", ScopeTraces, false}, // case insensitive
 		{"invalid", "", true},
 		{"", "", true},
@@ -666,5 +667,18 @@ func TestRunWithUnknownScope(t *testing.T) {
 	err := Run(ctx, store, opts)
 	if err == nil {
 		t.Error("expected error for unknown scope in Run")
+	}
+}
+
+func TestConfirmDeleteReadsConfiguredInput(t *testing.T) {
+	var out strings.Builder
+	if !ConfirmDelete(Options{Out: &out, In: strings.NewReader("yes\n")}) {
+		t.Error("expected confirmation for \"yes\"")
+	}
+	if !strings.Contains(out.String(), "cannot be undone") {
+		t.Errorf("warning not written to Out: %q", out.String())
+	}
+	if ConfirmDelete(Options{Out: &out, In: strings.NewReader("no\n")}) {
+		t.Error("expected no confirmation for \"no\"")
 	}
 }

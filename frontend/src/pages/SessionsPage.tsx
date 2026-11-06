@@ -3,8 +3,8 @@ import { useSearchParams, useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Select } from '@/components/ui/select'
-import { DateRangePicker } from '@/components/ui/date-range-picker'
-import { DataPagination } from '@/components/ui/data-pagination'
+import { DateRangePicker } from '@/components/common/date-range-picker'
+import { DataPagination } from '@/components/common/data-pagination'
 import { api } from '@/lib/api'
 import { isAbortError } from '@/lib/errors'
 import { formatTimestamp, cn } from '@/lib/utils'
@@ -36,7 +36,17 @@ export function SessionsPage() {
   })
 
   // Pagination state with localStorage persistence
-  const { page, pageSize, offset, setPage, setPageSize, resetToFirstPage } = usePagination({
+  const {
+    page,
+    pageSize,
+    cursor,
+    hasNext,
+    setNextCursor,
+    nextPage,
+    previousPage,
+    setPageSize,
+    resetToFirstPage,
+  } = usePagination({
     defaultPageSize: 20,
     storageKey: PAGE_SIZE_STORAGE_KEY,
   })
@@ -65,10 +75,11 @@ export function SessionsPage() {
           from: fromTime?.toISOString(),
           to: toTime.toISOString(),
           limit: pageSize,
-          offset,
+          cursor,
         }, { signal: abortController.signal })
         setSessions(data.sessions ?? [])
         setTotal(data.total ?? 0)
+        setNextCursor(data.nextCursor)
       } catch (err) {
         if (isAbortError(err)) {
           return
@@ -84,7 +95,7 @@ export function SessionsPage() {
     fetchSessions()
 
     return () => abortController.abort()
-  }, [service, fromTime, toTime, pageSize, offset])
+  }, [service, fromTime, toTime, pageSize, cursor, setNextCursor])
 
   const handleTimeSelectionChange = (selection: TimeSelection) => {
     resetToFirstPage()
@@ -102,8 +113,8 @@ export function SessionsPage() {
     setSearchParams(params)
   }
 
-  const handleSessionClick = (sessionId: string) => {
-    navigate(`/sessions/${encodeURIComponent(sessionId)}`)
+  const handleSessionClick = (session: Session) => {
+    navigate(`/sessions/${encodeURIComponent(session.sessionId)}`)
   }
 
   const formatDuration = (startTime: string, lastTime: string) => {
@@ -183,18 +194,19 @@ export function SessionsPage() {
                   const ServiceIcon = getServiceIcon(session.serviceName)
                   return (
                     <div
-                      key={session.sessionId}
+                      // A session ID can be listed once per service
+                      key={`${session.serviceName}:${session.sessionId}`}
                       className={cn(
                         'flex items-center gap-4 p-4 rounded-lg border cursor-pointer',
                         'hover:bg-accent/50 transition-colors'
                       )}
-                      onClick={() => handleSessionClick(session.sessionId)}
+                      onClick={() => handleSessionClick(session)}
                       role="button"
                       tabIndex={0}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' || e.key === ' ') {
                           e.preventDefault()
-                          handleSessionClick(session.sessionId)
+                          handleSessionClick(session)
                         }
                       }}
                     >
@@ -241,8 +253,12 @@ export function SessionsPage() {
               <DataPagination
                 page={page}
                 pageSize={pageSize}
+                itemCount={sessions.length}
                 total={total}
-                onPageChange={setPage}
+                hasNext={hasNext}
+                onFirst={resetToFirstPage}
+                onPrevious={previousPage}
+                onNext={nextPage}
                 onPageSizeChange={setPageSize}
               />
             </>

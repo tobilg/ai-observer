@@ -1,22 +1,16 @@
 package pricing
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"regexp"
 	"strings"
-	"time"
 )
 
-const (
-	// GitHubModelsCatalogURL is the REST endpoint for the GitHub Models catalog.
-	GitHubModelsCatalogURL = "https://models.github.ai/catalog/models"
-	// GitHubModelsCatalogAPIVersion is the API version used for the embedded catalog snapshot.
-	GitHubModelsCatalogAPIVersion = "2026-03-10"
-)
+// The embedded GitHub Models catalog snapshot maps the names GitHub Models
+// listed (for example "OpenAI GPT-4.1") to priced models. GitHub retired
+// GitHub Models, catalog API included, on July 30, 2026, so the snapshot is
+// final; Copilot prices and model IDs now come from models.dev (models_dev.go).
 
 var (
 	githubModelsParentheticalPattern = regexp.MustCompile(`\([^)]*\)`)
@@ -35,7 +29,7 @@ var (
 	}
 )
 
-// GitHubModelsCatalogData represents the embedded GitHub Models catalog snapshot.
+// GitHubModelsCatalogData represents the embedded GitHub Models catalog snapshot
 type GitHubModelsCatalogData struct {
 	Source      string                     `json:"source"`
 	APIVersion  string                     `json:"apiVersion"`
@@ -49,53 +43,6 @@ type GitHubModelsCatalogEntry struct {
 	Name      string `json:"name"`
 	Publisher string `json:"publisher"`
 	Version   string `json:"version"`
-}
-
-// GitHubModelsCatalogFetcher fetches the current catalog from GitHub's REST API.
-type GitHubModelsCatalogFetcher struct {
-	httpClient *http.Client
-}
-
-// NewGitHubModelsCatalogFetcher creates a catalog fetcher with a bounded timeout.
-func NewGitHubModelsCatalogFetcher() *GitHubModelsCatalogFetcher {
-	return &GitHubModelsCatalogFetcher{
-		httpClient: &http.Client{Timeout: 30 * time.Second},
-	}
-}
-
-// Fetch returns the current GitHub Models catalog. The token is optional for callers
-// that run in an environment where the endpoint is accessible without auth.
-func (f *GitHubModelsCatalogFetcher) Fetch(ctx context.Context, token string) ([]GitHubModelsCatalogEntry, error) {
-	if f == nil || f.httpClient == nil {
-		f = NewGitHubModelsCatalogFetcher()
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, GitHubModelsCatalogURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("creating GitHub Models catalog request: %w", err)
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", GitHubModelsCatalogAPIVersion)
-	if token = strings.TrimSpace(token); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-
-	resp, err := f.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetching GitHub Models catalog: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("GitHub Models catalog returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-
-	var entries []GitHubModelsCatalogEntry
-	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
-		return nil, fmt.Errorf("decoding GitHub Models catalog: %w", err)
-	}
-	return entries, nil
 }
 
 func loadGitHubModelsCatalog(filename string) (*GitHubModelsCatalogData, error) {

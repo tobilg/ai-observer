@@ -181,11 +181,9 @@ func TestGitHubModelsCatalogLoaded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to load GitHub Models catalog: %v", err)
 	}
-	if catalog.Source != GitHubModelsCatalogURL {
-		t.Errorf("Expected catalog source %q, got %q", GitHubModelsCatalogURL, catalog.Source)
-	}
-	if catalog.APIVersion != GitHubModelsCatalogAPIVersion {
-		t.Errorf("Expected catalog API version %q, got %q", GitHubModelsCatalogAPIVersion, catalog.APIVersion)
+	// The final snapshot: GitHub Models was retired on July 30, 2026
+	if catalog.Source != "https://models.github.ai/catalog/models" || catalog.APIVersion != "2026-03-10" {
+		t.Errorf("catalog source %q, API version %q", catalog.Source, catalog.APIVersion)
 	}
 	if len(catalog.Models) != 37 {
 		t.Fatalf("Expected 37 GitHub Models catalog entries, got %d", len(catalog.Models))

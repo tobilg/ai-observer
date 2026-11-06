@@ -29,6 +29,7 @@ export function RowSeparator({ gridRow, onClick }: RowSeparatorProps) {
       {/* The centered button - always visible but subtle */}
       <button
         type="button"
+        aria-label="Add row"
         className={cn(
           'relative z-10 flex items-center gap-1 px-2.5 py-1 rounded-full',
           'bg-muted border border-dashed border-border text-xs text-muted-foreground',

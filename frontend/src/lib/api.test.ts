@@ -25,8 +25,6 @@ describe('api', () => {
     it('fetches stats from /api/stats', async () => {
       const mockStats = {
         traceCount: 100,
-        rawTraceCount: 100,
-        codexOperationCount: 0,
         spanCount: 500,
         logCount: 200,
         metricCount: 1000,
@@ -42,11 +40,49 @@ describe('api', () => {
       expect(result).toEqual(mockStats)
     })
 
+    it('passes a time range to /api/stats', async () => {
+      mockFetchResponse({})
+
+      await api.getStats({ from: '2026-01-01T00:00:00.000Z', to: '2026-01-02T00:00:00.000Z' })
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        '/api/stats?from=2026-01-01T00%3A00%3A00.000Z&to=2026-01-02T00%3A00%3A00.000Z',
+        expect.anything()
+      )
+    })
+
     it('throws on error response', async () => {
       // 500 errors are retryable, so mock all 6 retry attempts
       mockFetchErrorWithRetries(500)
 
       await expect(api.getStats()).rejects.toThrow('HTTP error! status: 500')
+    })
+
+    it('reports a request that times out as an error, not an abort', async () => {
+      vi.useFakeTimers()
+      try {
+        vi.mocked(global.fetch).mockImplementationOnce((_url, init) => new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            const error = new Error('The operation was aborted')
+            error.name = 'AbortError'
+            reject(error)
+          })
+        }))
+
+        const result = api.getStats({}, { signal: new AbortController().signal })
+        const assertion = expect(result).rejects.toThrow('Request timed out')
+        await vi.advanceTimersByTimeAsync(30000)
+        await assertion
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('does not retry a query that timed out on the server', async () => {
+      mockFetchResponse({}, false, 504)
+
+      await expect(api.getStats()).rejects.toThrow('HTTP error! status: 504')
+      expect(global.fetch).toHaveBeenCalledTimes(1)
     })
   })
 
@@ -576,7 +612,89 @@ describe('api', () => {
     })
   })
 
+  describe('request deduplication', () => {
+    const series = { series: [] }
+
+    it('keeps a shared request running when the first caller aborts', async () => {
+      let resolveFetch: (value: Response) => void = () => {}
+      vi.mocked(global.fetch).mockImplementationOnce(
+        () => new Promise<Response>((resolve) => { resolveFetch = resolve })
+      )
+      const first = new AbortController()
+      const params = { name: 'dedup.abort', from: 'a', to: 'b' }
+
+      const firstRequest = api.getMetricSeries(params, { signal: first.signal })
+      const secondRequest = api.getMetricSeries(params)
+      first.abort()
+
+      await expect(firstRequest).rejects.toMatchObject({ name: 'AbortError' })
+      resolveFetch({ ok: true, status: 200, json: async () => series } as Response)
+      await expect(secondRequest).resolves.toEqual(series)
+      expect(global.fetch).toHaveBeenCalledTimes(1)
+    })
+
+    it('aborts the shared request when every caller aborted', async () => {
+      let fetchSignal: AbortSignal | undefined
+      vi.mocked(global.fetch).mockImplementationOnce((_url, init) => {
+        fetchSignal = init?.signal ?? undefined
+        return new Promise<Response>(() => {})
+      })
+      const a = new AbortController()
+      const b = new AbortController()
+      const params = { name: 'dedup.all', from: 'a', to: 'b' }
+
+      const requests = [
+        api.getMetricSeries(params, { signal: a.signal }),
+        api.getMetricSeries(params, { signal: b.signal }),
+      ]
+      a.abort()
+      expect(fetchSignal?.aborted).toBe(false)
+      b.abort()
+
+      await Promise.allSettled(requests)
+      expect(fetchSignal?.aborted).toBe(true)
+    })
+  })
+
   describe('error handling', () => {
+    it('explains how to sign in on 401', async () => {
+      mockFetchResponse({}, false, 401)
+
+      await expect(api.getStats()).rejects.toThrow('?token=')
+      expect(global.fetch).toHaveBeenCalledTimes(1)
+    })
+
+    it('includes the server message of a failed change', async () => {
+      mockFetchResponse({ error: 'Bad Request', message: 'name is required' }, false, 400)
+
+      await expect(api.createDashboard({ name: '' })).rejects.toThrow('HTTP error! status: 400: name is required')
+    })
+
+    it('includes the server message of a failed query', async () => {
+      mockFetchResponse(
+        { error: 'Bad Request', message: 'invalid cursor: pass the nextCursor of the previous page' },
+        false,
+        400
+      )
+
+      await expect(api.getLogs({ cursor: 'stale' })).rejects.toThrow(
+        'HTTP error! status: 400: invalid cursor: pass the nextCursor of the previous page'
+      )
+      expect(global.fetch).toHaveBeenCalledTimes(1)
+    })
+
+    it('includes the server message once retries are used up', async () => {
+      for (let i = 0; i < 6; i++) {
+        mockFetchResponse({ error: 'Internal Server Error', message: 'database is locked' }, false, 500)
+      }
+      vi.useFakeTimers()
+      const request = api.getStats().catch((err: Error) => err)
+      await vi.runAllTimersAsync()
+      vi.useRealTimers()
+
+      expect(await request).toHaveProperty('message', 'HTTP error! status: 500: database is locked')
+    })
+
     it('throws on 404', async () => {
       mockFetchResponse({}, false, 404)
 

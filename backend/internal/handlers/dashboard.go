@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -10,11 +11,27 @@ import (
 	"github.com/tobilg/ai-observer/internal/storage"
 )
 
+// decodeBody decodes a JSON request body into v. It answers 413 for a body
+// over the API limit and 400 for an invalid one, and then returns false.
+func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
+	err := json.NewDecoder(r.Body).Decode(v)
+	if err == nil {
+		return true
+	}
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		api.WriteError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("request body exceeds the %d byte limit", tooLarge.Limit))
+	} else {
+		api.WriteError(w, http.StatusBadRequest, "invalid request body")
+	}
+	return false
+}
+
 // ListDashboards handles GET /api/dashboards
 func (h *Handlers) ListDashboards(w http.ResponseWriter, r *http.Request) {
 	dashboards, err := h.store.GetDashboards(r.Context())
 	if err != nil {
-		api.WriteError(w, http.StatusInternalServerError, err.Error())
+		api.WriteInternalError(w, "failed to list dashboards", err)
 		return
 	}
 
@@ -28,8 +45,7 @@ func (h *Handlers) ListDashboards(w http.ResponseWriter, r *http.Request) {
 // CreateDashboard handles POST /api/dashboards
 func (h *Handlers) CreateDashboard(w http.ResponseWriter, r *http.Request) {
 	var req api.CreateDashboardRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeBody(w, r, &req) {
 		return
 	}
 
@@ -46,7 +62,7 @@ func (h *Handlers) CreateDashboard(w http.ResponseWriter, r *http.Request) {
 
 	dashboard, err := h.store.CreateDashboard(r.Context(), &req)
 	if err != nil {
-		api.WriteError(w, http.StatusInternalServerError, err.Error())
+		api.WriteInternalError(w, "failed to create dashboard", err)
 		return
 	}
 
@@ -57,7 +73,7 @@ func (h *Handlers) CreateDashboard(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) GetDefaultDashboard(w http.ResponseWriter, r *http.Request) {
 	dashboard, err := h.store.GetDefaultDashboard(r.Context())
 	if err != nil {
-		api.WriteError(w, http.StatusInternalServerError, err.Error())
+		api.WriteInternalError(w, "failed to load default dashboard", err)
 		return
 	}
 
@@ -79,7 +95,7 @@ func (h *Handlers) GetDashboard(w http.ResponseWriter, r *http.Request) {
 
 	dashboard, err := h.store.GetDashboardWithWidgets(r.Context(), id)
 	if err != nil {
-		api.WriteError(w, http.StatusInternalServerError, err.Error())
+		api.WriteInternalError(w, "failed to load dashboard", err)
 		return
 	}
 
@@ -100,8 +116,7 @@ func (h *Handlers) UpdateDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req api.UpdateDashboardRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeBody(w, r, &req) {
 		return
 	}
 
@@ -117,7 +132,7 @@ func (h *Handlers) UpdateDashboard(w http.ResponseWriter, r *http.Request) {
 			api.WriteError(w, http.StatusNotFound, "dashboard not found")
 			return
 		}
-		api.WriteError(w, http.StatusInternalServerError, err.Error())
+		api.WriteInternalError(w, "failed to update dashboard", err)
 		return
 	}
 
@@ -133,7 +148,7 @@ func (h *Handlers) DeleteDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.store.DeleteDashboard(r.Context(), id); err != nil {
-		api.WriteError(w, http.StatusInternalServerError, err.Error())
+		api.WriteInternalError(w, "failed to delete dashboard", err)
 		return
 	}
 
@@ -153,7 +168,7 @@ func (h *Handlers) SetDefaultDashboard(w http.ResponseWriter, r *http.Request) {
 			api.WriteError(w, http.StatusNotFound, "dashboard not found")
 			return
 		}
-		api.WriteError(w, http.StatusInternalServerError, err.Error())
+		api.WriteInternalError(w, "failed to set default dashboard", err)
 		return
 	}
 
@@ -169,8 +184,7 @@ func (h *Handlers) CreateWidget(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req api.CreateWidgetRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeBody(w, r, &req) {
 		return
 	}
 
@@ -213,7 +227,7 @@ func (h *Handlers) CreateWidget(w http.ResponseWriter, r *http.Request) {
 			api.WriteError(w, http.StatusNotFound, "dashboard not found")
 			return
 		}
-		api.WriteError(w, http.StatusInternalServerError, err.Error())
+		api.WriteInternalError(w, "failed to create widget", err)
 		return
 	}
 
@@ -229,8 +243,7 @@ func (h *Handlers) UpdateWidgetPositions(w http.ResponseWriter, r *http.Request)
 	}
 
 	var req api.UpdateWidgetPositionsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeBody(w, r, &req) {
 		return
 	}
 
@@ -255,7 +268,7 @@ func (h *Handlers) UpdateWidgetPositions(w http.ResponseWriter, r *http.Request)
 			api.WriteError(w, http.StatusNotFound, "widget not found")
 			return
 		}
-		api.WriteError(w, http.StatusInternalServerError, err.Error())
+		api.WriteInternalError(w, "failed to update widget positions", err)
 		return
 	}
 
@@ -272,8 +285,7 @@ func (h *Handlers) UpdateWidget(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req api.UpdateWidgetRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeBody(w, r, &req) {
 		return
 	}
 
@@ -307,7 +319,7 @@ func (h *Handlers) UpdateWidget(w http.ResponseWriter, r *http.Request) {
 			api.WriteError(w, http.StatusNotFound, "widget not found")
 			return
 		}
-		api.WriteError(w, http.StatusInternalServerError, err.Error())
+		api.WriteInternalError(w, "failed to update widget", err)
 		return
 	}
 
@@ -328,7 +340,7 @@ func (h *Handlers) DeleteWidget(w http.ResponseWriter, r *http.Request) {
 			api.WriteError(w, http.StatusNotFound, "widget not found")
 			return
 		}
-		api.WriteError(w, http.StatusInternalServerError, err.Error())
+		api.WriteInternalError(w, "failed to delete widget", err)
 		return
 	}
 

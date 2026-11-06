@@ -5,9 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
-	"time"
 
 	"github.com/tobilg/ai-observer/internal/config"
 	"github.com/tobilg/ai-observer/internal/importer"
@@ -17,8 +14,11 @@ import (
 )
 
 func cmdWatch(args []string) {
-	if err := runWatch(args); err != nil {
+	ctx, stop := shutdownSignals()
+	defer stop()
+	if err := runWatch(ctx, args); err != nil {
 		fmt.Printf("Error: %v\n", err)
+		stop()
 		os.Exit(1)
 	}
 }
@@ -27,9 +27,11 @@ type watchArgs struct {
 	ToolArg  string
 	Tools    []string
 	Backfill bool
+	MCP      bool
 }
 
-func runWatch(args []string) error {
+// runWatch watches session files and serves the API until ctx is cancelled
+func runWatch(ctx context.Context, args []string) error {
 	parsed, err := parseWatchArgs(args)
 	if err != nil {
 		return err
@@ -41,52 +43,45 @@ func runWatch(args []string) error {
 	log := logger.Logger()
 
 	cfg := config.Load()
+	cfg.MCPEnabled = cfg.MCPEnabled || parsed.MCP
 
 	srv, err := server.New(cfg)
 	if err != nil {
 		return fmt.Errorf("failed to create server: %w", err)
 	}
 
-	// Start file watcher
+	// Start file watcher; it scans existing files (and backfills) in the
+	// background while the API server serves
 	watchCfg := watcher.Config{
 		Tools:    parsed.Tools,
 		Backfill: parsed.Backfill,
 	}
 	if err := srv.StartWatcher(watchCfg); err != nil {
+		srv.Shutdown(context.Background())
 		return fmt.Errorf("failed to start watcher: %w", err)
 	}
 
-	// Graceful shutdown on SIGINT/SIGTERM
-	go func() {
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-		<-sigCh
-		log.Info("Received shutdown signal")
-
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer shutdownCancel()
-
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			log.Error("Error during shutdown", "error", err)
-		}
-		os.Exit(0)
-	}()
-
 	log.Info("AI Observer starting (watch mode)",
 		"database", cfg.DatabasePath,
+		"host", cfg.Host,
 		"api_port", cfg.APIPort,
 		"tools", parsed.ToolArg,
 	)
 
 	// Start only the API server (no OTLP)
-	return srv.ListenAndServeAPIOnly()
+	if err := serveUntilDone(ctx, srv, srv.ListenAndServeAPIOnly); err != nil {
+		return err
+	}
+	log.Info("Shutdown complete")
+	return nil
 }
 
 func parseWatchArgs(args []string) (*watchArgs, error) {
 	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
 
-	var backfill bool
+	var backfill, mcp bool
 	fs.BoolVar(&backfill, "backfill", false, "Import all existing data on first start")
+	fs.BoolVar(&mcp, "mcp", false, "Serve the MCP endpoint (/mcp on the API port) for agents; also AI_OBSERVER_MCP=true")
 
 	fs.Usage = func() {
 		fmt.Print(`Watch local AI tool session files for changes and import incrementally
@@ -104,7 +99,7 @@ Options:
 		printFlags(fs)
 	}
 
-	if err := fs.Parse(reorderArgs(args)); err != nil {
+	if err := fs.Parse(reorderArgs(fs, args)); err != nil {
 		return nil, err
 	}
 
@@ -128,5 +123,6 @@ Options:
 		ToolArg:  toolArg,
 		Tools:    tools,
 		Backfill: backfill,
+		MCP:      mcp,
 	}, nil
 }

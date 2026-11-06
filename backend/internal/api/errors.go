@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+
+	"github.com/tobilg/ai-observer/internal/logger"
 )
 
 // Custom error types for better error handling and categorization
@@ -87,8 +89,8 @@ func NewTimeoutError(operation, duration string) *TimeoutError {
 
 // PayloadTooLargeError represents errors when request payload exceeds size limit
 type PayloadTooLargeError struct {
-	MaxSize     int64
-	ActualSize  int64
+	MaxSize    int64
+	ActualSize int64
 }
 
 func (e *PayloadTooLargeError) Error() string {
@@ -148,10 +150,23 @@ func HTTPStatusFromError(err error) int {
 	}
 }
 
-// WriteErrorFromError writes an error response based on the error type
+// WriteErrorFromError writes an error response based on the error type.
+// Server errors are logged and answered with a generic message.
 func WriteErrorFromError(w http.ResponseWriter, err error) {
 	statusCode := HTTPStatusFromError(err)
+	if statusCode >= http.StatusInternalServerError {
+		logger.Error("Request failed", "status", statusCode, "error", err)
+		WriteError(w, statusCode, http.StatusText(statusCode))
+		return
+	}
 	WriteError(w, statusCode, err.Error())
+}
+
+// WriteInternalError logs err and writes a 500 response carrying only message,
+// so internal details (SQL, file paths) stay in the server log.
+func WriteInternalError(w http.ResponseWriter, message string, err error) {
+	logger.Error(message, "error", err)
+	WriteError(w, http.StatusInternalServerError, message)
 }
 
 type ErrorResponse struct {

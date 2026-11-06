@@ -39,12 +39,12 @@ func TestCalculateGeminiCostForTokenType_KnownModels(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.model+"_"+tc.tokenType, func(t *testing.T) {
-			cost := CalculateGeminiCostForTokenType(tc.model, tc.tokenType, tc.tokenCount)
+			cost := pricing.CalculateGeminiCostForTokenType(tc.model, tc.tokenType, tc.tokenCount)
 			if cost == nil {
 				t.Fatal("Expected cost to be calculated")
 			}
 			if diff := *cost - tc.expectedCost; diff > 1e-12 || diff < -1e-12 {
-				t.Errorf("CalculateGeminiCostForTokenType(%s, %s, %d) = %e, expected %e",
+				t.Errorf("pricing.CalculateGeminiCostForTokenType(%s, %s, %d) = %e, expected %e",
 					tc.model, tc.tokenType, tc.tokenCount, *cost, tc.expectedCost)
 			}
 		})
@@ -52,7 +52,7 @@ func TestCalculateGeminiCostForTokenType_KnownModels(t *testing.T) {
 }
 
 func TestCalculateGeminiCostForTokenType_UnknownModel(t *testing.T) {
-	cost := CalculateGeminiCostForTokenType("unknown-model", "input", 1000)
+	cost := pricing.CalculateGeminiCostForTokenType("unknown-model", "input", 1000)
 	if cost != nil {
 		t.Errorf("Expected nil cost for unknown model, got %f", *cost)
 	}
@@ -62,51 +62,51 @@ func TestCalculateGeminiCostForTokenType_AllTokenTypes(t *testing.T) {
 	model := "gemini-2.5-flash"
 
 	// Input should return cost
-	inputCost := CalculateGeminiCostForTokenType(model, pricing.GeminiTokenTypeInput, 1000)
+	inputCost := pricing.CalculateGeminiCostForTokenType(model, pricing.GeminiTokenTypeInput, 1000)
 	if inputCost == nil {
 		t.Error("Expected cost for input token type")
 	}
 
 	// Output should return cost
-	outputCost := CalculateGeminiCostForTokenType(model, pricing.GeminiTokenTypeOutput, 1000)
+	outputCost := pricing.CalculateGeminiCostForTokenType(model, pricing.GeminiTokenTypeOutput, 1000)
 	if outputCost == nil {
 		t.Error("Expected cost for output token type")
 	}
 
 	// Cache should return cost
-	cacheCost := CalculateGeminiCostForTokenType(model, pricing.GeminiTokenTypeCache, 1000)
+	cacheCost := pricing.CalculateGeminiCostForTokenType(model, pricing.GeminiTokenTypeCache, 1000)
 	if cacheCost == nil {
 		t.Error("Expected cost for cache token type")
 	}
 
 	// Thought should return cost (uses output pricing)
-	thoughtCost := CalculateGeminiCostForTokenType(model, pricing.GeminiTokenTypeThought, 1000)
+	thoughtCost := pricing.CalculateGeminiCostForTokenType(model, pricing.GeminiTokenTypeThought, 1000)
 	if thoughtCost == nil {
 		t.Error("Expected cost for thought token type")
 	}
 
 	// Tool should NOT return cost
-	toolCost := CalculateGeminiCostForTokenType(model, pricing.GeminiTokenTypeTool, 1000)
+	toolCost := pricing.CalculateGeminiCostForTokenType(model, pricing.GeminiTokenTypeTool, 1000)
 	if toolCost != nil {
 		t.Errorf("Expected nil cost for tool token type, got %f", *toolCost)
 	}
 
 	// Unknown type should NOT return cost
-	unknownCost := CalculateGeminiCostForTokenType(model, "unknown-type", 1000)
+	unknownCost := pricing.CalculateGeminiCostForTokenType(model, "unknown-type", 1000)
 	if unknownCost != nil {
 		t.Errorf("Expected nil cost for unknown token type, got %f", *unknownCost)
 	}
 }
 
 func TestCalculateGeminiCostForTokenType_ZeroTokens(t *testing.T) {
-	cost := CalculateGeminiCostForTokenType("gemini-2.5-flash", "input", 0)
+	cost := pricing.CalculateGeminiCostForTokenType("gemini-2.5-flash", "input", 0)
 	if cost != nil {
 		t.Errorf("Expected nil cost for zero tokens, got %f", *cost)
 	}
 }
 
 func TestCalculateGeminiCostForTokenType_NegativeTokens(t *testing.T) {
-	cost := CalculateGeminiCostForTokenType("gemini-2.5-flash", "input", -100)
+	cost := pricing.CalculateGeminiCostForTokenType("gemini-2.5-flash", "input", -100)
 	if cost != nil {
 		t.Errorf("Expected nil cost for negative tokens, got %f", *cost)
 	}
@@ -114,7 +114,7 @@ func TestCalculateGeminiCostForTokenType_NegativeTokens(t *testing.T) {
 
 func TestCalculateGeminiCostForTokenType_NoCachePrice(t *testing.T) {
 	// Models with no cache pricing should return 0 for cache tokens
-	cost := CalculateGeminiCostForTokenType("gemini-2.0-flash-lite", "cache", 1000)
+	cost := pricing.CalculateGeminiCostForTokenType("gemini-2.0-flash-lite", "cache", 1000)
 	if cost == nil {
 		t.Fatal("Expected cost to be calculated (even if 0)")
 	}
@@ -143,7 +143,7 @@ func TestNormalizeGeminiModel(t *testing.T) {
 	}
 }
 
-func TestDeriveGeminiCostMetric_ValidMetric(t *testing.T) {
+func TestDeriveGeminiCostMetrics_ValidMetric(t *testing.T) {
 	timestamp := time.Now()
 	floatValue := float64(1000)
 	isMonotonic := true
@@ -165,7 +165,7 @@ func TestDeriveGeminiCostMetric_ValidMetric(t *testing.T) {
 		AggregationTemporality: &aggTemp,
 	}
 
-	costMetric := DeriveGeminiCostMetric(tokenMetric)
+	costMetric := deriveOne(tokenMetric)
 
 	if costMetric == nil {
 		t.Fatal("Expected cost metric to be derived")
@@ -201,7 +201,7 @@ func TestDeriveGeminiCostMetric_ValidMetric(t *testing.T) {
 	}
 }
 
-func TestDeriveGeminiCostMetric_WrongMetricName(t *testing.T) {
+func TestDeriveGeminiCostMetrics_WrongMetricName(t *testing.T) {
 	floatValue := float64(1000)
 
 	tokenMetric := api.MetricDataPoint{
@@ -210,14 +210,14 @@ func TestDeriveGeminiCostMetric_WrongMetricName(t *testing.T) {
 		Value:      &floatValue,
 	}
 
-	costMetric := DeriveGeminiCostMetric(tokenMetric)
+	costMetric := deriveOne(tokenMetric)
 
 	if costMetric != nil {
 		t.Error("Expected nil for wrong metric name")
 	}
 }
 
-func TestDeriveGeminiCostMetric_MissingModelAttribute(t *testing.T) {
+func TestDeriveGeminiCostMetrics_MissingModelAttribute(t *testing.T) {
 	floatValue := float64(1000)
 
 	tokenMetric := api.MetricDataPoint{
@@ -226,14 +226,14 @@ func TestDeriveGeminiCostMetric_MissingModelAttribute(t *testing.T) {
 		Value:      &floatValue,
 	}
 
-	costMetric := DeriveGeminiCostMetric(tokenMetric)
+	costMetric := deriveOne(tokenMetric)
 
 	if costMetric != nil {
 		t.Error("Expected nil for missing model attribute")
 	}
 }
 
-func TestDeriveGeminiCostMetric_MissingTypeAttribute(t *testing.T) {
+func TestDeriveGeminiCostMetrics_MissingTypeAttribute(t *testing.T) {
 	floatValue := float64(1000)
 
 	tokenMetric := api.MetricDataPoint{
@@ -242,28 +242,28 @@ func TestDeriveGeminiCostMetric_MissingTypeAttribute(t *testing.T) {
 		Value:      &floatValue,
 	}
 
-	costMetric := DeriveGeminiCostMetric(tokenMetric)
+	costMetric := deriveOne(tokenMetric)
 
 	if costMetric != nil {
 		t.Error("Expected nil for missing type attribute")
 	}
 }
 
-func TestDeriveGeminiCostMetric_NilValue(t *testing.T) {
+func TestDeriveGeminiCostMetrics_NilValue(t *testing.T) {
 	tokenMetric := api.MetricDataPoint{
 		MetricName: GeminiTokenUsageMetric,
 		Attributes: map[string]string{"model": "gemini-2.5-flash", "type": "input"},
 		Value:      nil,
 	}
 
-	costMetric := DeriveGeminiCostMetric(tokenMetric)
+	costMetric := deriveOne(tokenMetric)
 
 	if costMetric != nil {
 		t.Error("Expected nil for nil value")
 	}
 }
 
-func TestDeriveGeminiCostMetric_UnknownModel(t *testing.T) {
+func TestDeriveGeminiCostMetrics_UnknownModel(t *testing.T) {
 	floatValue := float64(1000)
 
 	tokenMetric := api.MetricDataPoint{
@@ -272,14 +272,14 @@ func TestDeriveGeminiCostMetric_UnknownModel(t *testing.T) {
 		Value:      &floatValue,
 	}
 
-	costMetric := DeriveGeminiCostMetric(tokenMetric)
+	costMetric := deriveOne(tokenMetric)
 
 	if costMetric != nil {
 		t.Error("Expected nil for unknown model")
 	}
 }
 
-func TestDeriveGeminiCostMetric_ToolTokenType(t *testing.T) {
+func TestDeriveGeminiCostMetrics_ToolTokenType(t *testing.T) {
 	floatValue := float64(1000)
 
 	tokenMetric := api.MetricDataPoint{
@@ -288,9 +288,57 @@ func TestDeriveGeminiCostMetric_ToolTokenType(t *testing.T) {
 		Value:      &floatValue,
 	}
 
-	costMetric := DeriveGeminiCostMetric(tokenMetric)
+	costMetric := deriveOne(tokenMetric)
 
 	if costMetric != nil {
 		t.Error("Expected nil for tool token type (no cost)")
+	}
+}
+
+// deriveOne derives the cost of a single token point
+func deriveOne(tokenMetric api.MetricDataPoint) *api.MetricDataPoint {
+	costs := DeriveGeminiCostMetrics([]api.MetricDataPoint{tokenMetric})
+	if len(costs) == 0 {
+		return nil
+	}
+	return &costs[0]
+}
+
+// Gemini's input tokens include the cached ones, which are charged at the
+// cache rate only
+func TestDeriveGeminiCostMetrics_InputExcludesCachedTokens(t *testing.T) {
+	ts := time.Now()
+	cumulative := int32(2)
+	point := func(tokenType string, value float64) api.MetricDataPoint {
+		return api.MetricDataPoint{
+			Timestamp:              ts,
+			ServiceName:            "gemini_cli",
+			MetricName:             GeminiTokenUsageMetric,
+			Attributes:             map[string]string{"model": "gemini-2.5-pro", "type": tokenType, "session.id": "s1"},
+			Value:                  &value,
+			AggregationTemporality: &cumulative,
+		}
+	}
+	otherSession := point("cache", 900_000)
+	otherSession.Attributes["session.id"] = "s2"
+	later := point("cache", 500_000)
+	later.Timestamp = ts.Add(time.Minute)
+
+	costs := DeriveGeminiCostMetrics([]api.MetricDataPoint{
+		point("input", 1_000_000), point("cache", 800_000), otherSession, later,
+	})
+
+	byType := make(map[string]float64)
+	for _, c := range costs {
+		if c.Attributes["session.id"] == "s1" && c.Timestamp.Equal(ts) {
+			byType[c.Attributes["token_type"]] = *c.Value
+		}
+	}
+	// 200k uncached at $1.25/M plus 800k cached at $0.125/M
+	if got := byType["input"]; got < 0.25-1e-9 || got > 0.25+1e-9 {
+		t.Errorf("input cost = %v, want 0.25", got)
+	}
+	if got := byType["cache"]; got < 0.1-1e-9 || got > 0.1+1e-9 {
+		t.Errorf("cache cost = %v, want 0.1", got)
 	}
 }

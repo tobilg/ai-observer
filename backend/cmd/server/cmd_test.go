@@ -419,11 +419,43 @@ func TestReorderArgs(t *testing.T) {
 			input:    []string{"--output", "./export", "--dry-run"},
 			expected: []string{"--output", "./export", "--dry-run"},
 		},
+		{
+			name:     "bool flag before positional",
+			input:    []string{"--dry-run", "claude-code", "--verbose"},
+			expected: []string{"--dry-run", "--verbose", "claude-code"},
+		},
+		{
+			name:     "bool flag before positional and value flags",
+			input:    []string{"--yes", "all", "--from", "2025-01-01", "--to", "2025-01-31"},
+			expected: []string{"--yes", "--from", "2025-01-01", "--to", "2025-01-31", "all"},
+		},
+		{
+			name:     "flag with inline value",
+			input:    []string{"all", "--output=./export", "--dry-run"},
+			expected: []string{"--output=./export", "--dry-run", "all"},
+		},
+		{
+			name:     "terminator",
+			input:    []string{"all", "--", "--dry-run"},
+			expected: []string{"--", "--dry-run", "all"},
+		},
+	}
+
+	newFlagSet := func() *flag.FlagSet {
+		fs := flag.NewFlagSet("test", flag.ContinueOnError)
+		fs.String("output", "", "")
+		fs.String("from", "", "")
+		fs.String("to", "", "")
+		fs.String("flag", "", "")
+		fs.Bool("dry-run", false, "")
+		fs.Bool("verbose", false, "")
+		fs.Bool("yes", false, "")
+		return fs
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := reorderArgs(tt.input)
+			result := reorderArgs(newFlagSet(), tt.input)
 
 			if len(result) != len(tt.expected) {
 				t.Errorf("length mismatch: got %d, want %d", len(result), len(tt.expected))
@@ -707,4 +739,49 @@ func TestRunDeleteValidation(t *testing.T) {
 			t.Error("expected error for from after to")
 		}
 	})
+}
+
+// A boolean flag followed by the positional argument must not swallow it or
+// stop the flags after it from being parsed
+func TestParseFlagsWithBoolFlagBeforePositional(t *testing.T) {
+	imp, err := parseImportFlags([]string{"--dry-run", "claude-code", "--verbose"})
+	if err != nil {
+		t.Fatalf("parseImportFlags: %v", err)
+	}
+	if !imp.DryRun || !imp.Verbose || imp.Tool != "claude-code" {
+		t.Errorf("import flags = %+v, want dry-run, verbose and tool claude-code", imp)
+	}
+
+	del, err := parseDeleteFlags([]string{"--yes", "all", "--from", "2025-01-01", "--to", "2025-01-31"})
+	if err != nil {
+		t.Fatalf("parseDeleteFlags: %v", err)
+	}
+	if !del.Yes || del.From != "2025-01-01" || del.To != "2025-01-31" {
+		t.Errorf("delete flags = %+v, want yes, from and to", del)
+	}
+}
+
+func TestParseImportFlagsPricingMode(t *testing.T) {
+	flags, err := parseImportFlags([]string{"claude-code", "--pricing-mode", "calculate"})
+	if err != nil {
+		t.Fatalf("parseImportFlags: %v", err)
+	}
+	if flags.PricingMode != "calculate" || flags.Tool != "claude-code" {
+		t.Errorf("flags = %+v, want pricing mode calculate for claude-code", flags)
+	}
+
+	defaults, err := parseImportFlags([]string{"all"})
+	if err != nil {
+		t.Fatalf("parseImportFlags: %v", err)
+	}
+	if defaults.PricingMode != "auto" {
+		t.Errorf("default pricing mode = %q, want auto", defaults.PricingMode)
+	}
+}
+
+func TestRunImportRejectsInvalidPricingMode(t *testing.T) {
+	err := runImport([]string{"claude-code", "--pricing-mode", "bogus"})
+	if err == nil || !strings.Contains(err.Error(), "invalid pricing mode") {
+		t.Errorf("runImport error = %v, want invalid pricing mode", err)
+	}
 }

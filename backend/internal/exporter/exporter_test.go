@@ -2,8 +2,10 @@ package exporter
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,7 +131,7 @@ func TestRunFromFilesRejectsCopilot(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for Copilot from-files export")
 	}
-	if err.Error() != "from-files export is not supported for copilot-chat because GitHub Copilot is OTLP-only" {
+	if err.Error() != "from-files export is not supported for copilot-chat because GitHub Copilot (VS Code) is OTLP-only" {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -922,33 +924,87 @@ func TestCreateViewsDatabase(t *testing.T) {
 	}
 }
 
-func TestRunFromFiles(t *testing.T) {
-	// Create temp directory for source files
-	sourceDir, err := os.MkdirTemp("", "from-files-source-*")
-	if err != nil {
-		t.Fatalf("failed to create source dir: %v", err)
-	}
-	defer os.RemoveAll(sourceDir)
-
-	// Create temp directory for export output
-	outputDir, err := os.MkdirTemp("", "from-files-output-*")
-	if err != nil {
-		t.Fatalf("failed to create output dir: %v", err)
-	}
-	defer os.RemoveAll(outputDir)
-
-	// Create a test Claude JSONL file
-	testFile := filepath.Join(sourceDir, "test-session.jsonl")
-	testContent := `{"type":"assistant","timestamp":"2025-01-02T10:00:00.000Z","sessionId":"test-session-123","message":{"id":"msg-001","model":"claude-sonnet-4-20250514","role":"assistant","type":"message","usage":{"input_tokens":1000,"output_tokens":500}}}
+// Session file fixtures for every file-backed provider, in the layout each
+// tool writes. GitHub Copilot and OpenCode are OTLP-only and have no files.
+const (
+	claudeFixtureSession = `{"type":"assistant","timestamp":"2025-01-02T10:00:00.000Z","sessionId":"claude-fixture","message":{"id":"msg-001","model":"claude-sonnet-4-20250514","role":"assistant","type":"message","usage":{"input_tokens":1000,"output_tokens":500}}}
 `
-	if err := os.WriteFile(testFile, []byte(testContent), 0644); err != nil {
-		t.Fatalf("failed to write test file: %v", err)
+	codexFixtureSession = `{"timestamp":"2025-01-02T11:00:00.000Z","type":"session_meta","payload":{"id":"codex-fixture","timestamp":"2025-01-02T11:00:00.000Z","cwd":"/home/user/project","originator":"cli","cli_version":"1.0.0","model_provider":"openai","model":"gpt-4o"}}
+{"timestamp":"2025-01-02T11:01:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"hello"}}
+{"timestamp":"2025-01-02T11:02:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":500,"output_tokens":200,"cached_input_tokens":0,"reasoning_output_tokens":50}}}}
+`
+	geminiFixtureSession = `{
+  "sessionId": "gemini-fixture",
+  "projectHash": "fixtureproject",
+  "startTime": "2025-01-02T12:00:00.000Z",
+  "lastUpdated": "2025-01-02T12:05:00.000Z",
+  "messages": [
+    {"id": "msg-001", "timestamp": "2025-01-02T12:00:00.000Z", "type": "user", "content": "hello"},
+    {"id": "msg-002", "timestamp": "2025-01-02T12:01:00.000Z", "type": "gemini", "model": "gemini-2.5-flash",
+     "tokens": {"input": 500, "output": 200, "cached": 50, "thoughts": 30, "tool": 10, "total": 790}}
+  ]
+}
+`
+)
+
+// setupFromFilesFixtures writes one session per file-backed provider into a
+// temp directory and points the importers at it, so from-files exports never
+// read the developer's real ~/.claude, ~/.codex or ~/.gemini data.
+func setupFromFilesFixtures(t *testing.T) {
+	t.Helper()
+	root := t.TempDir()
+
+	fixtures := []struct {
+		envVar  string
+		baseDir string
+		file    string
+		content string
+	}{
+		{"AI_OBSERVER_CLAUDE_PATH", "claude", filepath.Join("-home-user-project", "claude-fixture.jsonl"), claudeFixtureSession},
+		{"AI_OBSERVER_CODEX_PATH", "codex", filepath.Join("2025", "01", "02", "rollout-2025-01-02T11-00-00-codex-fixture.jsonl"), codexFixtureSession},
+		{"AI_OBSERVER_GEMINI_PATH", "gemini", filepath.Join("fixtureproject", "chats", "session-gemini-fixture.json"), geminiFixtureSession},
 	}
+	for _, f := range fixtures {
+		path := filepath.Join(root, f.baseDir, f.file)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatalf("failed to create fixture dir: %v", err)
+		}
+		if err := os.WriteFile(path, []byte(f.content), 0644); err != nil {
+			t.Fatalf("failed to write fixture %s: %v", path, err)
+		}
+		t.Setenv(f.envVar, filepath.Join(root, f.baseDir))
+	}
+}
 
-	// Set up parser with custom path
-	os.Setenv("AI_OBSERVER_CLAUDE_PATH", sourceDir)
-	defer os.Unsetenv("AI_OBSERVER_CLAUDE_PATH")
+// exportedServices returns the distinct service names in an exported Parquet file
+func exportedServices(t *testing.T, parquetPath string) []string {
+	t.Helper()
+	reader, err := storage.NewDuckDBStore(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open DuckDB: %v", err)
+	}
+	defer reader.Close()
 
+	rows, err := reader.DB().Query(fmt.Sprintf("SELECT DISTINCT ServiceName FROM read_parquet('%s') ORDER BY 1", parquetPath))
+	if err != nil {
+		t.Fatalf("failed to read %s: %v", parquetPath, err)
+	}
+	defer rows.Close()
+
+	var services []string
+	for rows.Next() {
+		var service string
+		if err := rows.Scan(&service); err != nil {
+			t.Fatalf("failed to scan service: %v", err)
+		}
+		services = append(services, service)
+	}
+	return services
+}
+
+func TestRunFromFiles(t *testing.T) {
+	setupFromFilesFixtures(t)
+	outputDir := t.TempDir()
 	ctx := context.Background()
 
 	t.Run("from files dry run", func(t *testing.T) {
@@ -974,9 +1030,7 @@ func TestRunFromFiles(t *testing.T) {
 	})
 
 	t.Run("from files actual export", func(t *testing.T) {
-		// Create a fresh output dir
-		outputDir2, _ := os.MkdirTemp("", "from-files-output2-*")
-		defer os.RemoveAll(outputDir2)
+		outputDir2 := t.TempDir()
 
 		opts := Options{
 			Source:      SourceClaude,
@@ -996,11 +1050,16 @@ func TestRunFromFiles(t *testing.T) {
 		if len(parquetFiles) == 0 {
 			t.Error("expected parquet files to be created")
 		}
+
+		// Only the requested provider is exported
+		got := exportedServices(t, filepath.Join(outputDir2, "metrics.parquet"))
+		if strings.Join(got, ",") != "claude-code" {
+			t.Errorf("exported services = %v, want [claude-code]", got)
+		}
 	})
 
 	t.Run("from files with all sources", func(t *testing.T) {
-		outputDir3, _ := os.MkdirTemp("", "from-files-output3-*")
-		defer os.RemoveAll(outputDir3)
+		outputDir3 := t.TempDir()
 
 		opts := Options{
 			Source:      SourceAll,
@@ -1012,6 +1071,15 @@ func TestRunFromFiles(t *testing.T) {
 		err := runFromFiles(ctx, opts)
 		if err != nil {
 			t.Fatalf("runFromFiles failed: %v", err)
+		}
+
+		// Every file-backed provider's fixture is exported
+		want := "claude-code,codex_cli_rs,gemini_cli"
+		for _, file := range []string{"logs.parquet", "metrics.parquet"} {
+			got := exportedServices(t, filepath.Join(outputDir3, file))
+			if strings.Join(got, ",") != want {
+				t.Errorf("%s services = %v, want %s", file, got, want)
+			}
 		}
 	})
 
@@ -1031,9 +1099,33 @@ func TestRunFromFiles(t *testing.T) {
 }
 
 func TestConfirmExport(t *testing.T) {
-	// ConfirmExport reads from stdin, which is tricky to test without mocking
-	// For now, we just ensure the function exists and can be called
-	// In real usage, it prompts for user input
-	// Testing this would require mocking os.Stdin
-	t.Skip("ConfirmExport requires stdin mocking")
+	for answer, want := range map[string]bool{"y\n": true, "YES\n": true, "n\n": false, "\n": false, "": false} {
+		var out strings.Builder
+		got := ConfirmExport(Options{Out: &out, In: strings.NewReader(answer)})
+		if got != want {
+			t.Errorf("ConfirmExport(%q) = %v, want %v", answer, got, want)
+		}
+		if !strings.Contains(out.String(), "Continue? [y/N]") {
+			t.Errorf("prompt not written to Out: %q", out.String())
+		}
+	}
+}
+
+func TestExporterExportToPathWithQuote(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	setupTestData(t, store)
+
+	dir := filepath.Join(t.TempDir(), "Bob's exports")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	summary, err := NewExporter(store, false).Export(context.Background(), Options{Source: SourceAll, OutputDir: dir})
+	if err != nil {
+		t.Fatalf("Export to %q failed: %v", dir, err)
+	}
+	if summary.LogsCount != 3 {
+		t.Errorf("expected 3 logs, got %d", summary.LogsCount)
+	}
 }

@@ -3,14 +3,15 @@ import {
   useState,
   useMemo,
   useCallback,
-  useRef,
   type ReactNode,
 } from 'react'
 import { api } from '@/lib/api'
 import { isAbortError } from '@/lib/errors'
 import { useDashboardStore } from '@/stores/dashboardStore'
+import { useShallow } from 'zustand/react/shallow'
 import { WIDGET_TYPES, isAbsoluteTimeSelection } from '@/types/dashboard'
 import { useTelemetryStore } from '@/stores/telemetryStore'
+import { useLiveRefresh } from '@/hooks/useLiveRefresh'
 import { MetricDataContext, type MetricData } from '@/contexts/metricData'
 
 interface MetricDataProviderProps {
@@ -20,9 +21,24 @@ interface MetricDataProviderProps {
 const EMPTY_RESULTS = new Map<string, MetricData>()
 
 export function MetricDataProvider({ children }: MetricDataProviderProps) {
-  const { widgets, timeSelection, fromTime, toTime, intervalSeconds, isAbsoluteRange } = useDashboardStore()
+  const {
+    widgets,
+    timeSelection,
+    fromTime,
+    toTime,
+    intervalSeconds,
+    isAbsoluteRange,
+  } = useDashboardStore(
+    useShallow((s) => ({
+      widgets: s.widgets,
+      timeSelection: s.timeSelection,
+      fromTime: s.fromTime,
+      toTime: s.toTime,
+      intervalSeconds: s.intervalSeconds,
+      isAbsoluteRange: s.isAbsoluteRange,
+    }))
+  )
   const metricsUpdateCount = useTelemetryStore((state) => state.metricsUpdateCount)
-  const prevMetricsCountRef = useRef(0)
 
   // Store results by widget ID
   const [results, setResults] = useState<Map<string, MetricData>>(new Map())
@@ -49,39 +65,16 @@ export function MetricDataProvider({ children }: MetricDataProviderProps) {
     }))
   }, [metricWidgets])
 
-  // Auto-refresh based on timeframe (disabled for absolute ranges)
-  useEffect(() => {
-    // Skip auto-refresh for absolute date ranges (static historical data)
-    if (isAbsoluteRange) {
-      return
-    }
-
-    const durationSeconds = isAbsoluteTimeSelection(timeSelection)
-      ? (toTime.getTime() - fromTime.getTime()) / 1000
-      : timeSelection.timeframe.durationSeconds
-
-    const refreshMs = Math.min((durationSeconds * 1000) / 10, 60000)
-    const interval = setInterval(() => {
-      setRefreshTrigger((prev) => prev + 1)
-    }, refreshMs)
-    return () => clearInterval(interval)
-  }, [timeSelection, fromTime, toTime, isAbsoluteRange])
-
-  // Refresh when new metrics arrive via WebSocket (disabled for absolute ranges)
-  useEffect(() => {
-    // Skip WebSocket refresh for absolute date ranges
-    if (isAbsoluteRange) {
-      return
-    }
-
-    if (metricsUpdateCount > prevMetricsCountRef.current) {
-      const timer = setTimeout(() => {
-        setRefreshTrigger((prev) => prev + 1)
-      }, 500)
-      prevMetricsCountRef.current = metricsUpdateCount
-      return () => clearTimeout(timer)
-    }
-  }, [metricsUpdateCount, isAbsoluteRange])
+  // Refresh on new metrics and as the time window moves (not for absolute
+  // ranges, which show fixed historical data)
+  const durationSeconds = isAbsoluteTimeSelection(timeSelection)
+    ? (toTime.getTime() - fromTime.getTime()) / 1000
+    : timeSelection.timeframe.durationSeconds
+  const liveRefreshKey = useLiveRefresh({
+    enabled: !isAbsoluteRange,
+    intervalMs: Math.min((durationSeconds * 1000) / 10, 60000),
+    updateCount: metricsUpdateCount,
+  })
 
   // Fetch batch data when queries or time selection change
   useEffect(() => {
@@ -155,7 +148,7 @@ export function MetricDataProvider({ children }: MetricDataProviderProps) {
     fetchData()
 
     return () => controller.abort()
-  }, [queries, timeSelection, fromTime, toTime, intervalSeconds, isAbsoluteRange, refreshTrigger])
+  }, [queries, timeSelection, fromTime, toTime, intervalSeconds, isAbsoluteRange, refreshTrigger, liveRefreshKey])
 
   const getMetricData = useCallback(
     (widgetId: string): MetricData => {

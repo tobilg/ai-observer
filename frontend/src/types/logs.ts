@@ -20,6 +20,8 @@ export interface LogsResponse {
   logs: LogRecord[]
   total: number
   hasMore: boolean
+  // Requests the next page (cursor parameter) when hasMore
+  nextCursor?: string
 }
 
 export interface LogLevelsResponse {

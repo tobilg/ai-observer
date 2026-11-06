@@ -33,6 +33,8 @@ AI coding assistants are becoming essential development tools, but understanding
 - [Import Command](docs/import.md) — Import historical session data from local AI tool files
 - [Export Command](docs/export.md) — Export telemetry data to Parquet files for archiving and sharing
 - [Watch Command](#watch-command) — Watch local session files and import incrementally in real-time
+- [Agent Access (MCP)](docs/mcp.md) — Let Claude Code, Codex, Gemini CLI, Copilot or OpenCode search your conversations, logs, traces, metrics and costs
+- [Redaction](docs/redaction.md) — Secrets (and optionally personal data) are replaced before telemetry is stored
 - [Pricing System](docs/pricing.md) — Cost calculation for Claude, Codex/OpenAI, Gemini, and GitHub Copilot models; OpenCode costs are ingested from the OTEL plugin
 
 ## Screenshots
@@ -59,14 +61,16 @@ AI coding assistants are becoming essential development tools, but understanding
 
 ```bash
 docker run -d \
-  -p 8080:8080 \
-  -p 4318:4318 \
+  -p 127.0.0.1:8080:8080 \
+  -p 127.0.0.1:4318:4318 \
   -v ai-observer-data:/app/data \
   --name ai-observer \
   tobilg/ai-observer:latest
 ```
 
 Dashboard: http://localhost:8080
+
+The ports are published on `127.0.0.1` only: AI Observer has no authentication and stores prompts, code and tool output (see [Network access](#network-access)). Drop the `127.0.0.1:` prefix only on trusted networks.
 
 **Using a local directory for data persistence:**
 
@@ -76,8 +80,8 @@ mkdir -p ./ai-observer-data
 
 # Run with local volume mount
 docker run -d \
-  -p 8080:8080 \
-  -p 4318:4318 \
+  -p 127.0.0.1:8080:8080 \
+  -p 127.0.0.1:4318:4318 \
   -v $(pwd)/ai-observer-data:/app/data \
   -e AI_OBSERVER_DATABASE_PATH=/app/data/ai-observer.duckdb \
   --name ai-observer \
@@ -118,13 +122,56 @@ make all     # Build single binary with embedded frontend
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `AI_OBSERVER_HOST` | `127.0.0.1` (binary) or `0.0.0.0` (Docker) | Network interface both servers listen on |
 | `AI_OBSERVER_API_PORT` | `8080` | HTTP server port (dashboard + API) |
 | `AI_OBSERVER_OTLP_PORT` | `4318` | OTLP ingestion port |
 | `AI_OBSERVER_DATABASE_PATH` | `./data/ai-observer.duckdb` (binary) or `/app/data/ai-observer.duckdb` (Docker) | DuckDB database file path |
 | `AI_OBSERVER_FRONTEND_URL` | `http://localhost:5173` | Allowed CORS origin (dev mode) |
+| `AI_OBSERVER_ALLOWED_HOSTS` | _(empty)_ | Comma-separated host names accepted by the dashboard/API (`Host` header) and as browser origins, in addition to IP addresses and `localhost`; `*` disables both checks |
 | `AI_OBSERVER_LOG_LEVEL` | `INFO` | Log level: `DEBUG`, `INFO`, `WARN`, `ERROR` |
+| `AI_OBSERVER_PRICING_DIR` | _(empty)_ | Directory with pricing files that add models or replace built-in prices, such as the current prices written by `pricing update` (see [Pricing](docs/pricing.md#overriding-prices)) |
+| `AI_OBSERVER_RETENTION_DAYS` | _(empty: keep all)_ | `serve` and `watch` delete telemetry older than this many days, on startup and then hourly (a day at a time, so ingestion is not blocked) |
+| `AI_OBSERVER_AUTH_TOKEN` | _(empty: no authentication)_ | Shared token required on OTLP and API requests (see [Authentication](#authentication)) |
+| `AI_OBSERVER_REDACT` | `secrets` | What is replaced in telemetry before it is stored: `secrets` (API keys, tokens, passwords), `all` (secrets and personal data such as emails and card numbers) or `off` (see [Redaction](docs/redaction.md)) |
+| `AI_OBSERVER_MCP` | `false` | Serve the MCP endpoint for agents at `/mcp` on the API port; same as the `--mcp` flag of `serve` and `watch` (see [Agent Access](#agent-access-mcp)) |
 
-CORS and WebSocket origins allow `AI_OBSERVER_FRONTEND_URL` plus `http://localhost:5173` and `http://localhost:8080`; set `AI_OBSERVER_FRONTEND_URL` when serving a custom UI origin.
+CORS allows `AI_OBSERVER_FRONTEND_URL` plus `http://localhost:5173` and `http://localhost:8080`; set `AI_OBSERVER_FRONTEND_URL` when serving a custom UI origin. Browser requests and WebSocket connections are accepted from loopback origins, those CORS origins, origins whose host is in `AI_OBSERVER_ALLOWED_HOSTS`, and the dashboard's own origin when it is an IP address.
+
+### Network Access
+
+AI Observer has no authentication unless you set `AI_OBSERVER_AUTH_TOKEN` (see [Authentication](#authentication)), and the stored telemetry can include prompts, code and tool output. The binary therefore listens on `127.0.0.1` only, so the dashboard, API and OTLP endpoints are not reachable from other machines. To accept telemetry or dashboard requests from the network (for example from another machine or a dev container), set `AI_OBSERVER_HOST=0.0.0.0` and only do so on trusted networks. The Docker image listens on all interfaces inside the container; publish its ports to `127.0.0.1` (`-p 127.0.0.1:8080:8080`) to keep them local. The server logs a warning at startup when it listens beyond localhost without `AI_OBSERVER_AUTH_TOKEN`.
+
+The dashboard and API only answer requests whose `Host` header is an IP address, `localhost`, the `AI_OBSERVER_FRONTEND_URL` host, or a name listed in `AI_OBSERVER_ALLOWED_HOSTS`. This blocks DNS rebinding attacks, where a malicious website points its own domain at `127.0.0.1` to read your local data. If you reach AI Observer through a host name such as `observer.lan`, add it to `AI_OBSERVER_ALLOWED_HOSTS`.
+
+Both servers also reject requests that a browser sends from another site's origin. Otherwise any web page you visit could write fake telemetry to the OTLP port or change dashboards with requests that need no CORS preflight. A page whose own host name was rebound to `127.0.0.1` counts as another site too, unless its host is an IP address, `localhost` or in `AI_OBSERVER_ALLOWED_HOSTS`. Exporters and CLI tools send no `Origin` header and are not affected.
+
+### Authentication
+
+Set `AI_OBSERVER_AUTH_TOKEN` to a long random value (for example `openssl rand -hex 32`) to require it on every request except `/health` and the dashboard's static files:
+
+- **OTLP exporters** send it as a header: `OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer <token>"` (Gemini CLI and Codex CLI take headers in their OTLP settings).
+- **Scripts** send `Authorization: Bearer <token>` to the API.
+- **The dashboard** is opened once with `http://localhost:8080/?token=<token>`. AI Observer sets an HttpOnly, `SameSite=Strict` cookie for 30 days and removes the token from the address bar. The cookie holds a value derived from the token, not the token itself, so it cannot be used to send telemetry.
+
+Requests without a valid token get `401`. Use HTTPS (for example a reverse proxy) when the token travels over a network.
+
+The dashboard cookie cannot be revoked on its own: every browser that opened the dashboard with the token stays signed in for 30 days. To sign them all out, for example after a laptop was lost or the cookie was copied, change `AI_OBSERVER_AUTH_TOKEN` and restart; the cookies of the old token stop working, and exporters need the new token.
+
+### Agent Access (MCP)
+
+With `AI_OBSERVER_MCP=true` (or `ai-observer serve --mcp` / `watch --mcp`), AI Observer serves a [Model Context Protocol](https://modelcontextprotocol.io) endpoint at `http://localhost:8080/mcp`. Agents can then search earlier conversations, read transcripts, and look at logs, traces, metrics, token usage and costs, with read-only tools such as `search_conversations`, `get_transcript` and `usage_summary`. For Claude Code:
+
+```bash
+claude mcp add --transport http ai-observer http://localhost:8080/mcp
+```
+
+`search_conversations` finds the prompts, replies and tool calls that contain all words of a query, in any order and case (`flaky parser test`); words also match inside longer words (`retr` finds `retry` and `retries`), and `"quoted phrases"` match as written.
+
+The endpoint is off by default and behind the same Host, Origin and token checks as the API; add `--header "Authorization: Bearer <token>"` when `AI_OBSERVER_AUTH_TOKEN` is set. What the tools return is sent to the agent's model provider. See [Agent Access (MCP)](docs/mcp.md) for the other tools' setup, all tools and their arguments.
+
+### Redaction
+
+Before telemetry is stored, AI Observer replaces secrets in it: API keys and tokens of common services (Anthropic, OpenAI, GitHub, AWS, Google, Slack, Stripe, …), JWTs, private keys, `Authorization` headers, passwords in URLs, and values of assignments such as `DB_PASSWORD=…`, for example with `[REDACTED:github_token]`. `AI_OBSERVER_REDACT=all` also replaces personal data (emails as stable pseudonyms, card numbers, IBANs, phone numbers, US SSNs, public IP addresses); `off` stores telemetry as received. Redaction applies to new telemetry from OTLP, `import` and `watch`. See [Redaction](docs/redaction.md).
 
 ### CLI Options
 
@@ -140,7 +187,8 @@ ai-observer [command] [options]
 | `delete` | Delete telemetry data from database |
 | `setup` | Show setup instructions for AI tools |
 | `watch` | Watch local session files and import incrementally |
-| `serve` | Start the OTLP server (default if no command) |
+| `pricing update` | Fetch current model prices from [models.dev](https://models.dev) into `AI_OBSERVER_PRICING_DIR` (see [Pricing](docs/pricing.md#updating-pricing)) |
+| `serve` | Start the OTLP server (default if no command); `--mcp` serves the [MCP endpoint](#agent-access-mcp) |
 
 **Global Options:**
 | Option | Description |
@@ -191,10 +239,10 @@ ai-observer import [claude-code|codex|gemini|all] [options]
 |--------|-------------|
 | `--from DATE` | Only import sessions from DATE (YYYY-MM-DD) |
 | `--to DATE` | Only import sessions up to DATE (YYYY-MM-DD) |
-| `--force` | Re-import already imported files |
+| `--force` | Re-import already imported files (their stored records are replaced) |
 | `--dry-run` | Show what would be imported without making changes |
-| `--skip-confirm` | Skip confirmation prompt |
-| `--purge` | Delete existing data in time range before importing |
+| `--yes` | Skip confirmation prompt |
+| `--purge` | Replace the imported tools' data in the time range, including live OTLP telemetry: delete it, then re-import it from all of their files in that range, in one transaction per tool. Other tools' data is kept. With `--from`/`--to`, unchanged files in the range are rebuilt too; without them, the range is derived from the new and modified files |
 | `--pricing-mode MODE` | Cost calculation mode for Claude: `auto` (default), `calculate`, `display` |
 | `--verbose` | Show detailed progress |
 
@@ -220,9 +268,13 @@ ai-observer import claude-code --from 2025-01-01 --to 2025-12-31
 # Dry run to see what would be imported
 ai-observer import all --dry-run
 
-# Force re-import and recalculate costs
+# Force re-import and recalculate costs (replaces the files' stored records)
 ai-observer import claude-code --force --pricing-mode calculate
 ```
+
+Re-importing a file that changed, or one forced with `--force`, replaces the records stored from it, also for files imported by earlier versions (live OTLP telemetry is kept). A `--from`/`--to` import of a file with records outside the range stores the range only; the next import adds the rest. With `--purge`, each tool's deletion and rebuild run in one transaction, so if one of its files fails, nothing of that tool changes.
+
+The database can only be opened by one process at a time, so stop a running `ai-observer` server (or `watch`) before running `import`, `export` or `delete`.
 
 See [docs/import.md](docs/import.md) for detailed documentation and [docs/pricing.md](docs/pricing.md) for pricing calculation details.
 
@@ -237,6 +289,7 @@ ai-observer watch [claude-code|codex|gemini|all] [options]
 | Option | Description |
 |--------|-------------|
 | `--backfill` | On first start, load all existing session data before watching |
+| `--mcp` | Serve the [MCP endpoint](#agent-access-mcp) for agents (also `AI_OBSERVER_MCP=true`) |
 
 **How it works:**
 
@@ -362,6 +415,8 @@ ai-observer delete all --from 2025-01-01 --to 2025-01-31 --service claude-code
 # Skip confirmation prompt
 ai-observer delete all --from 2025-01-01 --to 2025-01-31 --yes
 ```
+
+Dates are days in your local time zone, as for `import` and `export`. Deleting keeps the import state, so a later plain `import` skips the files; `import <tool> --force` restores their records.
 
 ### AI Tool Setup
 
@@ -559,7 +614,7 @@ flowchart TB
 GitHub Copilot and OpenCode are not shown in watcher mode because AI Observer currently receives their telemetry through OTLP only.
 
 **Tech Stack**:
-- **Backend**: Go 1.26+, chi router, DuckDB 1.5.5, gorilla/websocket
+- **Backend**: Go 1.26+, chi router, DuckDB 2.0.0, gorilla/websocket
 - **Frontend**: React 19, TypeScript, Vite, Tailwind CSS v4, Zustand, Recharts
 
 ## API Reference
@@ -577,6 +632,8 @@ Standard OpenTelemetry Protocol endpoints for receiving telemetry data.
 | `POST` | `/v1/metrics` | Ingest metrics (protobuf or JSON) |
 | `POST` | `/v1/logs` | Ingest logs (protobuf or JSON) |
 | `GET` | `/health` | Health check |
+
+Telemetry that cannot be stored is answered with `503` and `Retry-After`, which exporters retry; a payload over the 10 MB limit gets `413`.
 
 ### Query API (Port 8080)
 
@@ -596,7 +653,7 @@ REST API for querying stored telemetry data. Unless otherwise specified, `from`/
 - `service` — Filter by service name
 - `search` — Full-text search
 - `from`, `to` — Time range (ISO 8601)
-- `limit`, `offset` — Pagination
+- `limit`, `cursor` — Pagination: pass the `nextCursor` of the previous page as `cursor` (`offset` still works up to 10,000 rows but is deprecated)
 
 Trace list rows include `id`, `kind`, `traceId`, and `rootSpanId`. Use the `id` and `kind` values from a trace row when requesting details. Most rows, including GitHub Copilot and raw Codex session traces, use `kind=otel_trace` with `id` set to the OTLP trace ID. Codex operation rows, where present, use `kind=codex_operation` with `id`/`rootSpanId` set to the operation root span ID.
 
@@ -632,7 +689,7 @@ Trace list rows include `id`, `kind`, `traceId`, and `rootSpanId`. Use the `id` 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/logs` | List logs with filtering and pagination |
-| `GET` | `/api/logs/levels` | Get log counts by severity level |
+| `GET` | `/api/logs/levels` | Get log counts by severity level (optional `from`/`to`) |
 
 **Query parameters for `/api/logs`:**
 - `service` — Filter by service name
@@ -640,7 +697,7 @@ Trace list rows include `id`, `kind`, `traceId`, and `rootSpanId`. Use the `id` 
 - `traceId` — Filter logs linked to a specific trace
 - `search` — Full-text search
 - `from`, `to` — Time range (ISO 8601)
-- `limit`, `offset` — Pagination
+- `limit`, `cursor` — Pagination: pass the `nextCursor` of the previous page as `cursor` (`offset` still works up to 10,000 rows but is deprecated)
 
 </details>
 
@@ -669,8 +726,10 @@ Trace list rows include `id`, `kind`, `traceId`, and `rootSpanId`. Use the `id` 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/services` | List all services sending telemetry |
-| `GET` | `/api/stats` | Get aggregate statistics |
+| `GET` | `/api/providers` | List the supported AI coding tools with their service and display names |
+| `GET` | `/api/stats` | Get aggregate statistics (optional `from`/`to` count only that range) |
 | `GET` | `/ws` | WebSocket for real-time updates |
+| `POST` | `/mcp` | MCP endpoint for agents (Streamable HTTP), when enabled with `AI_OBSERVER_MCP=true` or `--mcp`; see [Agent Access (MCP)](docs/mcp.md) |
 | `GET` | `/health` | Health check |
 
 </details>
@@ -743,17 +802,17 @@ AI Observer computes user-facing metrics that filter out tool-routing API calls 
 
 | Metric | Display Name | Type | Description |
 |--------|--------------|------|-------------|
-| `gemini_cli.session.count` | Sessions (Cumulative) | Counter | Sessions started (cumulative) |
-| `gemini_cli.token.usage` | Token Usage (Cumulative) | Counter | Tokens by type (cumulative) |
-| `gemini_cli.cost.usage` | Cost | Counter | Session cost in USD |
-| `gemini_cli.api.request.count` | API Requests (Cumulative) | Counter | API requests by model and status (cumulative) |
+| `gemini_cli.session.count` | Sessions | Counter | Sessions started |
+| `gemini_cli.token.usage` | Token Usage | Counter | Tokens by type (`input` includes `cache`; `output`, `thought`, `tool`) |
+| `gemini_cli.cost.usage` | Cost | Counter | Session cost in USD; cached tokens at the cache rate only |
+| `gemini_cli.api.request.count` | API Requests | Counter | API requests by model and status |
 | `gemini_cli.api.request.latency` | API Latency | Histogram | API request duration (ms) |
 | `gemini_cli.api.request.breakdown` | API Request Breakdown | Histogram | Request phase analysis (ms) |
 | `gemini_cli.tool.call.count` | Tool Calls | Counter | Tool invocations with success/decision |
 | `gemini_cli.tool.call.latency` | Tool Latency | Histogram | Tool execution duration (ms) |
 | `gemini_cli.tool.queue.depth` | Tool Queue Depth | Histogram | Number of pending tools in queue |
 | `gemini_cli.tool.execution.breakdown` | Tool Execution Breakdown | Histogram | Phase-level tool execution durations (ms) |
-| `gemini_cli.file.operation.count` | File Operations (Cumulative) | Counter | File operations by type and language (cumulative) |
+| `gemini_cli.file.operation.count` | File Operations | Counter | File operations by type and language |
 | `gemini_cli.lines.changed` | Lines Changed | Counter | Lines added/removed |
 | `gemini_cli.agent.run.count` | Agent Runs | Counter | Agent executions |
 | `gemini_cli.agent.duration` | Agent Duration | Histogram | Agent run duration (ms) |
@@ -774,12 +833,12 @@ AI Observer computes user-facing metrics that filter out tool-routing API calls 
 | `gemini_cli.performance.regression` | Performance Regressions | Counter | Performance degradation count |
 | `gemini_cli.performance.regression.percentage_change` | Regression Percentage | Histogram | Performance variance magnitude (%) |
 | `gemini_cli.performance.baseline.comparison` | Baseline Comparison | Histogram | Performance baseline drift (%) |
-| `gen_ai.client.token.usage` | GenAI Token Usage (Cumulative) | Histogram | Token consumption (OTel semantic convention) |
+| `gen_ai.client.token.usage` | GenAI Token Usage | Histogram | Token consumption (OTel semantic convention) |
 | `gen_ai.client.operation.duration` | GenAI Operation Duration | Histogram | Operation timing in seconds (OTel semantic convention) |
 
 ### Derived Metrics
 
-AI Observer computes delta metrics from cumulative counters to show per-interval changes:
+Gemini CLI sends cumulative counters. Their charts show the increase per interval, computed per series (each Gemini process has its own `session.id`). The `.delta` names of earlier versions are no longer listed, but widgets and queries that use them keep working and return the same per-interval series:
 
 | Metric | Display Name | Description |
 |--------|--------------|-------------|
@@ -787,7 +846,6 @@ AI Observer computes delta metrics from cumulative counters to show per-interval
 | `gemini_cli.token.usage.delta` | Token Usage | Tokens consumed per interval |
 | `gemini_cli.api.request.count.delta` | API Requests | API requests per interval |
 | `gemini_cli.file.operation.count.delta` | File Operations | File operations per interval |
-| `gen_ai.client.token.usage.delta` | GenAI Token Usage | Token consumption per interval (OTel semantic convention) |
 
 ### Logs
 
@@ -1220,17 +1278,24 @@ GitHub Actions automatically:
 
 | Trigger | Actions |
 |---------|---------|
-| Push/PR | Run tests (Go + frontend) |
-| Push | Build binaries (linux/amd64, darwin/arm64, windows/amd64) |
+| Push/PR to `main`, tags | `gofmt` check, `go vet`, golangci-lint, ESLint, tests (Go + frontend) |
+| Every run, after the tests | Build binaries (linux/amd64, darwin/arm64, windows/amd64); the macOS build also runs the Go tests with the race detector |
 | Tag `v*` | Create GitHub Release with archives |
-| Tag `v*` | Push multi-arch Docker images |
-| Release published | Update Homebrew formula in [ai-observer-homebrew](https://github.com/tobilg/ai-observer-homebrew) tap |
+| Tag `v*` (or a manual run with `docker_version`) | Push multi-arch Docker images |
+| Tag `v*` | Update Homebrew formula in [homebrew-ai-observer](https://github.com/tobilg/homebrew-ai-observer) tap |
+| Daily, manual, PRs changing pricing data | Fail when a built-in price file is more than 7 days old (`Pricing freshness`) |
 
 ### Creating a Release
+
+1. Move the `[Unreleased]` entries of `CHANGELOG.md` into a new version section, with upgrade notes for breaking changes, and update the compare links at the end.
+2. Set the same version in `frontend/package.json`.
+3. Refresh prices if they are older than a few days (`make pricing-update`), since the release must pass the pricing freshness check.
+4. Merge to `main`, then tag it:
 
 ```bash
 git tag v1.0.0
 git push origin v1.0.0
+make release-notes TAG=v1.0.0   # after the release exists: adds generated notes
 ```
 
 ## Troubleshooting
@@ -1263,6 +1328,34 @@ Set the `AI_OBSERVER_FRONTEND_URL` environment variable to match your frontend o
 ```bash
 AI_OBSERVER_FRONTEND_URL=http://localhost:3000 ./ai-observer
 ```
+
+</details>
+
+<details>
+<summary><strong>Other machines or containers cannot reach AI Observer</strong></summary>
+
+The binary listens on `127.0.0.1` by default. Set `AI_OBSERVER_HOST=0.0.0.0` to listen on all interfaces (see [Network Access](#network-access)).
+
+</details>
+
+<details>
+<summary><strong>"database ... is in use by another process"</strong></summary>
+
+DuckDB allows one process per database file. Stop the running `ai-observer` server or `watch` before running `import`, `export` or `delete`, or point the command at another database with `AI_OBSERVER_DATABASE_PATH`.
+
+</details>
+
+<details>
+<summary><strong>Dashboard shows "Authentication required"</strong></summary>
+
+`AI_OBSERVER_AUTH_TOKEN` is set. Open the dashboard once with `?token=<token>` (see [Authentication](#authentication)).
+
+</details>
+
+<details>
+<summary><strong>Dashboard returns "host not allowed"</strong></summary>
+
+You are using a host name that is not on the allow list. Add it, for example `AI_OBSERVER_ALLOWED_HOSTS=observer.lan`, or use `localhost` or the IP address instead. The same applies to "origin not allowed" errors, for example when the dashboard is served through a reverse proxy under another name.
 
 </details>
 

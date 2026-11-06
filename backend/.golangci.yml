@@ -1,0 +1,16 @@
+# golangci-lint v2 configuration (make backend-lint, CI). Only checks that
+# find bugs or dead code are enabled; formatting is checked with gofmt.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  settings:
+    staticcheck:
+      # Bug checks only; style checks (ST*) and simplifications (S1*) are not
+      # enforced
+      checks: ["SA*"]

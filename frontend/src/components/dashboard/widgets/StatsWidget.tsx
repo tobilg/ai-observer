@@ -45,13 +45,13 @@ export function StatsWidget({ widgetType, title, stats }: StatsWidgetProps) {
     if (!stats) return ''
     switch (widgetType) {
       case WIDGET_TYPES.STATS_TRACES:
-        return `${stats.spanCount ?? 0} spans total`
+        return `${stats.spanCount ?? 0} spans`
       case WIDGET_TYPES.STATS_METRICS:
         return 'data points'
       case WIDGET_TYPES.STATS_LOGS:
         return 'log records'
       case WIDGET_TYPES.STATS_ERROR_RATE:
-        return 'of all spans'
+        return 'of spans'
       default:
         return ''
     }

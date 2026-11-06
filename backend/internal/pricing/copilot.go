@@ -36,9 +36,7 @@ func CalculateCopilotCost(model string, usage CopilotTokenUsage) *float64 {
 	cacheCreation := max(0, usage.CacheCreationTokens)
 	reasoning := max(0, usage.ReasoningTokens)
 
-	if pricing.LongContextPricing != nil && pricing.LongContextThreshold > 0 && input > pricing.LongContextThreshold {
-		pricing = pricing.LongContextPricing
-	}
+	pricing = pricing.forPromptSize(input)
 
 	cacheRead = min(cacheRead, input)
 	nonCachedInput := input - cacheRead

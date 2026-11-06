@@ -68,26 +68,11 @@ func detectFormatFromBytes(data []byte) Format {
 		return FormatUnknown
 	}
 
-	firstByte := data[idx]
-
-	// JSON detection: starts with '{' or '['
-	if firstByte == '{' || firstByte == '[' {
+	// JSON documents start with '{' or '['. Everything else is treated as
+	// protobuf, the OTLP default: OTLP messages usually start with 0x0A
+	// (field 1, length-delimited), and a body that is neither fails to decode.
+	if firstByte := data[idx]; firstByte == '{' || firstByte == '[' {
 		return FormatJSON
 	}
-
-	// Protobuf detection:
-	// - 0x0A = field 1, wire type 2 (length-delimited) - common for OTLP messages
-	// - 0x12 = field 2, wire type 2 (length-delimited)
-	// - Non-printable bytes (< 0x20) excluding whitespace chars
-	if firstByte == 0x0A || firstByte == 0x12 {
-		return FormatProtobuf
-	}
-
-	// Check for other non-printable bytes (strong protobuf indicator)
-	if firstByte < 0x20 && firstByte != '\t' && firstByte != '\n' && firstByte != '\r' {
-		return FormatProtobuf
-	}
-
-	// Default to protobuf (OTLP spec default)
 	return FormatProtobuf
 }

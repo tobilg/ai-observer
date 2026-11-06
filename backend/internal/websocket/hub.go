@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"encoding/json"
+	"net/http"
 	"sync"
 
 	"github.com/tobilg/ai-observer/internal/logger"
@@ -23,22 +24,52 @@ type Hub struct {
 
 	// Mutex for client map
 	mu sync.RWMutex
+
+	// originAllowed decides whether a handshake's Origin is accepted
+	originAllowed func(r *http.Request) bool
+
+	// done is closed by Stop
+	done     chan struct{}
+	stopOnce sync.Once
 }
 
-// NewHub creates a new Hub instance.
+// NewHub creates a new Hub instance. Without SetOriginCheck, only same-origin
+// handshakes are accepted, like gorilla's default.
 func NewHub() *Hub {
 	return &Hub{
-		clients:    make(map[*Client]bool),
-		broadcast:  make(chan Message, 256),
-		register:   make(chan *Client),
-		unregister: make(chan *Client),
+		clients:       make(map[*Client]bool),
+		broadcast:     make(chan Message, 256),
+		register:      make(chan *Client),
+		unregister:    make(chan *Client),
+		originAllowed: sameOrigin,
+		done:          make(chan struct{}),
 	}
 }
 
-// Run starts the hub's main loop.
+// SetOriginCheck configures which origins may open WebSocket connections.
+// Call it before serving.
+func (h *Hub) SetOriginCheck(allowed func(r *http.Request) bool) {
+	h.originAllowed = allowed
+}
+
+// Stop ends Run and closes all client connections
+func (h *Hub) Stop() {
+	h.stopOnce.Do(func() { close(h.done) })
+}
+
+// Run starts the hub's main loop. It returns after Stop.
 func (h *Hub) Run() {
 	for {
 		select {
+		case <-h.done:
+			h.mu.Lock()
+			for client := range h.clients {
+				delete(h.clients, client)
+				client.Close() // writePump sends a close frame and ends the connection
+			}
+			h.mu.Unlock()
+			return
+
 		case client := <-h.register:
 			h.mu.Lock()
 			h.clients[client] = true
@@ -76,14 +107,18 @@ func (h *Hub) Run() {
 			}
 			h.mu.RUnlock()
 
-			// Disconnect clients with full buffers (outside the read lock)
-			for _, c := range toDisconnect {
-				select {
-				case h.unregister <- c:
-				default:
-					// Unregister channel is full, skip this client for now
-					logger.Warn("Unregister channel full, skipping client disconnect")
+			// Disconnect clients with full buffers. Run is the only reader of
+			// h.unregister, so they are removed here instead of sent there.
+			if len(toDisconnect) > 0 {
+				h.mu.Lock()
+				for _, c := range toDisconnect {
+					if _, ok := h.clients[c]; ok {
+						delete(h.clients, c)
+						c.Close() // writePump sends a close frame and ends the connection
+					}
 				}
+				h.mu.Unlock()
+				logger.Warn("Disconnected slow WebSocket clients", "count", len(toDisconnect))
 			}
 		}
 	}
@@ -91,6 +126,11 @@ func (h *Hub) Run() {
 
 // Broadcast sends a message to all connected clients.
 func (h *Hub) Broadcast(msg Message) {
+	select {
+	case <-h.done:
+		return
+	default:
+	}
 	select {
 	case h.broadcast <- msg:
 	default:

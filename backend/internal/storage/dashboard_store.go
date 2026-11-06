@@ -20,25 +20,27 @@ var (
 // Dashboard CRUD operations
 
 func (s *DuckDBStore) CreateDashboard(ctx context.Context, req *api.CreateDashboardRequest) (*api.Dashboard, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	id := uuid.New().String()
 	now := time.Now()
 
-	// If setting as default, unset any existing default
-	if req.IsDefault {
-		if _, err := s.db.ExecContext(ctx, "UPDATE dashboards SET is_default = FALSE WHERE is_default = TRUE"); err != nil {
-			return nil, fmt.Errorf("unsetting default: %w", err)
+	// Unsetting the old default and inserting the new one happen together, so
+	// a failure never leaves the dashboards without a default
+	err := s.inWriteTx(ctx, func(w *writeTx) error {
+		if req.IsDefault {
+			if _, err := w.tx.ExecContext(ctx, "UPDATE dashboards SET is_default = FALSE WHERE is_default = TRUE"); err != nil {
+				return fmt.Errorf("unsetting default: %w", err)
+			}
 		}
-	}
-
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO dashboards (id, name, description, is_default, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, id, req.Name, req.Description, req.IsDefault, now, now)
+		if _, err := w.tx.ExecContext(ctx, `
+			INSERT INTO dashboards (id, name, description, is_default, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, id, req.Name, req.Description, req.IsDefault, now, now); err != nil {
+			return fmt.Errorf("inserting dashboard: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("inserting dashboard: %w", err)
+		return nil, err
 	}
 
 	return &api.Dashboard{
@@ -52,9 +54,6 @@ func (s *DuckDBStore) CreateDashboard(ctx context.Context, req *api.CreateDashbo
 }
 
 func (s *DuckDBStore) GetDashboards(ctx context.Context) ([]api.Dashboard, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, name, description, is_default, created_at, updated_at
 		FROM dashboards
@@ -83,9 +82,6 @@ func (s *DuckDBStore) GetDashboards(ctx context.Context) ([]api.Dashboard, error
 }
 
 func (s *DuckDBStore) GetDashboard(ctx context.Context, id string) (*api.Dashboard, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	var d api.Dashboard
 	var desc sql.NullString
 	err := s.db.QueryRowContext(ctx, `
@@ -103,9 +99,6 @@ func (s *DuckDBStore) GetDashboard(ctx context.Context, id string) (*api.Dashboa
 }
 
 func (s *DuckDBStore) GetDefaultDashboard(ctx context.Context) (*api.DashboardWithWidgets, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	var d api.Dashboard
 	var desc sql.NullString
 	err := s.db.QueryRowContext(ctx, `
@@ -120,7 +113,7 @@ func (s *DuckDBStore) GetDefaultDashboard(ctx context.Context) (*api.DashboardWi
 	}
 	d.Description = desc.String
 
-	widgets, err := s.getWidgetsForDashboardLocked(ctx, d.ID)
+	widgets, err := s.GetWidgetsForDashboard(ctx, d.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -132,9 +125,6 @@ func (s *DuckDBStore) GetDefaultDashboard(ctx context.Context) (*api.DashboardWi
 }
 
 func (s *DuckDBStore) GetDashboardWithWidgets(ctx context.Context, id string) (*api.DashboardWithWidgets, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	var d api.Dashboard
 	var desc sql.NullString
 	err := s.db.QueryRowContext(ctx, `
@@ -149,7 +139,7 @@ func (s *DuckDBStore) GetDashboardWithWidgets(ctx context.Context, id string) (*
 	}
 	d.Description = desc.String
 
-	widgets, err := s.getWidgetsForDashboardLocked(ctx, id)
+	widgets, err := s.GetWidgetsForDashboard(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -193,50 +183,44 @@ func (s *DuckDBStore) UpdateDashboard(ctx context.Context, id string, req *api.U
 }
 
 func (s *DuckDBStore) DeleteDashboard(ctx context.Context, id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Delete widgets first
-	if _, err := s.db.ExecContext(ctx, "DELETE FROM dashboard_widgets WHERE dashboard_id = ?", id); err != nil {
-		return fmt.Errorf("deleting widgets: %w", err)
-	}
-
-	// Delete dashboard
-	if _, err := s.db.ExecContext(ctx, "DELETE FROM dashboards WHERE id = ?", id); err != nil {
-		return fmt.Errorf("deleting dashboard: %w", err)
-	}
-
-	return nil
+	return s.inWriteTx(ctx, func(w *writeTx) error {
+		if _, err := w.tx.ExecContext(ctx, "DELETE FROM dashboard_widgets WHERE dashboard_id = ?", id); err != nil {
+			return fmt.Errorf("deleting widgets: %w", err)
+		}
+		if _, err := w.tx.ExecContext(ctx, "DELETE FROM dashboards WHERE id = ?", id); err != nil {
+			return fmt.Errorf("deleting dashboard: %w", err)
+		}
+		return nil
+	})
 }
 
 func (s *DuckDBStore) SetDefaultDashboard(ctx context.Context, id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	exists, err := s.dashboardExistsLocked(ctx, id)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return ErrDashboardNotFound
-	}
-
-	// Unset any existing default
-	if _, err := s.db.ExecContext(ctx, "UPDATE dashboards SET is_default = FALSE WHERE is_default = TRUE"); err != nil {
-		return fmt.Errorf("unsetting default: %w", err)
-	}
-
-	// Set new default
-	if _, err := s.db.ExecContext(ctx, "UPDATE dashboards SET is_default = TRUE, updated_at = ? WHERE id = ?", time.Now(), id); err != nil {
-		return fmt.Errorf("setting default: %w", err)
-	}
-
-	return nil
+	return s.inWriteTx(ctx, func(w *writeTx) error {
+		exists, err := dashboardExists(ctx, w.tx, id)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return ErrDashboardNotFound
+		}
+		if _, err := w.tx.ExecContext(ctx, "UPDATE dashboards SET is_default = FALSE WHERE is_default = TRUE"); err != nil {
+			return fmt.Errorf("unsetting default: %w", err)
+		}
+		if _, err := w.tx.ExecContext(ctx, "UPDATE dashboards SET is_default = TRUE, updated_at = ? WHERE id = ?", time.Now(), id); err != nil {
+			return fmt.Errorf("setting default: %w", err)
+		}
+		return nil
+	})
 }
 
-func (s *DuckDBStore) dashboardExistsLocked(ctx context.Context, id string) (bool, error) {
+// queryRower is implemented by *sql.DB and *sql.Tx
+type queryRower interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func dashboardExists(ctx context.Context, db queryRower, id string) (bool, error) {
 	var exists bool
-	if err := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM dashboards WHERE id = ?)", id).Scan(&exists); err != nil {
+	if err := db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM dashboards WHERE id = ?)", id).Scan(&exists); err != nil {
 		return false, fmt.Errorf("checking dashboard exists: %w", err)
 	}
 	return exists, nil
@@ -245,17 +229,6 @@ func (s *DuckDBStore) dashboardExistsLocked(ctx context.Context, id string) (boo
 // Widget CRUD operations
 
 func (s *DuckDBStore) CreateWidget(ctx context.Context, dashboardID string, req *api.CreateWidgetRequest) (*api.DashboardWidget, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	exists, err := s.dashboardExistsLocked(ctx, dashboardID)
-	if err != nil {
-		return nil, err
-	}
-	if !exists {
-		return nil, ErrDashboardNotFound
-	}
-
 	id := uuid.New().String()
 	now := time.Now()
 
@@ -273,12 +246,24 @@ func (s *DuckDBStore) CreateWidget(ctx context.Context, dashboardID string, req 
 		rowSpan = 1
 	}
 
-	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO dashboard_widgets (id, dashboard_id, widget_type, title, grid_column, grid_row, col_span, row_span, config, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, id, dashboardID, req.WidgetType, req.Title, req.GridColumn, req.GridRow, colSpan, rowSpan, string(configJSON), now, now)
+	err = s.inWriteTx(ctx, func(w *writeTx) error {
+		exists, err := dashboardExists(ctx, w.tx, dashboardID)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return ErrDashboardNotFound
+		}
+		if _, err := w.tx.ExecContext(ctx, `
+			INSERT INTO dashboard_widgets (id, dashboard_id, widget_type, title, grid_column, grid_row, col_span, row_span, config, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, id, dashboardID, req.WidgetType, req.Title, req.GridColumn, req.GridRow, colSpan, rowSpan, string(configJSON), now, now); err != nil {
+			return fmt.Errorf("inserting widget: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("inserting widget: %w", err)
+		return nil, err
 	}
 
 	return &api.DashboardWidget{
@@ -296,7 +281,7 @@ func (s *DuckDBStore) CreateWidget(ctx context.Context, dashboardID string, req 
 	}, nil
 }
 
-func (s *DuckDBStore) getWidgetsForDashboardLocked(ctx context.Context, dashboardID string) ([]api.DashboardWidget, error) {
+func (s *DuckDBStore) GetWidgetsForDashboard(ctx context.Context, dashboardID string) ([]api.DashboardWidget, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, dashboard_id, widget_type, title, grid_column, grid_row, col_span, row_span, config, created_at, updated_at
 		FROM dashboard_widgets
@@ -323,12 +308,6 @@ func (s *DuckDBStore) getWidgetsForDashboardLocked(ctx context.Context, dashboar
 	}
 
 	return widgets, nil
-}
-
-func (s *DuckDBStore) GetWidgetsForDashboard(ctx context.Context, dashboardID string) ([]api.DashboardWidget, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.getWidgetsForDashboardLocked(ctx, dashboardID)
 }
 
 func (s *DuckDBStore) UpdateWidget(ctx context.Context, dashboardID, widgetID string, req *api.UpdateWidgetRequest) (*api.DashboardWidget, error) {
@@ -376,45 +355,37 @@ func (s *DuckDBStore) UpdateWidget(ctx context.Context, dashboardID, widgetID st
 }
 
 func (s *DuckDBStore) UpdateWidgetPositions(ctx context.Context, dashboardID string, positions []api.WidgetPosition) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	exists, err := s.dashboardExistsLocked(ctx, dashboardID)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return ErrDashboardNotFound
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("beginning transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	now := time.Now()
-	stmt, err := tx.PrepareContext(ctx, `
-		UPDATE dashboard_widgets
-		SET grid_column = ?, grid_row = ?, updated_at = ?
-		WHERE id = ? AND dashboard_id = ?
-	`)
-	if err != nil {
-		return fmt.Errorf("preparing statement: %w", err)
-	}
-	defer stmt.Close()
-
-	for _, pos := range positions {
-		result, err := stmt.ExecContext(ctx, pos.GridColumn, pos.GridRow, now, pos.ID, dashboardID)
+	return s.inWriteTx(ctx, func(w *writeTx) error {
+		exists, err := dashboardExists(ctx, w.tx, dashboardID)
 		if err != nil {
-			return fmt.Errorf("updating position for widget %s: %w", pos.ID, err)
+			return err
 		}
-		if rows, err := result.RowsAffected(); err == nil && rows == 0 {
-			return ErrWidgetNotFound
+		if !exists {
+			return ErrDashboardNotFound
 		}
-	}
 
-	return tx.Commit()
+		now := time.Now()
+		stmt, err := w.tx.PrepareContext(ctx, `
+			UPDATE dashboard_widgets
+			SET grid_column = ?, grid_row = ?, updated_at = ?
+			WHERE id = ? AND dashboard_id = ?
+		`)
+		if err != nil {
+			return fmt.Errorf("preparing statement: %w", err)
+		}
+		defer stmt.Close()
+
+		for _, pos := range positions {
+			result, err := stmt.ExecContext(ctx, pos.GridColumn, pos.GridRow, now, pos.ID, dashboardID)
+			if err != nil {
+				return fmt.Errorf("updating position for widget %s: %w", pos.ID, err)
+			}
+			if rows, err := result.RowsAffected(); err == nil && rows == 0 {
+				return ErrWidgetNotFound
+			}
+		}
+		return nil
+	})
 }
 
 func (s *DuckDBStore) DeleteWidget(ctx context.Context, dashboardID, widgetID string) error {

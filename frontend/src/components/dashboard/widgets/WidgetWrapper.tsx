@@ -76,12 +76,14 @@ export function WidgetWrapper({
           <button
             {...attributes}
             {...listeners}
+            aria-label={`Move ${widget.title}`}
             className="cursor-grab rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground active:cursor-grabbing"
           >
             <GripVertical className="h-4 w-4" />
           </button>
           <button
             onClick={() => onRemove(widget.id)}
+            aria-label={`Remove ${widget.title}`}
             className="rounded p-0.5 text-muted-foreground hover:bg-destructive hover:text-destructive-foreground"
           >
             <X className="h-4 w-4" />

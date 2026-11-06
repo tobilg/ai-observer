@@ -86,7 +86,8 @@ function renderContent(content: DocContent, index: number) {
                   {row.cells.map((cell, cellIndex) => (
                     <TableCell
                       key={cellIndex}
-                      className={cellIndex === 0 ? 'font-mono text-xs' : ''}
+                      // Descriptions wrap instead of widening the table
+                      className={cellIndex === 0 ? 'font-mono text-xs' : 'whitespace-normal min-w-48'}
                     >
                       {cell}
                     </TableCell>
@@ -96,6 +97,18 @@ function renderContent(content: DocContent, index: number) {
             </TableBody>
           </Table>
         </div>
+      )
+
+    case 'code':
+      return (
+        <figure key={index} className="mb-4">
+          {content.text && (
+            <figcaption className="text-sm font-medium mb-1.5">{content.text}</figcaption>
+          )}
+          <pre className="bg-muted rounded-md border p-3 overflow-x-auto text-xs leading-relaxed">
+            <code>{content.code}</code>
+          </pre>
+        </figure>
       )
 
     default:

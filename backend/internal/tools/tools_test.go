@@ -34,6 +34,8 @@ func TestParse(t *testing.T) {
 		{"codex", Codex, true},
 		{"gemini", Gemini, true},
 		{"opencode", OpenCode, true},
+		{"copilot-chat", CopilotVSCode, true},
+		{"github-copilot", CopilotCLI, true},
 		{"all", "", false},
 		{"invalid", "", false},
 		{"", "", false},
@@ -54,11 +56,11 @@ func TestParse(t *testing.T) {
 
 func TestAll(t *testing.T) {
 	all := All()
-	if len(all) != 4 {
-		t.Errorf("expected 4 tools, got %d", len(all))
+	if len(all) != 6 {
+		t.Errorf("expected 6 tools, got %d", len(all))
 	}
 
-	expected := map[Tool]bool{Claude: true, Codex: true, Gemini: true, OpenCode: true}
+	expected := map[Tool]bool{Claude: true, Codex: true, Gemini: true, OpenCode: true, CopilotVSCode: true, CopilotCLI: true}
 	for _, tool := range all {
 		if !expected[tool] {
 			t.Errorf("unexpected tool: %s", tool)
@@ -112,4 +114,33 @@ func TestNormalizeServiceName(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTranscriptRole(t *testing.T) {
+	cases := map[string]string{
+		"user_prompt":                "user",
+		"codex.tool_result":          "tool_result",
+		"gemini_cli.tool_call":       "tool_use",
+		"copilot_chat.agent.turn":    "assistant",
+		"opencode.session.created":   "system",
+		"transcript.message":         "",
+		"claude_code.something_else": "",
+	}
+	for event, want := range cases {
+		if got := TranscriptRole(event); got != want {
+			t.Errorf("TranscriptRole(%q) = %q, want %q", event, got, want)
+		}
+	}
+}
+
+func TestMergeTranscriptRolesRejectsConflicts(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("conflicting roles for one event did not panic")
+		}
+	}()
+	mergeTranscriptRoles([]Provider{
+		{Tool: "a", TranscriptRoles: map[string]string{"event": RoleUser}},
+		{Tool: "b", TranscriptRoles: map[string]string{"event": RoleAssistant}},
+	})
 }

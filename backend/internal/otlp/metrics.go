@@ -53,11 +53,7 @@ func ConvertMetrics(req *colmetricspb.ExportMetricsServiceRequest) MetricConvers
 	}
 
 	// Derive Gemini cost metrics from token usage metrics
-	for _, m := range metrics {
-		if derived := DeriveGeminiCostMetric(m); derived != nil {
-			derivedMetrics = append(derivedMetrics, *derived)
-		}
-	}
+	derivedMetrics = append(derivedMetrics, DeriveGeminiCostMetrics(metrics)...)
 
 	// Derive user-facing metrics for Claude Code token usage
 	// (filters to only include API calls that have cache activity)

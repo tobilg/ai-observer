@@ -47,21 +47,22 @@ func CalculateGeminiCostForTokenType(model string, tokenType string, tokenCount 
 	return &cost
 }
 
-// CalculateGeminiCost calculates the total cost for Gemini token usage.
-// Returns nil if the model is not in the pricing table.
-func CalculateGeminiCost(model string, inputTokens, cachedTokens, outputTokens int64) *float64 {
+// CalculateGeminiCost calculates the cost of one Gemini response. Gemini's
+// input tokens include the cached ones (promptTokenCount contains
+// cachedContentTokenCount), so only the uncached part is charged at the input
+// rate. Thought tokens are charged at the output rate. Returns nil if the model
+// is not in the pricing table.
+func CalculateGeminiCost(model string, inputTokens, cachedTokens, outputTokens, thoughtTokens int64) *float64 {
 	pricing := GetGeminiPricing(model)
 	if pricing == nil {
 		return nil
 	}
 
-	// Clamp values to non-negative
 	input := max(0, inputTokens)
-	cached := max(0, cachedTokens)
-	output := max(0, outputTokens)
+	cached := min(max(0, cachedTokens), input)
+	output := max(0, outputTokens) + max(0, thoughtTokens)
 
-	// Calculate cost
-	cost := float64(input)*pricing.InputCostPerToken +
+	cost := float64(input-cached)*pricing.InputCostPerToken +
 		float64(cached)*pricing.CacheReadCostPerToken +
 		float64(output)*pricing.OutputCostPerToken
 

@@ -1,18 +1,22 @@
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback } from 'react'
 
 interface UsePaginationOptions {
   defaultPageSize?: number
-  defaultPage?: number
   storageKey?: string  // Optional localStorage key for persisting pageSize
 }
 
 interface UsePaginationReturn {
-  page: number
+  page: number // 1-based
   pageSize: number
-  offset: number
-  setPage: (page: number) => void
+  // Cursor of the current page for the list request (undefined on page 1)
+  cursor: string | undefined
+  // Whether the loaded page has a next one
+  hasNext: boolean
+  // Records the nextCursor of the loaded page
+  setNextCursor: (next: string | undefined) => void
+  nextPage: () => void
+  previousPage: () => void
   setPageSize: (size: number) => void
-  totalPages: (total: number) => number
   resetToFirstPage: () => void
 }
 
@@ -35,30 +39,47 @@ function getInitialPageSize(storageKey: string | undefined, defaultPageSize: num
   return defaultPageSize
 }
 
+/**
+ * Cursor pagination for the list APIs (logs, traces, sessions): each page is
+ * requested with the nextCursor of the page before it, so pages do not shift
+ * while new data arrives. The cursors of the pages visited so far are kept
+ * to go back.
+ */
 export function usePagination(options: UsePaginationOptions = {}): UsePaginationReturn {
-  const { defaultPageSize = 10, defaultPage = 1, storageKey } = options
+  const { defaultPageSize = 10, storageKey } = options
 
-  const [page, setPageState] = useState(defaultPage)
+  // cursors[i] requests page i + 2; the last one is the current page's
+  const [cursors, setCursors] = useState<string[]>([])
+  const [nextCursor, setNextCursorState] = useState<string | undefined>(undefined)
   const [pageSize, setPageSizeState] = useState(() =>
     getInitialPageSize(storageKey, defaultPageSize)
   )
 
-  const offset = useMemo(() => (page - 1) * pageSize, [page, pageSize])
+  const setNextCursor = useCallback((next: string | undefined) => {
+    setNextCursorState(next || undefined)
+  }, [])
 
-  const totalPages = useCallback((total: number) => {
-    return Math.max(1, Math.ceil(total / pageSize))
-  }, [pageSize])
+  const nextPage = useCallback(() => {
+    if (!nextCursor) return
+    setCursors((current) => [...current, nextCursor])
+    // Unknown until the next page has loaded
+    setNextCursorState(undefined)
+  }, [nextCursor])
 
-  const setPage = useCallback((newPage: number) => {
-    setPageState(Math.max(1, newPage))
+  const previousPage = useCallback(() => {
+    setCursors((current) => current.slice(0, -1))
+    setNextCursorState(undefined)
+  }, [])
+
+  const resetToFirstPage = useCallback(() => {
+    setCursors((current) => (current.length === 0 ? current : []))
   }, [])
 
   const setPageSize = useCallback((newSize: number) => {
-    // When page size changes, adjust current page to keep roughly the same position
-    const currentFirstItem = (page - 1) * pageSize
-    const newPage = Math.max(1, Math.floor(currentFirstItem / newSize) + 1)
+    // Cursors mark positions for the old page size: start over
     setPageSizeState(newSize)
-    setPageState(newPage)
+    setCursors([])
+    setNextCursorState(undefined)
 
     // Persist to localStorage if storageKey provided
     if (storageKey) {
@@ -68,19 +89,17 @@ export function usePagination(options: UsePaginationOptions = {}): UsePagination
         // Ignore storage errors
       }
     }
-  }, [page, pageSize, storageKey])
-
-  const resetToFirstPage = useCallback(() => {
-    setPageState(1)
-  }, [])
+  }, [storageKey])
 
   return {
-    page,
+    page: cursors.length + 1,
     pageSize,
-    offset,
-    setPage,
+    cursor: cursors[cursors.length - 1],
+    hasNext: Boolean(nextCursor),
+    setNextCursor,
+    nextPage,
+    previousPage,
     setPageSize,
-    totalPages,
     resetToFirstPage,
   }
 }

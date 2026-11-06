@@ -15,7 +15,11 @@ func loadProvider(filename string) (*providerData, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", filename, err)
 	}
+	return parseProvider(data, filename)
+}
 
+// parseProvider parses a pricing file (see PricingData)
+func parseProvider(data []byte, filename string) (*providerData, error) {
 	var pricingData PricingData
 	if err := json.Unmarshal(data, &pricingData); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", filename, err)

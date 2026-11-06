@@ -1,7 +1,57 @@
 {
   "provider": "anthropic",
-  "lastUpdated": "2026-06-13T00:00:00Z",
+  "source": "https://models.dev (models.dev contributors, MIT License)",
+  "lastUpdated": "2026-11-05T00:00:00Z",
   "models": {
+    "claude-fable-5-1": {
+      "inputCostPerMTok": 10,
+      "outputCostPerMTok": 50,
+      "cacheReadCostPerMTok": 0.25,
+      "cacheWriteCostPerMTok": 12.5
+    },
+    "claude-mythos-5-1": {
+      "inputCostPerMTok": 10,
+      "outputCostPerMTok": 50,
+      "cacheReadCostPerMTok": 0.25,
+      "cacheWriteCostPerMTok": 12.5
+    },
+    "claude-opus-5-5": {
+      "inputCostPerMTok": 4,
+      "outputCostPerMTok": 20,
+      "cacheReadCostPerMTok": 0.2,
+      "cacheWriteCostPerMTok": 5
+    },
+    "claude-opus-5": {
+      "inputCostPerMTok": 5,
+      "outputCostPerMTok": 25,
+      "cacheReadCostPerMTok": 0.5,
+      "cacheWriteCostPerMTok": 6.25
+    },
+    "claude-sonnet-5-5": {
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 10,
+      "cacheReadCostPerMTok": 0.1,
+      "cacheWriteCostPerMTok": 2.5
+    },
+    "claude-sonnet-5": {
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 10,
+      "cacheReadCostPerMTok": 0.2,
+      "cacheWriteCostPerMTok": 2.5
+    },
+    "claude-haiku-5-5": {
+      "inputCostPerMTok": 0.1,
+      "outputCostPerMTok": 0.5,
+      "cacheReadCostPerMTok": 0.01,
+      "cacheWriteCostPerMTok": 0.125,
+      "longContext": {
+        "thresholdInputTokens": 100000,
+        "inputCostPerMTok": 0.5,
+        "outputCostPerMTok": 2.5,
+        "cacheReadCostPerMTok": 0.05,
+        "cacheWriteCostPerMTok": 0.625
+      }
+    },
     "claude-fable-5": {
       "inputCostPerMTok": 10,
       "outputCostPerMTok": 50,

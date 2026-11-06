@@ -18,23 +18,23 @@ const (
 	SourceGemini SourceType = SourceType(tools.Gemini)
 )
 
-// AllSources returns all supported source types
+// AllSources returns the tools whose session files can be imported
 func AllSources() []SourceType {
-	return []SourceType{SourceClaude, SourceCodex, SourceGemini}
+	var sources []SourceType
+	for _, p := range tools.Providers() {
+		if p.SessionFiles {
+			sources = append(sources, SourceType(p.Tool))
+		}
+	}
+	return sources
 }
 
 // ParseSourceType converts a string to a SourceType
 func ParseSourceType(s string) (SourceType, bool) {
-	switch s {
-	case string(SourceClaude):
-		return SourceClaude, true
-	case string(SourceCodex):
-		return SourceCodex, true
-	case string(SourceGemini):
-		return SourceGemini, true
-	default:
-		return "", false
+	if p, ok := tools.Lookup(s); ok && p.SessionFiles {
+		return SourceType(p.Tool), true
 	}
+	return "", false
 }
 
 // ServiceName returns the OTLP service name for this source
@@ -53,6 +53,17 @@ type ImportResult struct {
 	RecordCount int
 	FirstTime   time.Time
 	LastTime    time.Time
+	// FileHash is the SHA-256 of exactly the bytes that were parsed. It is
+	// recorded as import state, so content appended while the file was being
+	// imported is picked up by the next import.
+	FileHash string
+	// ParsedBytes is the length of the complete lines that were parsed (the
+	// whole file for Gemini). Watch mode continues from there, so lines written
+	// after the import are not skipped.
+	ParsedBytes int64
+	// MessageCount is the number of transcript messages parsed. Gemini rewrites
+	// its session files, so watch mode resumes it by message count.
+	MessageCount int
 }
 
 // SessionParser defines the interface for tool-specific parsers

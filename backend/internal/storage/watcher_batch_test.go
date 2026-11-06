@@ -29,7 +29,7 @@ func TestInsertWatcherBatchInsertsTelemetryAndState(t *testing.T) {
 		},
 	}}
 
-	if err := store.InsertWatcherBatch(ctx, logs, nil, nil, state); err != nil {
+	if err := store.InsertWatcherBatch(ctx, logs, nil, nil, state, false); err != nil {
 		t.Fatalf("InsertWatcherBatch failed: %v", err)
 	}
 

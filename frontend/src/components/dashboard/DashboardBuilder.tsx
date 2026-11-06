@@ -1,15 +1,18 @@
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '@/lib/api'
 import type { StatsResponse } from '@/lib/api'
 import type { TraceOverview } from '@/types/traces'
 import { useDashboardStore } from '@/stores/dashboardStore'
+import { useShallow } from 'zustand/react/shallow'
 import { useTelemetryStore } from '@/stores/telemetryStore'
+import { useLiveRefresh } from '@/hooks/useLiveRefresh'
+import { isAbortError } from '@/lib/errors'
 import { DashboardGrid } from './DashboardGrid'
 import { DashboardToolbar } from './DashboardToolbar'
 import { AddWidgetPanel } from './AddWidgetPanel'
 import { MetricDataProvider } from '@/contexts/MetricDataContext'
-import { EditableText } from '@/components/ui/editable-text'
+import { EditableText } from '@/components/common/editable-text'
 import { isAbsoluteTimeSelection } from '@/types/dashboard'
 
 interface DashboardBuilderProps {
@@ -30,15 +33,34 @@ export function DashboardBuilder({ dashboardId }: DashboardBuilderProps) {
     fromTime,
     toTime,
     isAbsoluteRange,
-  } = useDashboardStore()
+  } = useDashboardStore(
+    useShallow((s) => ({
+      loading: s.loading,
+      error: s.error,
+      dashboard: s.dashboard,
+      loadDefaultDashboard: s.loadDefaultDashboard,
+      loadDashboard: s.loadDashboard,
+      isEditMode: s.isEditMode,
+      updateDashboardDetails: s.updateDashboardDetails,
+      timeSelection: s.timeSelection,
+      fromTime: s.fromTime,
+      toTime: s.toTime,
+      isAbsoluteRange: s.isAbsoluteRange,
+    }))
+  )
   const [stats, setStats] = useState<StatsResponse | null>(null)
   const [recentTraces, setRecentTraces] = useState<TraceOverview[]>([])
 
   // Track WebSocket data for triggering refreshes (use counters, not array length)
   const spansUpdateCount = useTelemetryStore((state) => state.spansUpdateCount)
   const logsUpdateCount = useTelemetryStore((state) => state.logsUpdateCount)
-  const prevSpansCountRef = useRef(0)
-  const prevLogsCountRef = useRef(0)
+  // Stats and recent traces: refreshed on new spans and logs, polled every
+  // 10 s while the WebSocket is disconnected
+  const refreshKey = useLiveRefresh({
+    enabled: true,
+    intervalMs: 10000,
+    updateCount: spansUpdateCount + logsUpdateCount,
+  })
 
   // Load dashboard based on route
   useEffect(() => {
@@ -52,9 +74,13 @@ export function DashboardBuilder({ dashboardId }: DashboardBuilderProps) {
     }
   }, [dashboardId, loadDashboard, loadDefaultDashboard, navigate])
 
-  // Fetch data function
-  const fetchData = useCallback(async () => {
-    try {
+  // Fetch stats and recent traces on mount, when the time selection changes
+  // and on live refreshes. A newer fetch aborts an older one, so responses
+  // never arrive out of order.
+  useEffect(() => {
+    const controller = new AbortController()
+
+    const fetchData = async () => {
       let fetchFrom: Date
       let fetchTo: Date
 
@@ -75,44 +101,24 @@ export function DashboardBuilder({ dashboardId }: DashboardBuilderProps) {
         to: fetchTo.toISOString(),
       }
 
-      const [statsData, tracesData] = await Promise.all([
-        api.getStats(),
-        api.getRecentTraces(10, timeParams),
-      ])
-      setStats(statsData)
-      setRecentTraces(tracesData.traces ?? [])
-    } catch (err) {
-      console.error('Failed to fetch data:', err)
+      try {
+        const [statsData, tracesData] = await Promise.all([
+          api.getStats(timeParams, { signal: controller.signal }),
+          api.getRecentTraces(10, timeParams, { signal: controller.signal }),
+        ])
+        setStats(statsData)
+        setRecentTraces(tracesData.traces ?? [])
+      } catch (err) {
+        if (isAbortError(err)) {
+          return // superseded by a newer refresh
+        }
+        console.error('Failed to fetch data:', err)
+      }
     }
-  }, [timeSelection, fromTime, toTime, isAbsoluteRange])
 
-  // Initial fetch and polling
-  useEffect(() => {
-    const initialFetch = setTimeout(fetchData, 0)
-    const interval = setInterval(fetchData, 10000)
-    return () => {
-      clearTimeout(initialFetch)
-      clearInterval(interval)
-    }
-  }, [fetchData])
-
-  // Refresh when new spans arrive via WebSocket (debounced)
-  useEffect(() => {
-    if (spansUpdateCount > prevSpansCountRef.current) {
-      const timer = setTimeout(fetchData, 500)
-      prevSpansCountRef.current = spansUpdateCount
-      return () => clearTimeout(timer)
-    }
-  }, [spansUpdateCount, fetchData])
-
-  // Refresh when new logs arrive via WebSocket (debounced)
-  useEffect(() => {
-    if (logsUpdateCount > prevLogsCountRef.current) {
-      const timer = setTimeout(fetchData, 500)
-      prevLogsCountRef.current = logsUpdateCount
-      return () => clearTimeout(timer)
-    }
-  }, [logsUpdateCount, fetchData])
+    fetchData()
+    return () => controller.abort()
+  }, [timeSelection, fromTime, toTime, isAbsoluteRange, refreshKey])
 
   if (loading) {
     return (

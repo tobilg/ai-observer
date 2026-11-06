@@ -1,9 +1,10 @@
 import { useEffect } from 'react'
 import { Button } from '@/components/ui/button'
-import { DateRangePicker } from '@/components/ui/date-range-picker'
+import { DateRangePicker } from '@/components/common/date-range-picker'
 import { Download, Plus, Settings, X } from 'lucide-react'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { useDashboardStore } from '@/stores/dashboardStore'
+import { useShallow } from 'zustand/react/shallow'
 import { downloadDashboardExport } from '@/lib/dashboard-export'
 
 export function DashboardToolbar() {
@@ -15,7 +16,16 @@ export function DashboardToolbar() {
     timeSelection,
     setTimeSelection,
     setAddPanelOpen,
-  } = useDashboardStore()
+  } = useDashboardStore(
+    useShallow((s) => ({
+      dashboard: s.dashboard,
+      isEditMode: s.isEditMode,
+      setEditMode: s.setEditMode,
+      timeSelection: s.timeSelection,
+      setTimeSelection: s.setTimeSelection,
+      setAddPanelOpen: s.setAddPanelOpen,
+    }))
+  )
 
   // Auto-exit edit mode when switching to mobile view
   useEffect(() => {

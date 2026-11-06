@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -27,38 +28,29 @@ const (
 	sendBufferSize = 256
 )
 
-// allowedOrigins holds the list of allowed WebSocket origins
-var allowedOrigins []string
-
-// SetAllowedOrigins configures the allowed origins for WebSocket connections
-func SetAllowedOrigins(origins []string) {
-	allowedOrigins = origins
+// sameOrigin accepts handshakes without Origin and from the server's own host
+func sameOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	return err == nil && strings.EqualFold(u.Host, r.Host)
 }
 
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		origin := r.Header.Get("Origin")
-		if origin == "" {
-			// Allow requests without Origin header (same-origin requests)
-			return true
-		}
-
-		for _, allowed := range allowedOrigins {
-			// Check for exact match
-			if origin == allowed {
+// upgrader returns the handshake configuration, accepting the hub's origins
+func (h *Hub) upgrader() *websocket.Upgrader {
+	return &websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		CheckOrigin: func(r *http.Request) bool {
+			if h.originAllowed(r) {
 				return true
 			}
-			// Check for localhost with any port (development)
-			if strings.HasPrefix(allowed, "http://localhost:") && strings.HasPrefix(origin, "http://localhost:") {
-				return true
-			}
-		}
-
-		logger.Warn("WebSocket origin rejected", "origin", origin, "allowed_origins", allowedOrigins)
-		return false
-	},
+			logger.Warn("WebSocket origin rejected", "origin", r.Header.Get("Origin"), "host", r.Host)
+			return false
+		},
+	}
 }
 
 // Client represents a single websocket connection.
@@ -81,7 +73,10 @@ func (c *Client) Close() {
 // We mainly use this to detect disconnection.
 func (c *Client) readPump() {
 	defer func() {
-		c.hub.unregister <- c
+		select {
+		case c.hub.unregister <- c:
+		case <-c.hub.done: // Run has closed all clients
+		}
 		c.conn.Close()
 	}()
 
@@ -123,20 +118,9 @@ func (c *Client) writePump() {
 				return
 			}
 
-			w, err := c.conn.NextWriter(websocket.TextMessage)
-			if err != nil {
-				return
-			}
-			w.Write(message)
-
-			// Add queued messages to the current websocket message.
-			n := len(c.send)
-			for i := 0; i < n; i++ {
-				w.Write([]byte{'\n'})
-				w.Write(<-c.send)
-			}
-
-			if err := w.Close(); err != nil {
+			// One JSON message per frame: the client parses each frame as a
+			// single document, so queued messages must not be concatenated.
+			if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
 				return
 			}
 
@@ -151,7 +135,7 @@ func (c *Client) writePump() {
 
 // ServeWs handles websocket requests from the peer.
 func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
-	conn, err := upgrader.Upgrade(w, r, nil)
+	conn, err := hub.upgrader().Upgrade(w, r, nil)
 	if err != nil {
 		logger.Error("WebSocket upgrade error", "error", err)
 		return
@@ -163,7 +147,12 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		send: make(chan []byte, sendBufferSize),
 	}
 
-	hub.register <- client
+	select {
+	case hub.register <- client:
+	case <-hub.done:
+		conn.Close()
+		return
+	}
 
 	// Start goroutines for reading and writing
 	go client.writePump()

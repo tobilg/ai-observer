@@ -1,8 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { useTelemetryStore } from './telemetryStore'
-import type { Span } from '@/types/traces'
-import type { MetricDataPoint } from '@/types/metrics'
-import type { LogRecord } from '@/types/logs'
+import { MAX_RECENT_ITEMS, useTelemetryStore, type StoredNotification } from './telemetryStore'
 
 describe('telemetryStore', () => {
   beforeEach(() => {
@@ -10,167 +7,122 @@ describe('telemetryStore', () => {
     useTelemetryStore.getState().clearRecentData()
   })
 
-  const createMockSpan = (id: string): Span => ({
-    timestamp: new Date().toISOString(),
-    traceId: `trace-${id}`,
-    spanId: `span-${id}`,
-    spanName: `test-span-${id}`,
-    serviceName: 'test-service',
-    duration: 1000000,
-  })
-
-  const createMockMetric = (id: string): MetricDataPoint => ({
-    timestamp: new Date().toISOString(),
-    serviceName: 'test-service',
-    metricName: `test-metric-${id}`,
-    metricType: 'gauge',
-    value: Math.random() * 100,
-  })
-
-  const createMockLog = (id: string): LogRecord => ({
-    timestamp: new Date().toISOString(),
-    serviceName: 'test-service',
-    body: `Log message ${id}`,
-    severityText: 'INFO',
+  const notification = (...timestamps: number[]): StoredNotification => ({
+    count: timestamps.length,
+    services: ['test-service'],
+    timestamps,
   })
 
   describe('initial state', () => {
-    it('has empty arrays for all data', () => {
+    it('has empty buffers and no received metrics', () => {
       const state = useTelemetryStore.getState()
-      expect(state.recentSpans).toEqual([])
-      expect(state.recentMetrics).toEqual([])
-      expect(state.recentLogs).toEqual([])
+      expect(state.recentSpanTimes).toEqual([])
+      expect(state.recentLogTimes).toEqual([])
+      expect(state.metricsReceivedCount).toBe(0)
     })
   })
 
   describe('addSpans', () => {
-    it('adds spans to the store', () => {
-      const spans = [createMockSpan('1'), createMockSpan('2')]
+    it('records the timestamps of stored spans', () => {
+      useTelemetryStore.getState().addSpans(notification(1, 2))
 
-      useTelemetryStore.getState().addSpans(spans)
-
-      const state = useTelemetryStore.getState()
-      expect(state.recentSpans).toHaveLength(2)
-      expect(state.recentSpans[0].spanId).toBe('span-1')
-      expect(state.recentSpans[1].spanId).toBe('span-2')
+      expect(useTelemetryStore.getState().recentSpanTimes).toEqual([1, 2])
     })
 
-    it('prepends new spans to existing ones', () => {
-      useTelemetryStore.getState().addSpans([createMockSpan('1')])
-      useTelemetryStore.getState().addSpans([createMockSpan('2')])
+    it('prepends newer notifications', () => {
+      useTelemetryStore.getState().addSpans(notification(1))
+      useTelemetryStore.getState().addSpans(notification(2))
 
-      const state = useTelemetryStore.getState()
-      expect(state.recentSpans).toHaveLength(2)
-      expect(state.recentSpans[0].spanId).toBe('span-2')
-      expect(state.recentSpans[1].spanId).toBe('span-1')
+      expect(useTelemetryStore.getState().recentSpanTimes).toEqual([2, 1])
     })
 
-    it('slices array when adding items (MAX_RECENT_ITEMS behavior)', () => {
-      // Add 10 spans
-      const spans = Array.from({ length: 10 }, (_, i) => createMockSpan(`${i}`))
-      useTelemetryStore.getState().addSpans(spans)
+    it('keeps at most MAX_RECENT_ITEMS timestamps, newest first', () => {
+      const times = Array.from({ length: MAX_RECENT_ITEMS + 5 }, (_, i) => i)
+      useTelemetryStore.getState().addSpans(notification(...times.slice(0, 5)))
+      useTelemetryStore.getState().addSpans(notification(...times.slice(5)))
 
       const state = useTelemetryStore.getState()
-      // Verify spans are added in order
-      expect(state.recentSpans.length).toBeGreaterThan(0)
-      expect(state.recentSpans[0].spanId).toBe('span-0')
+      expect(state.recentSpanTimes).toHaveLength(MAX_RECENT_ITEMS)
+      expect(state.recentSpanTimes[0]).toBe(5)
+    })
+
+    it('increments the update counter for every notification', () => {
+      const before = useTelemetryStore.getState().spansUpdateCount
+
+      useTelemetryStore.getState().addSpans(notification(1))
+
+      expect(useTelemetryStore.getState().spansUpdateCount).toBe(before + 1)
     })
   })
 
   describe('addMetrics', () => {
-    it('adds metrics to the store', () => {
-      const metrics = [createMockMetric('1'), createMockMetric('2')]
-
-      useTelemetryStore.getState().addMetrics(metrics)
+    it('counts received metrics without buffering them', () => {
+      useTelemetryStore.getState().addMetrics(notification(1, 2))
+      useTelemetryStore.getState().addMetrics(notification(3))
 
       const state = useTelemetryStore.getState()
-      expect(state.recentMetrics).toHaveLength(2)
+      expect(state.metricsReceivedCount).toBe(3)
+      expect('recentMetrics' in state).toBe(false)
     })
 
-    it('prepends new metrics', () => {
-      useTelemetryStore.getState().addMetrics([createMockMetric('1')])
-      useTelemetryStore.getState().addMetrics([createMockMetric('2')])
+    it('increments the update counter for every batch', () => {
+      const before = useTelemetryStore.getState().metricsUpdateCount
 
-      const state = useTelemetryStore.getState()
-      expect(state.recentMetrics[0].metricName).toBe('test-metric-2')
-    })
+      useTelemetryStore.getState().addMetrics(notification(1))
+      useTelemetryStore.getState().addMetrics(notification(2))
 
-    it('handles adding multiple metrics', () => {
-      const metrics = Array.from({ length: 10 }, (_, i) =>
-        createMockMetric(`${i}`)
-      )
-
-      useTelemetryStore.getState().addMetrics(metrics)
-
-      const state = useTelemetryStore.getState()
-      expect(state.recentMetrics.length).toBeGreaterThan(0)
-      expect(state.recentMetrics[0].metricName).toBe('test-metric-0')
+      expect(useTelemetryStore.getState().metricsUpdateCount).toBe(before + 2)
     })
   })
 
   describe('addLogs', () => {
-    it('adds logs to the store', () => {
-      const logs = [createMockLog('1'), createMockLog('2')]
+    it('records the timestamps of stored logs, newest first', () => {
+      useTelemetryStore.getState().addLogs(notification(1))
+      useTelemetryStore.getState().addLogs(notification(2, 3))
 
-      useTelemetryStore.getState().addLogs(logs)
-
-      const state = useTelemetryStore.getState()
-      expect(state.recentLogs).toHaveLength(2)
+      expect(useTelemetryStore.getState().recentLogTimes).toEqual([2, 3, 1])
     })
 
-    it('prepends new logs', () => {
-      useTelemetryStore.getState().addLogs([createMockLog('1')])
-      useTelemetryStore.getState().addLogs([createMockLog('2')])
+    it('tolerates notifications without timestamps', () => {
+      useTelemetryStore.getState().addLogs({ count: 0, services: [] } as unknown as StoredNotification)
 
-      const state = useTelemetryStore.getState()
-      expect(state.recentLogs[0].body).toBe('Log message 2')
-    })
-
-    it('handles adding multiple logs', () => {
-      const logs = Array.from({ length: 10 }, (_, i) => createMockLog(`${i}`))
-
-      useTelemetryStore.getState().addLogs(logs)
-
-      const state = useTelemetryStore.getState()
-      expect(state.recentLogs.length).toBeGreaterThan(0)
-      expect(state.recentLogs[0].body).toBe('Log message 0')
+      expect(useTelemetryStore.getState().recentLogTimes).toEqual([])
     })
   })
 
   describe('clearRecentData', () => {
     it('clears all data', () => {
-      useTelemetryStore.getState().addSpans([createMockSpan('1')])
-      useTelemetryStore.getState().addMetrics([createMockMetric('1')])
-      useTelemetryStore.getState().addLogs([createMockLog('1')])
+      useTelemetryStore.getState().addSpans(notification(1))
+      useTelemetryStore.getState().addMetrics(notification(1))
+      useTelemetryStore.getState().addLogs(notification(1))
 
       useTelemetryStore.getState().clearRecentData()
 
       const state = useTelemetryStore.getState()
-      expect(state.recentSpans).toEqual([])
-      expect(state.recentMetrics).toEqual([])
-      expect(state.recentLogs).toEqual([])
+      expect(state.recentSpanTimes).toEqual([])
+      expect(state.recentLogTimes).toEqual([])
+      expect(state.metricsReceivedCount).toBe(0)
     })
 
     it('allows adding data after clearing', () => {
-      useTelemetryStore.getState().addSpans([createMockSpan('1')])
+      useTelemetryStore.getState().addSpans(notification(1))
       useTelemetryStore.getState().clearRecentData()
-      useTelemetryStore.getState().addSpans([createMockSpan('2')])
+      useTelemetryStore.getState().addSpans(notification(2))
 
-      expect(useTelemetryStore.getState().recentSpans).toHaveLength(1)
-      expect(useTelemetryStore.getState().recentSpans[0].spanId).toBe('span-2')
+      expect(useTelemetryStore.getState().recentSpanTimes).toEqual([2])
     })
   })
 
   describe('independence of data types', () => {
     it('adding spans does not affect metrics or logs', () => {
-      useTelemetryStore.getState().addMetrics([createMockMetric('1')])
-      useTelemetryStore.getState().addLogs([createMockLog('1')])
-      useTelemetryStore.getState().addSpans([createMockSpan('1')])
+      useTelemetryStore.getState().addMetrics(notification(1))
+      useTelemetryStore.getState().addLogs(notification(1))
+      useTelemetryStore.getState().addSpans(notification(1))
 
       const state = useTelemetryStore.getState()
-      expect(state.recentSpans).toHaveLength(1)
-      expect(state.recentMetrics).toHaveLength(1)
-      expect(state.recentLogs).toHaveLength(1)
+      expect(state.recentSpanTimes).toHaveLength(1)
+      expect(state.metricsReceivedCount).toBe(1)
+      expect(state.recentLogTimes).toHaveLength(1)
     })
   })
 })
