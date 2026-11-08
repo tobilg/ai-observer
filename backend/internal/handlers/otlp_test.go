@@ -3,10 +3,14 @@ package handlers
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/tobilg/ai-observer/internal/storage"
 )
 
 // OTLP JSON payload structures for testing
@@ -533,6 +537,14 @@ func TestHandleTraces_WithAttributes(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
+	// OTLP/JSON sends IDs as hex: they are stored as sent
+	spans, err := h.store.TraceSpans(context.Background(), "0102030405060708090a0b0c0d0e0f10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spans) != 1 || spans[0].SpanID != "0102030405060708" || spans[0].ParentSpanID != "0807060504030201" {
+		t.Errorf("stored spans = %+v", spans)
+	}
 }
 
 func TestHandleLogs_WithTraceContext(t *testing.T) {
@@ -577,6 +589,14 @@ func TestHandleLogs_WithTraceContext(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	logs, err := h.store.QueryLogs(context.Background(), "", "", "0102030405060708090a0b0c0d0e0f10", "",
+		time.Unix(1609459100, 0), time.Unix(1609459300, 0), storage.Page{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs.Logs) != 1 || logs.Logs[0].SpanID != "0102030405060708" {
+		t.Errorf("stored logs = %+v", logs.Logs)
 	}
 }
 

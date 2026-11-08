@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1]
+
+### Added
+
+- **Charts and tables for MCP Apps hosts.** In hosts that render [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps), such as Claude Desktop, VS Code with GitHub Copilot or Cursor, the results of `usage_summary`, `query_metrics`, `get_trace` and `list_sessions` appear as a view in the conversation: cost and token bars by tool, model, repository or day, metric charts, the trace waterfall and the session table, with switches for grouping and paging. The view is one page built into the binary and gets its data through the host. Clients without MCP Apps support, such as Claude Code, Codex CLI and Gemini CLI, get the same results as before. See `docs/mcp.md`.
+
+### Changed
+
+- `get_trace` returns span start times with milliseconds, so spans in the same second keep their order and offsets.
+- The MCP endpoint's `resources/list` leaves out the view's `ui://` resource, so agents that browse resources do not read it into their context.
+
+### Fixed
+
+- **Trace and span IDs sent as OTLP/JSON were stored wrong.** OTLP/JSON encodes them as hex, which AI Observer read as base64, so it stored other, longer IDs than the exporter sent (48 instead of 32 hex characters for trace IDs, 24 instead of 16 for span IDs). This affected the HTTP exporters of Gemini CLI and other tools built on the OpenTelemetry JavaScript exporters; protobuf exports were not affected. They are now stored as sent, and on its first start AI Observer repairs the stored IDs of spans, span links and logs once. Links and bookmarks to such traces by their old IDs stop working.
+
 ## [0.7.0] - 2026-11-06
 
 ### Upgrade notes
@@ -345,6 +360,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - OTLP ingestion on port 4318
 - API/Dashboard on port 8080
 
+[0.7.1]: https://github.com/tobilg/ai-observer/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/tobilg/ai-observer/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/tobilg/ai-observer/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/tobilg/ai-observer/compare/v0.4.0...v0.5.0

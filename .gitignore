@@ -45,8 +45,9 @@ data/*.duckdb
 data/*.duckdb.wal
 data/*.duckdb.wal.checkpoint
 
-# Embedded frontend build output
+# Embedded frontend build output (dashboard, MCP tools' view)
 backend/internal/frontend/dist/
+backend/internal/frontend/mcpapp/
 
 .DS_Store
 .tmp

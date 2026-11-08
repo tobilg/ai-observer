@@ -52,7 +52,7 @@ func testSession(t *testing.T) (*mcp.ClientSession, *storage.DuckDBStore, time.T
 		{Timestamp: now.Add(-2 * time.Hour), TraceID: "trace-1", SpanID: "root", SpanName: "agent turn", ServiceName: "codex_cli_rs", Duration: int64(3 * time.Second), StatusCode: "OK"},
 		{Timestamp: now.Add(-2*time.Hour + time.Second), TraceID: "trace-1", SpanID: "tool", ParentSpanID: "root", SpanName: "tool call", ServiceName: "codex_cli_rs",
 			Duration: int64(time.Second), SpanAttributes: map[string]string{"command": strings.Repeat("x", 1000)}},
-		{Timestamp: now.Add(-2*time.Hour + 2*time.Second), TraceID: "trace-1", SpanID: "nested", ParentSpanID: "tool", SpanName: "exec", ServiceName: "codex_cli_rs"},
+		{Timestamp: now.Add(-2*time.Hour + 2250*time.Millisecond), TraceID: "trace-1", SpanID: "nested", ParentSpanID: "tool", SpanName: "exec", ServiceName: "codex_cli_rs"},
 	}
 	value := func(v float64) *float64 { return &v }
 	metric := func(name string, v float64, attrs map[string]string) api.MetricDataPoint {
@@ -323,6 +323,10 @@ func TestLogsTracesAndMetrics(t *testing.T) {
 	}
 	if strings.Join(shape, ",") != "agent turn,>tool call,>>exec" || !strings.Contains(trace.Spans[1].Attributes["command"], "more characters]") {
 		t.Errorf("trace = %v, %+v", shape, trace.Spans[1].Attributes)
+	}
+	// Milliseconds, so the view can place spans of the same second
+	if !strings.HasSuffix(trace.Spans[2].StartTime, ".250Z") {
+		t.Errorf("span start = %q, want milliseconds", trace.Spans[2].StartTime)
 	}
 	if call(t, cs, "get_trace", map[string]any{"id": "trace-1", "max_spans": 2}, &trace); len(trace.Spans) != 2 || !trace.Truncated {
 		t.Errorf("limited trace = %+v", trace)

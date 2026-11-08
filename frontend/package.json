@@ -6,7 +6,7 @@
   "packageManager": "pnpm@10.34.7",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && vite build --mode mcp-app",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest",
@@ -21,6 +21,7 @@
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
+    "@modelcontextprotocol/ext-apps": "^2.0.4",
     "@radix-ui/react-alert-dialog": "^1.1.15",
     "@radix-ui/react-collapsible": "^1.1.12",
     "@radix-ui/react-dialog": "^1.1.15",
@@ -71,6 +72,7 @@
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.61.0",
     "vite": "^8.0.16",
+    "vite-plugin-singlefile": "^2.3.4",
     "vitest": "^4.1.8"
   }
 }

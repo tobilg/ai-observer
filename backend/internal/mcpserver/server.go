@@ -33,7 +33,9 @@ Typical use:
 
 Times accept RFC 3339, dates (UTC) or ages relative to now such as 30m, 24h, 7d, 2w. Lists are paged: pass next_cursor as cursor for the next page. Long text is cut (max_chars); secrets in stored text are replaced by [REDACTED:...] markers.`
 
-// New returns the MCP server with AI Observer's tools
+// New returns the MCP server with AI Observer's tools. usage_summary,
+// query_metrics, get_trace and list_sessions also name a view for hosts
+// that render MCP Apps (app.go).
 func New(store *storage.DuckDBStore, version string) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "ai-observer", Title: "AI Observer", Version: version},
 		&mcp.ServerOptions{Instructions: instructions})
@@ -47,14 +49,14 @@ func New(store *storage.DuckDBStore, version string) *mcp.Server {
 	mcp.AddTool(server, readOnly("search_conversations", "Search conversations",
 		"Find sessions with a prompt, reply or tool call that contains all words of the query, in any order (case-insensitive substrings; \"quoted phrases\" match exactly), newest match first, with a snippet around the match. Use get_transcript to read a session."),
 		h.searchConversations)
-	mcp.AddTool(server, readOnly("list_sessions", "List sessions",
-		"List the sessions (conversations) of the AI coding tools with activity in a time range, most recently active first, with tool, model, start, last activity and message count."),
+	mcp.AddTool(server, withApp(readOnly("list_sessions", "List sessions",
+		"List the sessions (conversations) of the AI coding tools with activity in a time range, most recently active first, with tool, model, start, last activity and message count.")),
 		h.listSessions)
 	mcp.AddTool(server, readOnly("get_transcript", "Get transcript",
 		"Read the transcript of a session: user prompts, assistant replies, tool calls and results in order, paged, with long text cut to max_chars."),
 		h.getTranscript)
-	mcp.AddTool(server, readOnly("usage_summary", "Usage summary",
-		"Token usage and cost in USD over a time range, grouped by tool, model, day or repository."),
+	mcp.AddTool(server, withApp(readOnly("usage_summary", "Usage summary",
+		"Token usage and cost in USD over a time range, grouped by tool, model, day or repository.")),
 		h.usageSummary)
 	mcp.AddTool(server, readOnly("search_logs", "Search logs",
 		"Search the stored log records (events such as prompts, API requests, tool results and errors) by text, tool, severity or trace, newest first."),
@@ -62,14 +64,14 @@ func New(store *storage.DuckDBStore, version string) *mcp.Server {
 	mcp.AddTool(server, readOnly("list_traces", "List traces",
 		"List traces (requests, agent turns and tool calls recorded as spans) in a time range, newest first, optionally matching a text."),
 		h.listTraces)
-	mcp.AddTool(server, readOnly("get_trace", "Get trace",
-		"Read the spans of a trace as a tree (depth first) with durations, status and attributes."),
+	mcp.AddTool(server, withApp(readOnly("get_trace", "Get trace",
+		"Read the spans of a trace as a tree (depth first) with durations, status and attributes.")),
 		h.getTrace)
 	mcp.AddTool(server, readOnly("list_metric_names", "List metric names",
 		"List the names of the stored metrics, optionally of one tool."),
 		h.listMetricNames)
-	mcp.AddTool(server, readOnly("query_metrics", "Query metrics",
-		"Read a metric as time series (buckets) or totals over a range, per series of service, type and model. Cumulative counters are turned into increases."),
+	mcp.AddTool(server, withApp(readOnly("query_metrics", "Query metrics",
+		"Read a metric as time series (buckets) or totals over a range, per series of service, type and model. Cumulative counters are turned into increases.")),
 		h.queryMetrics)
 
 	server.AddResourceTemplate(&mcp.ResourceTemplate{
@@ -79,6 +81,8 @@ func New(store *storage.DuckDBStore, version string) *mcp.Server {
 		Description: "The transcript of a session as Markdown",
 		MIMEType:    "text/markdown",
 	}, h.readTranscriptResource)
+	addAppResource(server)
+	server.AddReceivingMiddleware(hideAppResources)
 	return server
 }
 

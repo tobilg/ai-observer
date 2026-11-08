@@ -167,6 +167,8 @@ claude mcp add --transport http ai-observer http://localhost:8080/mcp
 
 `search_conversations` finds the prompts, replies and tool calls that contain all words of a query, in any order and case (`flaky parser test`); words also match inside longer words (`retr` finds `retry` and `retries`), and `"quoted phrases"` match as written.
 
+In hosts that render [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps), such as Claude Desktop, VS Code with GitHub Copilot or Cursor, the results of `usage_summary`, `query_metrics`, `get_trace` and `list_sessions` also appear as charts and tables in the conversation. Terminal agents get the same text results as before.
+
 The endpoint is off by default and behind the same Host, Origin and token checks as the API; add `--header "Authorization: Bearer <token>"` when `AI_OBSERVER_AUTH_TOKEN` is set. What the tools return is sent to the agent's model provider. See [Agent Access (MCP)](docs/mcp.md) for the other tools' setup, all tools and their arguments.
 
 ### Redaction

@@ -3,8 +3,11 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -213,5 +216,96 @@ func TestMigration1SessionIDKeysMatchTheirOrigin(t *testing.T) {
 	n := len(migration1SessionIDKeys)
 	if len(tools.SessionIDKeys) < n || !slices.Equal(migration1SessionIDKeys, tools.SessionIDKeys[:n]) {
 		t.Errorf("migration1SessionIDKeys = %v, want a prefix of tools.SessionIDKeys %v", migration1SessionIDKeys, tools.SessionIDKeys)
+	}
+}
+
+// Trace and span IDs that earlier versions read from OTLP/JSON as base64
+// instead of hex are repaired; other IDs are kept.
+func TestHexIDMigration(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "ids.duckdb")
+	const (
+		traceID = "5b8efff798038103d269b633813fc60c"
+		spanID  = "eee19b7ec3c1b174"
+		parent  = "eee19b7ec3c1b173"
+	)
+	// What earlier versions stored for an ID sent as hex text
+	misread := func(sent string) string {
+		b, err := base64.StdEncoding.DecodeString(sent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hex.EncodeToString(b)
+	}
+	notSent := strings.Repeat("ff", 24) // 24 bytes whose base64 is not hex
+
+	legacy, err := sql.Open("duckdb", dbPath)
+	if err != nil {
+		t.Fatalf("opening legacy database: %v", err)
+	}
+	for _, stmt := range []string{
+		schemaTraces,
+		schemaLogs,
+		`INSERT INTO otel_traces (Timestamp, TraceId, SpanId, ParentSpanId, SpanName, ServiceName, Duration, "Links.TraceId", "Links.SpanId") VALUES
+			('2025-01-02 10:00:00', '` + misread(traceID) + `', '` + misread(spanID) + `', '` + misread(parent) + `', 'json', 'gemini_cli', 1,
+			 '["` + misread(strings.ToUpper(traceID)) + `"]', '["` + misread(parent) + `", "` + spanID + `"]'),
+			('2025-01-02 10:00:01', '` + traceID + `', '` + spanID + `', NULL, 'protobuf', 'claude-code', 1, '[]', '[]'),
+			('2025-01-02 10:00:02', 'not-hex-trace-id-of-48-characters-xxxxxxxxxxxxxx', 's1', 'p1', 'other', 'svc', 1, NULL, NULL),
+			('2025-01-02 10:00:03', '` + notSent + `', '` + spanID + `', NULL, 'odd', 'svc', 1, NULL, NULL)`,
+		`INSERT INTO otel_logs (Timestamp, TraceId, SpanId, ServiceName) VALUES
+			('2025-01-02 10:00:00', '` + misread(traceID) + `', '` + misread(spanID) + `', 'gemini_cli'),
+			('2025-01-02 10:00:01', NULL, NULL, 'gemini_cli')`,
+	} {
+		if _, err := legacy.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	legacy.Close()
+
+	store, err := NewDuckDBStore(dbPath)
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	defer store.Close()
+
+	rows, err := store.db.QueryContext(ctx, `SELECT SpanName, TraceId, SpanId, COALESCE(ParentSpanId, ''),
+		COALESCE(CAST("Links.TraceId" AS VARCHAR), ''), COALESCE(CAST("Links.SpanId" AS VARCHAR), '')
+		FROM otel_traces ORDER BY Timestamp`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got [][]string
+	for rows.Next() {
+		row := make([]string, 6)
+		if err := rows.Scan(&row[0], &row[1], &row[2], &row[3], &row[4], &row[5]); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, row)
+	}
+	rows.Close()
+	want := [][]string{
+		{"json", traceID, spanID, parent, `["` + traceID + `"]`, `["` + parent + `","` + spanID + `"]`},
+		{"protobuf", traceID, spanID, "", "[]", "[]"},
+		{"other", "not-hex-trace-id-of-48-characters-xxxxxxxxxxxxxx", "s1", "p1", "", ""},
+		{"odd", notSent, spanID, "", "", ""},
+	}
+	if !slices.EqualFunc(got, want, slices.Equal) {
+		t.Errorf("spans after migration:\n got %q\nwant %q", got, want)
+	}
+
+	var logTrace, logSpan sql.NullString
+	if err := store.db.QueryRowContext(ctx, `SELECT TraceId, SpanId FROM otel_logs ORDER BY Timestamp LIMIT 1`).Scan(&logTrace, &logSpan); err != nil {
+		t.Fatal(err)
+	}
+	if logTrace.String != traceID || logSpan.String != spanID {
+		t.Errorf("log IDs = %s/%s, want %s/%s", logTrace.String, logSpan.String, traceID, spanID)
+	}
+	// The repaired spans are found by the IDs that were sent
+	spans, err := store.TraceSpans(ctx, traceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spans) != 2 {
+		t.Errorf("trace %s has %d spans, want 2", traceID, len(spans))
 	}
 }

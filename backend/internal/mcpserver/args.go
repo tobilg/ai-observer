@@ -179,3 +179,12 @@ func formatTime(t time.Time) string {
 	}
 	return t.UTC().Format(time.RFC3339)
 }
+
+// formatTimeMillis formats a time like formatTime with milliseconds, for
+// span starts, which are often in the same second
+func formatTimeMillis(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+}

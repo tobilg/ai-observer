@@ -420,7 +420,7 @@ func (h *handlers) getTrace(ctx context.Context, _ *mcp.CallToolRequest, in getT
 		}
 		out.Spans = append(out.Spans, spanOut{
 			SpanID: s.span.SpanID, ParentSpanID: s.span.ParentSpanID, Depth: s.depth, Name: h.text(s.span.SpanName),
-			Tool: toolName(s.span.ServiceName), StartTime: formatTime(s.span.Timestamp), DurationMs: float64(s.span.Duration) / 1e6,
+			Tool: toolName(s.span.ServiceName), StartTime: formatTimeMillis(s.span.Timestamp), DurationMs: float64(s.span.Duration) / 1e6,
 			Status: s.span.StatusCode, StatusMessage: h.text(s.span.StatusMessage), Attributes: h.attributes(s.span.SpanAttributes, maxChars),
 		})
 	}

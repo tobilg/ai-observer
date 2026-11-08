@@ -13,6 +13,7 @@ bin/
 backend/bin/
 backend/server
 backend/internal/frontend/dist/
+backend/internal/frontend/mcpapp/
 frontend/dist/
 frontend/coverage/
 coverage.*

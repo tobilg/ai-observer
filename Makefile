@@ -100,6 +100,7 @@ clean:
 	rm -rf bin/
 	rm -rf frontend/dist/
 	rm -rf backend/internal/frontend/dist/
+	rm -rf backend/internal/frontend/mcpapp/
 
 # Setup
 setup:

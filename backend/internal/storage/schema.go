@@ -361,4 +361,48 @@ var migrations = []migration{
 			`INSERT OR IGNORE INTO metric_names SELECT DISTINCT ServiceName, MetricName FROM otel_metrics`,
 		},
 	},
+	{
+		// OTLP/JSON exporters (Gemini CLI, and others built on the
+		// OpenTelemetry JavaScript HTTP exporters) send trace and span IDs as
+		// hex, which earlier versions read as base64 (otlp.hexID): they
+		// stored other IDs than the ones sent. Repair them in spans, span
+		// links and logs.
+		version: 9,
+		name:    "hex trace and span ids",
+		stmts: []string{
+			migration9IDSQL("otel_traces", "TraceId", 16),
+			migration9IDSQL("otel_traces", "SpanId", 8),
+			migration9IDSQL("otel_traces", "ParentSpanId", 8),
+			migration9IDSQL("otel_logs", "TraceId", 16),
+			migration9IDSQL("otel_logs", "SpanId", 8),
+			migration9LinkIDsSQL(`"Links.TraceId"`, 16),
+			migration9LinkIDsSQL(`"Links.SpanId"`, 8),
+		},
+	},
+}
+
+// migration9SentID is the ID that was sent for an ID expr of size bytes,
+// stored by earlier versions as read from OTLP/JSON: the hex of 1.5 times
+// size bytes, whose base64 is the hex text that was sent. Other IDs are
+// kept: those of other lengths, IDs that are not lowercase hex (so from_hex
+// only sees hex), and IDs whose base64 is not hex.
+func migration9SentID(expr string, size int) string {
+	return fmt.Sprintf(`CASE WHEN regexp_full_match(%[1]s, '[0-9a-f]{%[2]d}')
+		THEN CASE WHEN regexp_full_match(to_base64(from_hex(%[1]s)), '[0-9a-fA-F]{%[3]d}')
+			THEN lower(to_base64(from_hex(%[1]s))) ELSE %[1]s END
+		ELSE %[1]s END`, expr, size*3, size*2)
+}
+
+// migration9IDSQL repairs an ID column
+func migration9IDSQL(table, column string, size int) string {
+	return fmt.Sprintf(`UPDATE %[1]s SET %[2]s = %[3]s WHERE length(%[2]s) = %[4]d`,
+		table, column, migration9SentID(column, size), size*3)
+}
+
+// migration9LinkIDsSQL repairs the IDs in a JSON array column of span links
+func migration9LinkIDsSQL(column string, size int) string {
+	return fmt.Sprintf(`UPDATE otel_traces
+		SET %[1]s = to_json(list_transform(json_extract_string(%[1]s, '$[*]'), lambda x: %[2]s))
+		WHERE regexp_matches(CAST(%[1]s AS VARCHAR), '"[0-9a-f]{%[3]d}"')`,
+		column, migration9SentID("x", size), size*3)
 }

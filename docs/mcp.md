@@ -120,6 +120,25 @@ Results are JSON (also as structured content with an output schema). Long text i
 
 The transcript of a session is also a resource, `ai-observer://sessions/{session_id}/transcript` (Markdown), for clients that attach resources to a prompt.
 
+## Charts in MCP Apps hosts
+
+Hosts that render [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps) show the results of four tools as charts and tables in the conversation, besides the text the agent reads:
+
+| Tool | View |
+|------|------|
+| `usage_summary` | Total cost and tokens; bars per tool, model or repository, or daily bars stacked by tool. Switch between cost and tokens, and between groupings (this calls the tool again for the same range) |
+| `query_metrics` | The metric over time (bars for counters, lines for other metrics), or bars of the totals with `aggregate` |
+| `get_trace` | The trace page's waterfall; click a span for its attributes and error |
+| `list_sessions` | Sessions per tool and a table of them; *Load more* reads the next page |
+
+**Which agents show it:** hosts that support MCP Apps, such as Claude (desktop and web), VS Code with GitHub Copilot (turn on the experimental setting `chat.mcp.apps.enabled`), Cursor and Goose; see the [client matrix](https://modelcontextprotocol.io/extensions/client-matrix). The host must reach the endpoint: one that connects from the cloud cannot reach `127.0.0.1`. Claude Code, Codex CLI, Gemini CLI and OpenCode don't render MCP Apps; they get the same results as before, and nothing of the view enters their context.
+
+**How it works:**
+
+- The four tools name the view in their `_meta.ui.resourceUri`: `ui://ai-observer/view.html`. The host reads it with `resources/read` (`text/html;profile=mcp-app`): a single page with its scripts and styles inlined, built into the binary. The host shows it in a sandboxed frame and passes it the tool's arguments and result.
+- The view has no network access. It gets results from the host and calls tools through the host (another grouping, the next page), so the endpoint's Host, Origin and token checks apply as to any call.
+- `resources/list` leaves out `ui://` resources, as the MCP Apps specification allows: hosts find the view through the tools, while agents that browse resources (Claude Code and Codex have tools for that) would otherwise read the page, about 1 MB, into their context.
+
 ## Security
 
 - **What agents see:** the stored prompts, code, tool output and file paths. Whatever a tool returns is sent to the agent's model provider. Enable MCP only when you are comfortable with that, and keep secret redaction on (`AI_OBSERVER_REDACT`, default `secrets`; see [Redaction](redaction.md)). Results are redacted again when they are returned, so telemetry stored before redaction was enabled is covered too.
