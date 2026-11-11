@@ -131,7 +131,7 @@ func runExport(args []string) error {
 
 	// Load config and initialize store for database export
 	cfg := config.Load()
-	store, err := storage.NewDuckDBStore(cfg.DatabasePath)
+	store, err := storage.NewDuckDBStoreWithOptions(cfg.DatabasePath, cfg.StorageOptions())
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}

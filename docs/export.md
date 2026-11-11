@@ -81,7 +81,7 @@ The source argument maps to internal service names:
 | Source | Internal ServiceName |
 |--------|---------------------|
 | `claude-code` | `claude-code` |
-| `codex` | `codex_cli_rs` |
+| `codex` | `codex_cli_rs`, `codex-app-server`, `codex-exec-server` |
 | `gemini` | `gemini_cli` |
 | `opencode` | `opencode` |
 | `copilot-chat` | `copilot-chat` |

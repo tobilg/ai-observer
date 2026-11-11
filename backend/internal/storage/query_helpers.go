@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/tobilg/ai-observer/internal/tools"
 )
 
 var (
@@ -83,11 +85,45 @@ func (c conditions) clause(keyword string) string {
 	return " " + keyword + " " + strings.Join(c.sql, " AND ")
 }
 
+// serviceCondition is the condition of a service filter: a tool name
+// (codex) matches all of the tool's services, a service name only itself
+// (tools.FilterServices). It returns "" for no filter.
+func serviceCondition(service string) (string, []any) {
+	names := tools.FilterServices(service)
+	if len(names) == 0 {
+		return "", nil
+	}
+	args := make([]any, len(names))
+	for i, name := range names {
+		args[i] = name
+	}
+	if len(names) == 1 {
+		return "ServiceName = ?", args
+	}
+	return "ServiceName IN (?" + strings.Repeat(", ?", len(names)-1) + ")", args
+}
+
+// addService adds the condition of a service filter (serviceCondition)
+func (c *conditions) addService(service string) {
+	if cond, args := serviceCondition(service); cond != "" {
+		c.add(cond, args...)
+	}
+}
+
 // concatArgs joins query arguments in the order of their placeholders
 func concatArgs(parts ...[]any) []any {
 	var args []any
 	for _, part := range parts {
 		args = append(args, part...)
+	}
+	return args
+}
+
+// stringArgs returns values as query arguments
+func stringArgs(values []string) []any {
+	args := make([]any, len(values))
+	for i, v := range values {
+		args[i] = v
 	}
 	return args
 }

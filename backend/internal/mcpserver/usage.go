@@ -16,19 +16,22 @@ import (
 )
 
 // usageMetrics are the cost and token metrics of each tool. GitHub Copilot's
-// are derived from the spans of both of its services. Token types in partOf
-// are already counted in another type (as the cost calculations treat them:
-// OpenAI, Gemini and GenAI input includes cached input, OpenAI output
-// includes reasoning), so they are left out of total_tokens.
-var usageMetrics = []struct {
+// are derived from the spans of both of its services, Codex's from the
+// events of all of its services. Token types in partOf are already counted
+// in another type (as the cost calculations treat them: OpenAI, Gemini and
+// GenAI input includes cached input, and Codex's also the cache writes;
+// OpenAI output includes reasoning), so they are left out of total_tokens.
+type usageMetric struct {
 	tool         string
 	services     []string
 	cost, tokens string
 	partOf       []string
-}{
+}
+
+var usageMetrics = []usageMetric{
 	{"claude-code", []string{tools.Claude.ServiceName()}, "claude_code.cost.usage", "claude_code.token.usage", nil},
-	{"codex", []string{tools.Codex.ServiceName()}, "codex_cli_rs.cost.usage", "codex_cli_rs.token.usage",
-		[]string{otlp.TokenTypeCacheRead, otlp.TokenTypeReasoning}},
+	{"codex", tools.Codex.ServiceNames(), otlp.CodexCostUsageMetric, otlp.CodexTokenUsageMetric,
+		[]string{otlp.TokenTypeCacheRead, otlp.TokenTypeCacheWrite, otlp.TokenTypeReasoning}},
 	{"gemini", []string{tools.Gemini.ServiceName()}, "gemini_cli.cost.usage", "gemini_cli.token.usage",
 		[]string{pricing.GeminiTokenTypeCache}},
 	{"copilot", []string{tools.CopilotVSCode.ServiceName(), tools.CopilotCLI.ServiceName()}, "github_copilot.cost.usage", "github_copilot.token.usage",
@@ -59,10 +62,12 @@ type usageSummaryOut struct {
 	GroupBy      string     `json:"group_by"`
 	Rows         []usageRow `json:"rows"`
 	TotalCostUSD float64    `json:"total_cost_usd"`
-	Note         string     `json:"note"`
+	// UnpricedModels have tokens but no cost in the range ("tool: model")
+	UnpricedModels []string `json:"unpriced_models,omitempty"`
+	Note           string   `json:"note"`
 }
 
-const usageNote = "Costs and tokens as AI Observer recorded them. Sessions that were both imported from files and sent over OTLP count twice; Claude Code reports its own cost, the other tools' costs are calculated from built-in prices. total_tokens leaves out token types that are part of another type: cached input of Codex (cacheRead), Gemini (cache) and GitHub Copilot (cache_read), which their input includes, and Codex reasoning, which its output includes."
+const usageNote = "Costs and tokens as AI Observer recorded them. Sessions that were both imported from files and sent over OTLP count twice; Claude Code reports its own cost, the other tools' costs are calculated from built-in prices, and models in unpriced_models have none, so their tokens add no cost (prices can be added, see docs/pricing.md). total_tokens leaves out token types that are part of another type: cached input of Codex (cacheRead, cacheWrite), Gemini (cache) and GitHub Copilot (cache_read), which their input includes, and Codex reasoning, which its output includes."
 
 func (h *handlers) usageSummary(ctx context.Context, _ *mcp.CallToolRequest, in usageSummaryIn) (*mcp.CallToolResult, usageSummaryOut, error) {
 	from, to, err := timeRange(in.From, in.To, h.now(), 7*24*time.Hour)
@@ -102,10 +107,13 @@ func (h *handlers) usageSummary(ctx context.Context, _ *mcp.CallToolRequest, in 
 		return rows[k]
 	}
 
+	var filtered []usageMetric
 	for _, m := range usageMetrics {
-		if service != "" && !slices.Contains(m.services, service) {
-			continue
+		if service == "" || slices.ContainsFunc(tools.FilterServices(service), func(s string) bool { return slices.Contains(m.services, s) }) {
+			filtered = append(filtered, m)
 		}
+	}
+	for _, m := range filtered {
 		for _, metric := range []string{m.cost, m.tokens} {
 			series, err := h.usageSeries(ctx, metric, service, from, to, groupBy)
 			if err != nil {
@@ -144,7 +152,12 @@ func (h *handlers) usageSummary(ctx context.Context, _ *mcp.CallToolRequest, in 
 		}
 	}
 
-	out := usageSummaryOut{From: formatTime(from), To: formatTime(to), GroupBy: groupBy, Rows: []usageRow{}, Note: usageNote}
+	unpriced, err := h.unpricedModels(ctx, filtered, service, from, to)
+	if err != nil {
+		return nil, usageSummaryOut{}, err
+	}
+
+	out := usageSummaryOut{From: formatTime(from), To: formatTime(to), GroupBy: groupBy, Rows: []usageRow{}, UnpricedModels: unpriced, Note: usageNote}
 	for _, r := range rows {
 		r.CostUSD = roundCost(r.CostUSD)
 		out.TotalCostUSD += r.CostUSD
@@ -162,6 +175,43 @@ func (h *handlers) usageSummary(ctx context.Context, _ *mcp.CallToolRequest, in 
 		return a.Tool+a.Model+a.Repository < b.Tool+b.Model+b.Repository
 	})
 	return nil, out, nil
+}
+
+// unpricedModels lists the models ("tool: model") with tokens but no cost in
+// the range: models without a price, such as Codex's codex-auto-review
+// (its automatic approval reviewer), whose tokens add nothing to the cost
+func (h *handlers) unpricedModels(ctx context.Context, metrics []usageMetric, service string, from, to time.Time) ([]string, error) {
+	var unpriced []string
+	for _, m := range metrics {
+		models := func(metric string) (map[string]float64, error) {
+			series, err := h.store.QueryMetricTotals(ctx, metric, service, from, to, "")
+			if err != nil {
+				return nil, err
+			}
+			totals := make(map[string]float64)
+			for _, s := range series.Series {
+				for _, dp := range s.DataPoints {
+					totals[labelOr(s.Labels, "model", "unknown")] += dp[1]
+				}
+			}
+			return totals, nil
+		}
+		tokens, err := models(m.tokens)
+		if err != nil {
+			return nil, err
+		}
+		costs, err := models(m.cost)
+		if err != nil {
+			return nil, err
+		}
+		for model, n := range tokens {
+			if _, priced := costs[model]; n > 0 && !priced {
+				unpriced = append(unpriced, m.tool+": "+model)
+			}
+		}
+	}
+	slices.Sort(unpriced)
+	return unpriced, nil
 }
 
 // usageSeries reads one usage metric: totals by model or repository, or

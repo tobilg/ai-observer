@@ -23,9 +23,9 @@ func (s *DuckDBStore) CountLogsInRange(ctx context.Context, from, to time.Time, 
 	query := `SELECT COUNT(*) FROM otel_logs WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP`
 	args := []interface{}{fromStr, toStr}
 
-	if service != "" {
-		query += " AND ServiceName = ?"
-		args = append(args, service)
+	if cond, serviceArgs := serviceCondition(service); cond != "" {
+		query += " AND " + cond
+		args = append(args, serviceArgs...)
 	}
 
 	var count int64
@@ -44,9 +44,9 @@ func (s *DuckDBStore) CountMetricsInRange(ctx context.Context, from, to time.Tim
 	query := `SELECT COUNT(*) FROM otel_metrics WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP`
 	args := []interface{}{fromStr, toStr}
 
-	if service != "" {
-		query += " AND ServiceName = ?"
-		args = append(args, service)
+	if cond, serviceArgs := serviceCondition(service); cond != "" {
+		query += " AND " + cond
+		args = append(args, serviceArgs...)
 	}
 
 	var count int64
@@ -66,9 +66,9 @@ func (s *DuckDBStore) CountTracesInRange(ctx context.Context, from, to time.Time
 	spanQuery := `SELECT COUNT(*) FROM otel_traces WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP`
 	args := []interface{}{fromStr, toStr}
 
-	if service != "" {
-		spanQuery += " AND ServiceName = ?"
-		args = append(args, service)
+	if cond, serviceArgs := serviceCondition(service); cond != "" {
+		spanQuery += " AND " + cond
+		args = append(args, serviceArgs...)
 	}
 
 	if err := s.db.QueryRowContext(ctx, spanQuery, args...).Scan(&spans); err != nil {
@@ -79,9 +79,9 @@ func (s *DuckDBStore) CountTracesInRange(ctx context.Context, from, to time.Time
 	traceQuery := `SELECT COUNT(DISTINCT TraceId) FROM otel_traces WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP`
 	traceArgs := []interface{}{fromStr, toStr}
 
-	if service != "" {
-		traceQuery += " AND ServiceName = ?"
-		traceArgs = append(traceArgs, service)
+	if cond, serviceArgs := serviceCondition(service); cond != "" {
+		traceQuery += " AND " + cond
+		traceArgs = append(traceArgs, serviceArgs...)
 	}
 
 	if err := s.db.QueryRowContext(ctx, traceQuery, traceArgs...).Scan(&traces); err != nil {
@@ -116,13 +116,14 @@ func (s *DuckDBStore) deleteTableInRange(ctx context.Context, table, what string
 	return count, err
 }
 
-// deleteInRange deletes the rows of table in the time range, optionally of one service
+// deleteInRange deletes the rows of table in the time range, optionally of
+// one service filter (serviceCondition)
 func deleteInRange(ctx context.Context, execer execContexter, table, what string, from, to time.Time, service string) (int64, error) {
 	where := ` WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP`
 	args := []interface{}{formatTimeForDB(from), formatTimeForDB(to)}
-	if service != "" {
-		where += " AND ServiceName = ?"
-		args = append(args, service)
+	if cond, serviceArgs := serviceCondition(service); cond != "" {
+		where += " AND " + cond
+		args = append(args, serviceArgs...)
 	}
 
 	if table == "otel_metrics" {

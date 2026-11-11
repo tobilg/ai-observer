@@ -19,9 +19,12 @@ const (
 // provider here first (see "Adding a provider" in CLAUDE.md for the rest).
 type Provider struct {
 	Tool Tool
-	// ServiceName is the OTLP service.name the tool sends
+	// ServiceName is the OTLP service.name the tool sends, and the service
+	// of records imported from its session files
 	ServiceName string
-	DisplayName string
+	// OtherServices are further service names the tool sends over OTLP
+	OtherServices []Service
+	DisplayName   string
 	// SessionFiles reports whether local session files can be imported and watched
 	SessionFiles bool
 	// TranscriptRoles maps the event names (log event.name) of the tool's
@@ -29,6 +32,26 @@ type Provider struct {
 	// tool_result or system. Imported transcripts ("transcript.message")
 	// carry their role in the message.role attribute instead.
 	TranscriptRoles map[string]string
+	// NoiseSpans names the spans of the tool's services that are stored
+	// only when a stored span has them as parent (IsNoiseSpan): spans the
+	// tool sends in the hundreds of thousands a day without content of a
+	// conversation
+	NoiseSpans []string
+	// BackgroundRoots names root spans of the tool's services whose traces
+	// are background traces whatever their spans carry (see
+	// Service.BackgroundTraces): work the tool does on its own rather than
+	// a turn of a conversation
+	BackgroundRoots []string
+}
+
+// Service is a further OTLP service.name of a tool
+type Service struct {
+	Name        string
+	DisplayName string
+	// BackgroundTraces marks services whose traces that belong to no
+	// session are internal requests (reading files, settings and account
+	// state), which trace lists leave out unless asked for
+	BackgroundTraces bool
 }
 
 // Transcript roles
@@ -57,12 +80,43 @@ var providers = []Provider{
 			"tool_decision": RoleToolUse,
 			"api_error":     RoleSystem,
 		}},
+	// Codex 0.167 and later run conversations in an app server, which the
+	// Codex app and the CLI share (originator Codex_Desktop or codex-tui),
+	// and commands in an exec server; codex_cli_rs then sends only the
+	// CLI's own startup telemetry
 	{Tool: Codex, ServiceName: "codex_cli_rs", DisplayName: "OpenAI Codex CLI", SessionFiles: true,
+		OtherServices: []Service{
+			{Name: "codex-app-server", DisplayName: "OpenAI Codex", BackgroundTraces: true},
+			{Name: "codex-exec-server", DisplayName: "OpenAI Codex exec server", BackgroundTraces: true},
+		},
 		TranscriptRoles: map[string]string{
 			"codex.user_prompt":   RoleUser,
 			"codex.api_request":   RoleAssistant,
 			"codex.tool_result":   RoleToolResult,
 			"codex.tool_decision": RoleToolUse,
+		},
+		// The app server traces each streamed response event
+		// (handle_responses > receiving), each write of the session file and
+		// each file status read: 86% of its spans in a day of use, and
+		// 100,000 spans in a long turn. handle_responses is the parent of a
+		// turn's tool calls (handle_output_item_done), which keep it.
+		NoiseSpans: []string{
+			"receiving",
+			"handle_responses",
+			"append_items",
+			"persist_rollout_items",
+			"realtime_conversation.running_state",
+			"fs.get_metadata",
+		},
+		BackgroundRoots: []string{
+			// The automatic approval review ("guardian") scores each
+			// command a turn wants to run in a model session of its own:
+			// nine of ten session traces in a day of use, about 550 spans each
+			"decide_request",
+			// What the CLI (codex_cli_rs, not a background service: earlier
+			// versions send their sessions as it) still traces itself since
+			// conversations run in the app server: single spans at startup
+			"auth", "fs.get_metadata", "fs.read_file", "serve_inner", "transport_worker",
 		}},
 	{Tool: Gemini, ServiceName: "gemini_cli", DisplayName: "Gemini CLI", SessionFiles: true,
 		TranscriptRoles: map[string]string{
@@ -156,6 +210,99 @@ func (t Tool) ServiceName() string {
 	return string(t)
 }
 
+// ServiceNames returns all service names of the tool, ServiceName first
+func (t Tool) ServiceNames() []string {
+	if p, ok := Lookup(string(t)); ok {
+		return p.ServiceNames()
+	}
+	return []string{string(t)}
+}
+
+// ServiceNames returns all service names of the provider, ServiceName first
+func (p Provider) ServiceNames() []string {
+	names := []string{p.ServiceName}
+	for _, s := range p.OtherServices {
+		names = append(names, s.Name)
+	}
+	return names
+}
+
+// ToolForService returns the tool that sends a service name
+func ToolForService(service string) (Tool, bool) {
+	for _, p := range providers {
+		for _, name := range p.ServiceNames() {
+			if name == service {
+				return p.Tool, true
+			}
+		}
+	}
+	return "", false
+}
+
+// FilterServices returns the service names a service filter matches: all of
+// a tool's for a tool name (codex), only itself for a service name, none
+// for "" (no filter)
+func FilterServices(filter string) []string {
+	if filter == "" {
+		return nil
+	}
+	if p, ok := Lookup(filter); ok {
+		return p.ServiceNames()
+	}
+	return []string{filter}
+}
+
+// noiseSpans holds the providers' NoiseSpans by service name
+var noiseSpans = func() map[string]map[string]bool {
+	byService := make(map[string]map[string]bool)
+	for _, p := range providers {
+		if len(p.NoiseSpans) == 0 {
+			continue
+		}
+		names := make(map[string]bool, len(p.NoiseSpans))
+		for _, name := range p.NoiseSpans {
+			names[name] = true
+		}
+		for _, service := range p.ServiceNames() {
+			byService[service] = names
+		}
+	}
+	return byService
+}()
+
+// IsNoiseSpan reports whether a service's span of this name is one of its
+// tool's NoiseSpans
+func IsNoiseSpan(service, spanName string) bool {
+	return noiseSpans[service][spanName]
+}
+
+// BackgroundTraceServices returns the services whose traces outside a
+// session are internal requests (Service.BackgroundTraces)
+func BackgroundTraceServices() []string {
+	var names []string
+	for _, p := range providers {
+		for _, s := range p.OtherServices {
+			if s.BackgroundTraces {
+				names = append(names, s.Name)
+			}
+		}
+	}
+	return names
+}
+
+// BackgroundTraceRoots returns the names of root spans that make a trace a
+// background trace (Provider.BackgroundRoots), and the services whose spans
+// they are
+func BackgroundTraceRoots() (services, names []string) {
+	for _, p := range providers {
+		if len(p.BackgroundRoots) > 0 {
+			services = append(services, p.ServiceNames()...)
+			names = append(names, p.BackgroundRoots...)
+		}
+	}
+	return services, names
+}
+
 // All returns all supported tools
 func All() []Tool {
 	all := make([]Tool, len(providers))
@@ -188,15 +335,18 @@ func ServiceNameFor(tool string) string {
 	return ""
 }
 
-// NormalizeServiceName accepts either a tool name (claude-code, codex, gemini,
-// opencode, copilot-chat, github-copilot) or a service name (codex_cli_rs,
-// gemini_cli, ...) and returns the canonical service name. Returns empty
-// string if invalid.
-func NormalizeServiceName(input string) string {
-	for _, p := range providers {
-		if string(p.Tool) == input || p.ServiceName == input {
-			return p.ServiceName
-		}
+// ResolveFilter accepts a tool name (claude-code, codex, gemini, opencode,
+// copilot-chat, github-copilot) or one of the tools' service names
+// (codex_cli_rs, codex-app-server, gemini_cli, ...) and returns the service
+// filter for it (see FilterServices): the tool name, which matches all of
+// the tool's services, or the service name, which matches only that one.
+// Returns "" for other input.
+func ResolveFilter(input string) string {
+	if p, ok := Lookup(input); ok {
+		return string(p.Tool)
+	}
+	if _, ok := ToolForService(input); ok {
+		return input
 	}
 	return ""
 }

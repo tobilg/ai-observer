@@ -70,10 +70,11 @@ export function errorOf(result: ToolResult): string | undefined {
 }
 
 // Display names of the tool names the MCP tools return (internal/tools;
-// usage_summary reports both GitHub Copilot services as copilot)
+// usage_summary reports both GitHub Copilot services as copilot, and the
+// Codex app and CLI as codex)
 const TOOL_NAMES: Record<string, string> = {
   'claude-code': 'Claude Code',
-  codex: 'OpenAI Codex CLI',
+  codex: 'OpenAI Codex',
   gemini: 'Gemini CLI',
   opencode: 'OpenCode',
   'copilot-chat': 'GitHub Copilot (VS Code)',

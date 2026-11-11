@@ -84,40 +84,63 @@ func TestLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	operation, err := Load(ctx, store, "turn-2", api.TraceKindCodexOperation)
+	all := storage.Page{Limit: 1000}
+	operation, err := Load(ctx, store, "turn-2", api.TraceKindCodexOperation, all)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := ids(operation); len(got) != 2 || got[0] != "turn-2" || got[1] != "tool-2" {
+	if got := ids(operation.Spans); len(got) != 2 || got[0] != "turn-2" || got[1] != "tool-2" {
 		t.Errorf("codex operation = %v, want turn-2 and tool-2", got)
 	}
+	if o := operation.Trace; o == nil || o.ID != "turn-2" || o.Kind != api.TraceKindCodexOperation || o.RootSpan != "op-turn-2" ||
+		o.TraceID != "session-trace" || o.SpanCount != 2 || o.GroupLevel != api.TraceGroupLevelCodexTurn ||
+		!o.StartTime.Equal(start.Add(6*time.Second)) || o.Duration != int64(time.Second) || operation.Total != 2 {
+		t.Errorf("codex operation overview = %+v, total %d", o, operation.Total)
+	}
 
-	whole, err := Load(ctx, store, "session-trace", api.TraceKindOTelTrace)
+	// Operations are paged like traces
+	first, err := Load(ctx, store, "turn-1", api.TraceKindCodexOperation, storage.Page{Limit: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(whole) != len(spans) {
-		t.Errorf("whole trace = %d spans, want %d", len(whole), len(spans))
+	rest, err := Load(ctx, store, "turn-1", api.TraceKindCodexOperation, storage.Page{Limit: 3, Cursor: first.NextCursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := append(ids(first.Spans), ids(rest.Spans)...); len(got) != 5 || !first.HasMore || rest.HasMore || first.Total != 5 ||
+		got[0] != "turn-1" || got[3] != "stream-1" || got[4] != "chunk-1" || first.Trace.SpanCount != 5 {
+		t.Errorf("paged operation = %v (hasMore %v, %v; total %d)", got, first.HasMore, rest.HasMore, first.Total)
+	}
+
+	whole, err := Load(ctx, store, "session-trace", api.TraceKindOTelTrace, all)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(whole.Spans) != len(spans) || whole.Trace.SpanCount != len(spans) || whole.Trace.RootSpan != "op-session" {
+		t.Errorf("whole trace = %d spans, overview %+v; want %d", len(whole.Spans), whole.Trace, len(spans))
 	}
 
 	// A root span ID finds its trace
-	bySpan, err := Load(ctx, store, "root", api.TraceKindOTelTrace)
+	bySpan, err := Load(ctx, store, "root", api.TraceKindOTelTrace, all)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(bySpan) != 1 || bySpan[0].TraceID != "otel-trace" {
+	if len(bySpan.Spans) != 1 || bySpan.Spans[0].TraceID != "otel-trace" || bySpan.Trace.TraceID != "otel-trace" {
 		t.Errorf("trace by span ID = %+v", bySpan)
 	}
 
 	// Codex operations are only Codex spans
 	for _, id := range []string{"no-such-span", "root"} {
-		missing, err := Load(ctx, store, id, api.TraceKindCodexOperation)
+		missing, err := Load(ctx, store, id, api.TraceKindCodexOperation, all)
 		if err != nil || missing != nil {
 			t.Errorf("codex operation %q = %v, %v; want none", id, missing, err)
 		}
 	}
+	if missing, err := Load(ctx, store, "no-such-trace", api.TraceKindOTelTrace, all); err != nil || missing != nil {
+		t.Errorf("unknown trace = %v, %v; want none", missing, err)
+	}
 
-	if _, err := Load(ctx, store, "session-trace", "bogus"); !errors.Is(err, ErrUnsupportedKind) {
+	if _, err := Load(ctx, store, "session-trace", "bogus", all); !errors.Is(err, ErrUnsupportedKind) {
 		t.Errorf("unknown kind: error = %v, want ErrUnsupportedKind", err)
 	}
 }

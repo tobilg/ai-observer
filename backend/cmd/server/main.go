@@ -118,6 +118,9 @@ Environment Variables:
   AI_OBSERVER_PRICING_DIR    Directory with pricing files that override the built-in prices
   AI_OBSERVER_RETENTION_DAYS Delete telemetry older than this many days (default: keep all)
   AI_OBSERVER_REDACT         Redact stored telemetry: secrets (default), all (secrets and personal data), off
+  AI_OBSERVER_DB_MEMORY_LIMIT Memory DuckDB may use, e.g. 2GB (default: 80% of memory)
+  AI_OBSERVER_DB_THREADS     Threads DuckDB runs queries on (default: one per CPU core)
+  AI_OBSERVER_STORE_ALL_SPANS Also store Codex's per-event spans, left out as noise (true/false, default false)
   AI_OBSERVER_MCP            Serve the MCP endpoint for agents at /mcp on the API port (true/false, default false)
   AI_OBSERVER_CLAUDE_PATH    Custom Claude Code config directory
   AI_OBSERVER_CODEX_PATH     Custom Codex CLI home directory

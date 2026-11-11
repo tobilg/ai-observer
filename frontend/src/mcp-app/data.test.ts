@@ -82,7 +82,7 @@ describe('usage', () => {
     ])
     expect(usageBars(summary, 'cost')).toEqual([
       { key: 'claude-code/claude-opus-5-5', label: 'claude-opus-5-5', detail: 'Claude Code', value: 3 },
-      { key: 'codex/gpt-5', label: 'gpt-5', detail: 'OpenAI Codex CLI', value: 1 },
+      { key: 'codex/gpt-5', label: 'gpt-5', detail: 'OpenAI Codex', value: 1 },
     ])
     expect(usageBars(summary, 'tokens').map((b) => b.value)).toEqual([900, 100])
   })
@@ -103,7 +103,7 @@ describe('usage', () => {
     )
     expect(chart.series).toEqual([
       { key: 'claude-code', label: 'Claude Code' },
-      { key: 'codex', label: 'OpenAI Codex CLI' },
+      { key: 'codex', label: 'OpenAI Codex' },
     ])
     expect(chart.data.map((row) => [row.timestamp, row['claude-code'], row.codex])).toEqual([
       [Date.parse('2026-11-01T00:00:00Z'), 10, 20],

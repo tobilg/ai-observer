@@ -18,7 +18,7 @@ import {
   getMetricMetadata,
   getSeriesLabel,
   formatMetricValue,
-  getServiceDisplayName,
+  serviceFilterOptions,
 } from '@/lib/metricMetadata'
 import { toast } from 'sonner'
 import {
@@ -259,9 +259,9 @@ export function MetricsPage() {
                 onChange={(e) => handleServiceChange(e.target.value)}
               >
                 <option value="">All Services</option>
-                {services.map((s) => (
-                  <option key={s} value={s}>
-                    {getServiceDisplayName(s)}
+                {serviceFilterOptions(services).map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
                   </option>
                 ))}
               </Select>

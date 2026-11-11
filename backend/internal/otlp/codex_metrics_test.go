@@ -10,17 +10,19 @@ import (
 func TestExtractCodexMetrics_ResponseCompleted(t *testing.T) {
 	timestamp := time.Now()
 	logAttrs := map[string]string{
-		"event.kind":            "response.completed",
-		"input_token_count":     "1000",
-		"output_token_count":    "500",
-		"cached_token_count":    "200",
-		"reasoning_token_count": "100",
-		"tool_token_count":      "50",
-		"model":                 "gpt-5",
+		"event.kind":              "response.completed",
+		"input_token_count":       "1000",
+		"output_token_count":      "500",
+		"cached_token_count":      "200",
+		"cache_write_token_count": "40",
+		"reasoning_token_count":   "100",
+		"tool_token_count":        "1500", // Codex's total_tokens, not a token type
+		"model":                   "gpt-5",
+		"originator":              "codex-tui",
 	}
 	resourceAttrs := map[string]string{}
 
-	metrics := ExtractCodexMetrics(logAttrs, timestamp, "codex_cli_rs", resourceAttrs, "trace123", "span456")
+	metrics := ExtractCodexMetrics(logAttrs, timestamp, "codex-app-server", resourceAttrs, "trace123", "span456")
 
 	if len(metrics) == 0 {
 		t.Fatal("Expected metrics to be extracted")
@@ -46,6 +48,9 @@ func TestExtractCodexMetrics_ResponseCompleted(t *testing.T) {
 			t.Errorf("Expected Codex metric %s to be stored as per-event without monotonic flag, got %v", m.MetricName, *m.IsMonotonic)
 		}
 
+		if m.ServiceName != "codex-app-server" || m.Attributes["originator"] != "codex-tui" || m.Attributes["model"] != "gpt-5" {
+			t.Errorf("metric %s: service %q, attributes %v", m.MetricName, m.ServiceName, m.Attributes)
+		}
 		if m.MetricName == CodexTokenUsageMetric {
 			tokenType := m.Attributes["type"]
 			if m.Value != nil {
@@ -58,11 +63,11 @@ func TestExtractCodexMetrics_ResponseCompleted(t *testing.T) {
 
 	// Check token values
 	expectedTokens := map[string]float64{
-		"input":     1000,
-		"output":    500,
-		"cacheRead": 200,
-		"reasoning": 100,
-		"tool":      50,
+		"input":      1000,
+		"output":     500,
+		"cacheRead":  200,
+		"cacheWrite": 40,
+		"reasoning":  100,
 	}
 	for tokenType, expected := range expectedTokens {
 		if actual, ok := tokenMetrics[tokenType]; !ok {
@@ -249,7 +254,7 @@ func TestCalculateCodexCost_KnownModels(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.model, func(t *testing.T) {
-			cost := CalculateCodexCost(tc.model, tc.input, tc.cached, tc.output)
+			cost := CalculateCodexCost(tc.model, tc.input, tc.cached, 0, tc.output)
 			if cost == nil {
 				t.Fatal("Expected cost to be calculated")
 			}
@@ -263,7 +268,7 @@ func TestCalculateCodexCost_KnownModels(t *testing.T) {
 }
 
 func TestCalculateCodexCost_UnknownModel(t *testing.T) {
-	cost := CalculateCodexCost("unknown-model", 1000, 0, 500)
+	cost := CalculateCodexCost("unknown-model", 1000, 0, 0, 500)
 	if cost != nil {
 		t.Errorf("Expected nil cost for unknown model, got %f", *cost)
 	}
@@ -271,7 +276,7 @@ func TestCalculateCodexCost_UnknownModel(t *testing.T) {
 
 func TestCalculateCodexCost_NegativeTokens(t *testing.T) {
 	// Should handle negative values gracefully by clamping to 0
-	cost := CalculateCodexCost("gpt-5", -100, -50, -25)
+	cost := CalculateCodexCost("gpt-5", -100, -50, -10, -25)
 	if cost == nil {
 		t.Fatal("Expected cost to be calculated")
 	}
@@ -282,7 +287,7 @@ func TestCalculateCodexCost_NegativeTokens(t *testing.T) {
 
 func TestCalculateCodexCost_CachedExceedsInput(t *testing.T) {
 	// Cached tokens should be clamped to input tokens
-	cost := CalculateCodexCost("gpt-5", 100, 200, 50)
+	cost := CalculateCodexCost("gpt-5", 100, 200, 0, 50)
 	if cost == nil {
 		t.Fatal("Expected cost to be calculated")
 	}

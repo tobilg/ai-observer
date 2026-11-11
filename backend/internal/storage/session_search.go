@@ -57,9 +57,7 @@ func (s *DuckDBStore) SearchSessions(ctx context.Context, terms []string, servic
 		var where conditions
 		where.add("SessionId IS NOT NULL")
 		where.add("Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP", formatTimeForDB(from), formatTimeForDB(to))
-		if service != "" {
-			where.add("ServiceName = ?", service)
-		}
+		where.addService(service)
 		for _, term := range byLength {
 			cond, args := termCondition(plainColumns, jsonColumns, term)
 			where.add(cond, args...)

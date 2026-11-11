@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -867,6 +868,11 @@ func TestListProviders(t *testing.T) {
 	if claude.Tool != "claude-code" || claude.ServiceName != "claude-code" || claude.DisplayName != "Claude Code" || !claude.SessionFiles {
 		t.Errorf("first provider = %+v, want Claude Code with session files", claude)
 	}
+	codex := resp.Providers[1]
+	if codex.Tool != "codex" || len(codex.OtherServices) != 2 || codex.OtherServices[0].ServiceName != "codex-app-server" ||
+		codex.OtherServices[0].DisplayName != "OpenAI Codex" {
+		t.Errorf("Codex provider = %+v, want its app and exec servers", codex)
+	}
 }
 
 func TestListEndpointsRejectDeepOffsets(t *testing.T) {
@@ -902,5 +908,51 @@ func TestListEndpointsRejectInvalidCursor(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("%s with an invalid cursor: status %d, want 400", path, rec.Code)
 		}
+	}
+}
+
+func TestGetSessionTranscript_Pages(t *testing.T) {
+	h, cleanup := setupTestHandlers(t)
+	defer cleanup()
+	start := time.Date(2026, 1, 2, 10, 0, 0, 0, time.UTC)
+	var logs []api.LogRecord
+	for i := 0; i < 5; i++ {
+		logs = append(logs, api.LogRecord{Timestamp: start.Add(time.Duration(i) * time.Minute), ServiceName: "claude-code",
+			LogAttributes: map[string]string{"session.id": "s1", "event.name": "user_prompt", "prompt": "prompt " + strconv.Itoa(i)}})
+	}
+	if err := h.store.InsertLogs(context.Background(), logs); err != nil {
+		t.Fatal(err)
+	}
+
+	get := func(query string) (int, api.TranscriptResponse) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/sessions/s1/transcript"+query, nil)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("sessionId", "s1")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		rec := httptest.NewRecorder()
+		h.GetSessionTranscript(rec, req)
+		var resp api.TranscriptResponse
+		if rec.Code == http.StatusOK {
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return rec.Code, resp
+	}
+
+	_, first := get("?limit=3")
+	if len(first.Messages) != 3 || first.Total != 5 || !first.HasMore || first.NextCursor == "" {
+		t.Fatalf("first page = %d messages, total %d, more %v, cursor %q", len(first.Messages), first.Total, first.HasMore, first.NextCursor)
+	}
+	_, second := get("?limit=3&cursor=" + first.NextCursor)
+	if len(second.Messages) != 2 || second.HasMore || second.Messages[0].Content != "prompt 3" {
+		t.Errorf("second page = %+v, want prompts 3 and 4", second.Messages)
+	}
+	if _, whole := get(""); len(whole.Messages) != 5 || whole.HasMore {
+		t.Errorf("default page = %d messages, more %v; want all 5", len(whole.Messages), whole.HasMore)
+	}
+	if code, _ := get("?cursor=abc"); code != http.StatusBadRequest {
+		t.Errorf("invalid cursor: status %d, want 400", code)
 	}
 }

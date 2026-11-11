@@ -190,7 +190,7 @@ The five activity metrics are reconstructed by full imports only. See [Claude Co
 
 **Metrics:**
 
-- `codex_cli_rs.token.usage` - Token counts by type (input, output, cache_creation, cache_read, reasoning, tool)
+- `codex_cli_rs.token.usage` - Token counts by type (input, output, cacheRead, cacheWrite, reasoning), as over OTLP
 - `codex_cli_rs.cost.usage` - Cost in USD per token count event
 
 All these log categories and token/cost metrics receive `repository` and `git_branch` when available in both import and watch mode. Reasoning logs receive attribution, but their contents are not used to infer the repository.

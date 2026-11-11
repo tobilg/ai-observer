@@ -8,7 +8,7 @@ import { DataPagination } from '@/components/common/data-pagination'
 import { api } from '@/lib/api'
 import { isAbortError } from '@/lib/errors'
 import { formatTimestamp, cn } from '@/lib/utils'
-import { getServiceDisplayName, getServiceIcon } from '@/lib/metricMetadata'
+import { getServiceDisplayName, getServiceIcon, serviceFilterOptions } from '@/lib/metricMetadata'
 import type { Session } from '@/types/sessions'
 import { MessageSquare, ChevronRight } from 'lucide-react'
 import { usePagination } from '@/hooks/usePagination'
@@ -159,9 +159,9 @@ export function SessionsPage() {
                 setService(e.target.value)
               }}>
                 <option value="">All Services</option>
-                {services.map((s) => (
-                  <option key={s} value={s}>
-                    {getServiceDisplayName(s)}
+                {serviceFilterOptions(services).map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
                   </option>
                 ))}
               </Select>

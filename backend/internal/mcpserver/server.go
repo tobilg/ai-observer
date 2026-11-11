@@ -22,7 +22,7 @@ import (
 // Path is where the API router serves MCP
 const Path = "/mcp"
 
-const instructions = `AI Observer stores the telemetry of AI coding tools (Claude Code, OpenAI Codex CLI, Gemini CLI, GitHub Copilot, OpenCode): conversations (sessions with their transcripts), logs, traces, metrics, token usage and costs.
+const instructions = `AI Observer stores the telemetry of AI coding tools (Claude Code, OpenAI Codex app and CLI, Gemini CLI, GitHub Copilot, OpenCode): conversations (sessions with their transcripts), logs, traces, metrics, token usage and costs.
 
 Typical use:
 - Find earlier work: search_conversations (records containing all of the query's words, in any order; "quoted phrases" match exactly), then get_transcript with a session_id.
@@ -62,7 +62,7 @@ func New(store *storage.DuckDBStore, version string) *mcp.Server {
 		"Search the stored log records (events such as prompts, API requests, tool results and errors) by text, tool, severity or trace, newest first."),
 		h.searchLogs)
 	mcp.AddTool(server, readOnly("list_traces", "List traces",
-		"List traces (requests, agent turns and tool calls recorded as spans) in a time range, newest first, optionally matching a text."),
+		"List traces (requests, agent turns and tool calls recorded as spans) in a time range, newest first, optionally matching a text. Background traces of Codex's app and exec servers (internal requests outside a conversation) are left out unless include_background is set."),
 		h.listTraces)
 	mcp.AddTool(server, withApp(readOnly("get_trace", "Get trace",
 		"Read the spans of a trace as a tree (depth first) with durations, status and attributes.")),

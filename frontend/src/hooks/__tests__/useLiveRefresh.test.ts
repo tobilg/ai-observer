@@ -50,6 +50,28 @@ describe('useLiveRefresh', () => {
     expect(result.current).toBe(2)
   })
 
+  it('refreshes during a steady stream of notifications', () => {
+    state.connected = true
+    const { result, rerender } = render()
+
+    // A notification every 300 ms keeps restarting the 500 ms debounce
+    for (let count = 1; count <= 6; count++) {
+      rerender({ enabled: true, updateCount: count })
+      act(() => vi.advanceTimersByTime(300))
+    }
+    expect(result.current).toBe(0)
+    // 2 seconds after the first one, the refresh no longer waits
+    act(() => vi.advanceTimersByTime(200))
+    expect(result.current).toBe(1)
+
+    // The next burst waits for its own quiet period again
+    rerender({ enabled: true, updateCount: 7 })
+    act(() => vi.advanceTimersByTime(499))
+    expect(result.current).toBe(1)
+    act(() => vi.advanceTimersByTime(1))
+    expect(result.current).toBe(2)
+  })
+
   it('pauses while the tab is hidden and refreshes when it is shown again', () => {
     state.visible = false
     const { result, rerender } = render()

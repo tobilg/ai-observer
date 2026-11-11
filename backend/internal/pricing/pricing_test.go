@@ -310,7 +310,7 @@ func TestCalculateClaudeCost(t *testing.T) {
 }
 
 func TestCalculateCodexCost(t *testing.T) {
-	cost := CalculateCodexCost("gpt-5", 1000, 100, 500)
+	cost := CalculateCodexCost("gpt-5", 1000, 100, 0, 500)
 	if cost == nil {
 		t.Fatal("Failed to calculate Codex cost")
 	}
@@ -321,6 +321,33 @@ func TestCalculateCodexCost(t *testing.T) {
 	expected := 0.0061375
 	if *cost < expected*0.99 || *cost > expected*1.01 {
 		t.Errorf("Expected cost ~%v, got %v", expected, *cost)
+	}
+}
+
+func TestCalculateCodexCost_CacheWrites(t *testing.T) {
+	// gpt-6-astra: input $10, cache read $1, cache write $12.50, output $50 per million.
+	// Of 1,000 input tokens 100 are read from and 200 written to the cache.
+	cost := CalculateCodexCost("gpt-6-astra", 1000, 100, 200, 10)
+	if cost == nil {
+		t.Fatal("no cost for gpt-6-astra")
+	}
+	want := (700*10 + 100*1 + 200*12.5 + 10*50) / 1e6
+	if math.Abs(*cost-want) > 1e-12 {
+		t.Errorf("cost = %v, want %v", *cost, want)
+	}
+
+	// Without a cache write price (gpt-5), cache writes cost the input rate,
+	// as if they were uncached input
+	withWrites := CalculateCodexCost("gpt-5", 1000, 100, 200, 500)
+	without := CalculateCodexCost("gpt-5", 1000, 100, 0, 500)
+	if math.Abs(*withWrites-*without) > 1e-12 {
+		t.Errorf("gpt-5 cost with cache writes = %v, want the cost without them, %v", *withWrites, *without)
+	}
+
+	// Cache writes beyond the uncached input are cut off
+	capped := CalculateCodexCost("gpt-6-astra", 1000, 900, 500, 0)
+	if want := (900*1 + 100*12.5) / 1e6; math.Abs(*capped-want) > 1e-12 {
+		t.Errorf("capped cost = %v, want %v", *capped, want)
 	}
 }
 

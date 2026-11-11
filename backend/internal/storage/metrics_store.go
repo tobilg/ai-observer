@@ -15,10 +15,14 @@ import (
 
 	"github.com/tobilg/ai-observer/internal/api"
 	"github.com/tobilg/ai-observer/internal/logger"
+	"github.com/tobilg/ai-observer/internal/otlp"
+	"github.com/tobilg/ai-observer/internal/tools"
 )
 
+// isCodexPerEventUsageMetric reports Codex's derived usage metrics, which
+// hold one value per response, not running totals
 func isCodexPerEventUsageMetric(metricName string) bool {
-	return metricName == "codex_cli_rs.token.usage" || metricName == "codex_cli_rs.cost.usage"
+	return metricName == otlp.CodexTokenUsageMetric || metricName == otlp.CodexCostUsageMetric
 }
 
 func (s *DuckDBStore) InsertMetrics(ctx context.Context, metrics []api.MetricDataPoint) error {
@@ -122,9 +126,7 @@ func pruneMetricNames(ctx context.Context, execer execContexter) error {
 func (s *DuckDBStore) QueryMetrics(ctx context.Context, service, metricName, metricType string, from, to time.Time, page Page) (*api.MetricsResponse, error) {
 	var where conditions
 	where.add("Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP", formatTimeForDB(from), formatTimeForDB(to))
-	if service != "" {
-		where.add("ServiceName = ?", service)
-	}
+	where.addService(service)
 	if metricName != "" {
 		// A ".delta" alias lists the points of its counter
 		where.add("MetricName = ?", seriesSourceMetric(metricName))
@@ -247,9 +249,9 @@ func (s *DuckDBStore) GetMetricNames(ctx context.Context, service string) ([]str
 	`
 	args := []interface{}{}
 
-	if service != "" {
-		query += " WHERE ServiceName = ?"
-		args = append(args, service)
+	if cond, serviceArgs := serviceCondition(service); cond != "" {
+		query += " WHERE " + cond
+		args = append(args, serviceArgs...)
 	}
 
 	query += " ORDER BY MetricName"
@@ -290,9 +292,9 @@ func (s *DuckDBStore) GetBreakdownValues(ctx context.Context, metricName, attrib
 	// extracted from the distinct sets instead of every point
 	filter := "MetricName = ?"
 	args := []interface{}{seriesSourceMetric(metricName)}
-	if service != "" {
-		filter += " AND ServiceName = ?"
-		args = append(args, service)
+	if cond, serviceArgs := serviceCondition(service); cond != "" {
+		filter += " AND " + cond
+		args = append(args, serviceArgs...)
 	}
 	query := fmt.Sprintf(`
 		SELECT DISTINCT json_extract_string(attrs, '%s') AS attr_value
@@ -461,7 +463,20 @@ func (s *DuckDBStore) metricTypes(ctx context.Context, queries []api.MetricQuery
 
 	// Per metric and service, and per metric across all services (service "")
 	types := make(map[metricTypeKey]metricTypeInfo)
-	latest := make(map[string]time.Time)
+	latest := make(map[metricTypeKey]time.Time)
+	// merge adds a service's points to the info of key: the type of the
+	// latest points, cumulative when any are
+	merge := func(key metricTypeKey, info metricTypeInfo, last time.Time) {
+		merged := types[key]
+		if last.After(latest[key]) {
+			latest[key] = last
+			merged.metricType = info.metricType
+		}
+		merged.cumulative = merged.cumulative || info.cumulative
+		types[key] = merged
+	}
+	perService := make(map[metricTypeKey]metricTypeInfo)
+	perServiceLast := make(map[metricTypeKey]time.Time)
 	for rows.Next() {
 		var name, service, metricType string
 		var cumulative sql.NullBool
@@ -470,18 +485,31 @@ func (s *DuckDBStore) metricTypes(ctx context.Context, queries []api.MetricQuery
 			return nil, fmt.Errorf("scanning metric type: %w", err)
 		}
 		cumulative.Bool = cumulative.Bool && !isCodexPerEventUsageMetric(name)
-		types[metricTypeKey{name, service}] = metricTypeInfo{metricType: metricType, cumulative: cumulative.Bool}
-
-		all := types[metricTypeKey{name, ""}]
-		if last.After(latest[name]) {
-			latest[name] = last
-			all.metricType = metricType
-		}
-		all.cumulative = all.cumulative || cumulative.Bool
-		types[metricTypeKey{name, ""}] = all
+		info := metricTypeInfo{metricType: metricType, cumulative: cumulative.Bool}
+		key := metricTypeKey{name, service}
+		types[key], perService[key], perServiceLast[key] = info, info, last
+		merge(metricTypeKey{name, ""}, info, last)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating metric types: %w", err)
+	}
+
+	// Per tool filter (codex), over the tool's services (serviceCondition)
+	for _, q := range queries {
+		services := tools.FilterServices(q.Service)
+		if len(services) == 0 || (len(services) == 1 && services[0] == q.Service) {
+			continue
+		}
+		name := seriesSourceMetric(q.Name)
+		filterKey := metricTypeKey{name, q.Service}
+		if _, done := latest[filterKey]; done {
+			continue
+		}
+		for _, service := range services {
+			if info, ok := perService[metricTypeKey{name, service}]; ok {
+				merge(filterKey, info, perServiceLast[metricTypeKey{name, service}])
+			}
+		}
 	}
 	return types, nil
 }
@@ -511,9 +539,9 @@ func (s *DuckDBStore) queryMetricSeriesInternal(ctx context.Context, q api.Metri
 		valueExpr = "Sum"
 	}
 
-	serviceFilter := ""
-	if q.Service != "" {
-		serviceFilter = " AND ServiceName = ?"
+	serviceFilter, serviceArgs := serviceCondition(q.Service)
+	if serviceFilter != "" {
+		serviceFilter = " AND " + serviceFilter
 	}
 	typeExpr := "COALESCE(NULLIF(Attributes->>'type', ''), NULLIF(Attributes->>'gen_ai.token.type', ''), 'default')"
 	modelExpr := "COALESCE(NULLIF(Attributes->>'model', ''), 'default')"
@@ -566,9 +594,7 @@ func (s *DuckDBStore) queryMetricSeriesInternal(ctx context.Context, q api.Metri
 				WHERE Timestamp >= ?::TIMESTAMP AND NOT baseline
 			)`
 		source := []interface{}{seriesSourceMetric(q.Name), formatTimeForDB(from.Add(-cumulativeLookback)), toStr}
-		if q.Service != "" {
-			source = append(source, q.Service)
-		}
+		source = append(source, serviceArgs...)
 		// The points and the baselines are read with the same filter
 		points, baselines := source, source
 		args = concatArgs(points, baselines, []any{fromStr})
@@ -582,10 +608,7 @@ func (s *DuckDBStore) queryMetricSeriesInternal(ctx context.Context, q api.Metri
 					AND Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
 					AND ` + valueExpr + ` IS NOT NULL` + serviceFilter + `
 			)`
-		args = []interface{}{seriesSourceMetric(q.Name), fromStr, toStr}
-		if q.Service != "" {
-			args = append(args, q.Service)
-		}
+		args = concatArgs([]any{seriesSourceMetric(q.Name), fromStr, toStr}, serviceArgs)
 	}
 
 	// Gauges are levels and are averaged; counters and histograms add up

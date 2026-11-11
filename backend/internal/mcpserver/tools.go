@@ -316,12 +316,13 @@ func (h *handlers) searchLogs(ctx context.Context, _ *mcp.CallToolRequest, in se
 // --- list_traces / get_trace ---
 
 type listTracesIn struct {
-	Query  string `json:"query,omitempty" jsonschema:"text to find in span names and attributes (case-insensitive substring)"`
-	Tool   string `json:"tool,omitempty" jsonschema:"only traces of this tool"`
-	From   string `json:"from,omitempty" jsonschema:"start of the range (default: 24 hours before to)"`
-	To     string `json:"to,omitempty" jsonschema:"end of the range (default: now)"`
-	Limit  int    `json:"limit,omitempty" jsonschema:"maximum traces (default 20, at most 100)"`
-	Cursor string `json:"cursor,omitempty" jsonschema:"next_cursor of the previous page"`
+	Query             string `json:"query,omitempty" jsonschema:"text to find in span names and attributes (case-insensitive substring)"`
+	Tool              string `json:"tool,omitempty" jsonschema:"only traces of this tool"`
+	From              string `json:"from,omitempty" jsonschema:"start of the range (default: 24 hours before to)"`
+	To                string `json:"to,omitempty" jsonschema:"end of the range (default: now)"`
+	Limit             int    `json:"limit,omitempty" jsonschema:"maximum traces (default 20, at most 100)"`
+	Cursor            string `json:"cursor,omitempty" jsonschema:"next_cursor of the previous page"`
+	IncludeBackground bool   `json:"include_background,omitempty" jsonschema:"also list the background traces of Codex's app and exec servers: internal requests (file, settings and account reads) outside a conversation, which are left out by default"`
 }
 
 type traceOut struct {
@@ -352,7 +353,8 @@ func (h *handlers) listTraces(ctx context.Context, _ *mcp.CallToolRequest, in li
 	if err != nil {
 		return nil, listTracesOut{}, err
 	}
-	resp, err := h.store.QueryTraces(ctx, service, in.Query, from, to, storage.Page{Limit: limitArg(in.Limit, 20, 100), Cursor: in.Cursor})
+	filter := storage.TraceFilter{Service: service, Search: in.Query, Background: in.IncludeBackground}
+	resp, err := h.store.QueryTraces(ctx, filter, from, to, storage.Page{Limit: limitArg(in.Limit, 20, 100), Cursor: in.Cursor})
 	if err != nil {
 		return nil, listTracesOut{}, pageError(err)
 	}
@@ -399,20 +401,23 @@ func (h *handlers) getTrace(ctx context.Context, _ *mcp.CallToolRequest, in getT
 	if kind == "" {
 		kind = api.TraceKindOTelTrace
 	}
-	spans, err := traceview.Load(ctx, h.store, in.ID, kind)
+	// The trace's first 1,000 spans (max_spans is at most that): a parent
+	// starts before its children, so they form a tree
+	page, err := traceview.Load(ctx, h.store, in.ID, kind, storage.Page{Limit: maxTraceSpans})
 	if errors.Is(err, traceview.ErrUnsupportedKind) {
 		return nil, getTraceOut{}, fmt.Errorf("unknown kind %q: use %s or %s", kind, api.TraceKindOTelTrace, api.TraceKindCodexOperation)
 	}
 	if err != nil {
 		return nil, getTraceOut{}, err
 	}
-	if len(spans) == 0 {
+	if page == nil {
 		return nil, getTraceOut{}, fmt.Errorf("no trace %q of kind %s: find traces with list_traces", in.ID, kind)
 	}
+	spans := page.Spans
 
-	maxSpans := limitArg(in.MaxSpans, 200, 1000)
+	maxSpans := limitArg(in.MaxSpans, 200, maxTraceSpans)
 	maxChars := limitArg(in.MaxChars, 300, 5000)
-	out := getTraceOut{ID: in.ID, Kind: kind, Total: len(spans), Spans: []spanOut{}}
+	out := getTraceOut{ID: in.ID, Kind: kind, Total: page.Total, Spans: []spanOut{}, Truncated: page.HasMore}
 	for _, s := range treeOrder(spans) {
 		if len(out.Spans) == maxSpans {
 			out.Truncated = true
@@ -426,6 +431,9 @@ func (h *handlers) getTrace(ctx context.Context, _ *mcp.CallToolRequest, in getT
 	}
 	return nil, out, nil
 }
+
+// maxTraceSpans bounds the spans get_trace reads and returns
+const maxTraceSpans = 1000
 
 type treeSpan struct {
 	span  api.Span

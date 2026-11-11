@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { WaterfallView } from '@/components/traces/WaterfallView'
 import { api } from '@/lib/api'
 import { isAbortError } from '@/lib/errors'
@@ -15,6 +16,11 @@ export function TraceDetailPage() {
   const { kind, id } = useParams<{ kind: TraceKind; id: string }>()
   const navigate = useNavigate()
   const [spans, setSpans] = useState<Span[]>([])
+  // The overview of all spans of the trace and the cursor of the next page:
+  // a trace is loaded a page at a time (Codex turns have thousands of spans)
+  const [overview, setOverview] = useState<TraceOverview | null>(null)
+  const [nextCursor, setNextCursor] = useState<string | undefined>()
+  const [loadingMore, setLoadingMore] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -26,10 +32,15 @@ export function TraceDetailPage() {
     const fetchSpans = async () => {
       setLoading(true)
       setError(null)
+      setSpans([])
+      setOverview(null)
+      setNextCursor(undefined)
       try {
         const data = await api.getTraceSpans(id, kind, { signal: abortController.signal })
         if (data.spans && data.spans.length > 0) {
           setSpans(data.spans)
+          setOverview(data.trace ?? null)
+          setNextCursor(data.hasMore ? data.nextCursor : undefined)
         } else {
           setError('No spans found for this trace')
         }
@@ -52,9 +63,25 @@ export function TraceDetailPage() {
     return () => abortController.abort()
   }, [id, kind])
 
-  // Compute trace overview from spans
+  const loadMore = async () => {
+    if (!id || !kind || !nextCursor || loadingMore) return
+    setLoadingMore(true)
+    try {
+      const data = await api.getTraceSpans(id, kind, undefined, nextCursor)
+      setSpans((prev) => [...prev, ...(data.spans ?? [])])
+      setNextCursor(data.hasMore ? data.nextCursor : undefined)
+    } catch (err) {
+      console.error('Failed to fetch more trace spans:', err)
+      toast.error('Failed to load more spans')
+    } finally {
+      setLoadingMore(false)
+    }
+  }
+
+  // The server's overview of the whole trace, or one computed from the spans
   const traceOverview: TraceOverview | null = useMemo(() => {
     if (spans.length === 0) return null
+    if (overview) return overview
 
     // Prefer the requested row root; grouped Codex rows may include same-turn sibling roots.
     const spanIds = new Set(spans.map(s => s.spanId))
@@ -89,7 +116,7 @@ export function TraceDetailPage() {
       spanCount: spans.length,
       status: hasError ? 'ERROR' : 'OK'
     }
-  }, [spans, id, kind])
+  }, [spans, overview, id, kind])
 
   const handleBack = () => {
     navigate('/traces')
@@ -166,7 +193,7 @@ export function TraceDetailPage() {
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-muted-foreground">Spans:</span>
-                  <span className="font-medium">{traceOverview.spanCount}</span>
+                  <span className="font-medium">{traceOverview.spanCount.toLocaleString('en-US')}</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-muted-foreground">Started:</span>
@@ -180,6 +207,16 @@ export function TraceDetailPage() {
           <Card>
             <CardContent className="py-4">
               <WaterfallView spans={spans} trace={traceOverview} />
+              {nextCursor && (
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-3 border-t pt-4 text-sm text-muted-foreground">
+                  <span>
+                    Showing the first {spans.length.toLocaleString('en-US')} of {traceOverview.spanCount.toLocaleString('en-US')} spans
+                  </span>
+                  <Button variant="outline" size="sm" onClick={loadMore} disabled={loadingMore}>
+                    {loadingMore ? 'Loading...' : 'Load more spans'}
+                  </Button>
+                </div>
+              )}
             </CardContent>
           </Card>
         </>

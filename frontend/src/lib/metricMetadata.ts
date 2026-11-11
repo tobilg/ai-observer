@@ -51,7 +51,9 @@ export function getMetricMetadata(metricName: string): MetricMetadata {
   let source: SourceTool = 'unknown'
   if (metricName.startsWith('claude_code.')) source = 'claude_code'
   else if (metricName.startsWith('gemini_cli.')) source = 'gemini_cli'
-  else if (metricName.startsWith('codex.') || metricName.startsWith('codex_cli_rs.')) source = 'codex_cli_rs'
+  // exec_server_* come from Codex's exec server (codex-exec-server)
+  else if (metricName.startsWith('codex.') || metricName.startsWith('codex_cli_rs.') || metricName.startsWith('exec_server_'))
+    source = 'codex_cli_rs'
   else if (metricName.startsWith('github_copilot.') || metricName.startsWith('copilot_chat.')) source = 'github_copilot'
   else if (metricName.startsWith('opencode.')) source = 'opencode'
   else if (metricName.startsWith('gen_ai.')) source = 'gemini_cli'
@@ -270,7 +272,7 @@ export function getSourceDisplayName(source: SourceTool): string {
     case 'gemini_cli':
       return 'Gemini CLI'
     case 'codex_cli_rs':
-      return 'Codex CLI'
+      return 'OpenAI Codex'
     case 'github_copilot':
       return 'GitHub Copilot'
     case 'opencode':
@@ -288,20 +290,72 @@ const FALLBACK_SERVICE_NAMES: Record<string, string> = {
   'gemini-cli': 'Gemini CLI',
   gemini_cli: 'Gemini CLI',
   codex_cli_rs: 'OpenAI Codex CLI',
+  'codex-app-server': 'OpenAI Codex',
+  'codex-exec-server': 'OpenAI Codex exec server',
   'copilot-chat': 'GitHub Copilot (VS Code)',
   'github-copilot': 'GitHub Copilot CLI',
   opencode: 'OpenCode',
 }
 
+// The service names of tools that send several (backend tools.Provider
+// OtherServices), by tool name, used until the provider list has loaded. A
+// service filter with the tool name covers all of them.
+const FALLBACK_TOOL_SERVICES: Record<string, string[]> = {
+  codex: ['codex_cli_rs', 'codex-app-server', 'codex-exec-server'],
+}
+
+// Display names of those tool filters
+const TOOL_FILTER_NAMES: Record<string, string> = {
+  codex: 'OpenAI Codex (all services)',
+}
+
+// The service names of the tools that send several, by tool name
+function getToolServices(): Record<string, string[]> {
+  const { loaded, toolServices } = useProviderStore.getState()
+  return loaded ? toolServices : FALLBACK_TOOL_SERVICES
+}
+
 /**
- * Get display name for a service name (from API/backend)
+ * Get display name for a service name (from API/backend), or for a tool name
+ * used as service filter (codex: all of Codex's services)
  */
 export function getServiceDisplayName(serviceName: string): string {
-  return (
-    useProviderStore.getState().displayNames[serviceName] ??
-    FALLBACK_SERVICE_NAMES[serviceName] ??
-    serviceName
-  )
+  const name = useProviderStore.getState().displayNames[serviceName] ?? FALLBACK_SERVICE_NAMES[serviceName]
+  if (name) return name
+  if (getToolServices()[serviceName]) return TOOL_FILTER_NAMES[serviceName] ?? `${serviceName} (all services)`
+  return serviceName
+}
+
+export interface ServiceFilterOption {
+  value: string
+  label: string
+}
+
+/**
+ * Options of a service filter: the services, each with its display name, and
+ * before the first service of a tool that sends several of them, the tool
+ * name (which the API accepts as filter for all of them), when at least two
+ * of them are present
+ */
+export function serviceFilterOptions(services: string[]): ServiceFilterOption[] {
+  const toolServices = getToolServices()
+  const toolOf = new Map<string, string>()
+  for (const [tool, names] of Object.entries(toolServices)) {
+    if (names.filter((name) => services.includes(name)).length >= 2) {
+      for (const name of names) toolOf.set(name, tool)
+    }
+  }
+  const options: ServiceFilterOption[] = []
+  const added = new Set<string>()
+  for (const service of services) {
+    const tool = toolOf.get(service)
+    if (tool && !added.has(tool)) {
+      added.add(tool)
+      options.push({ value: tool, label: getServiceDisplayName(tool) })
+    }
+    options.push({ value: service, label: getServiceDisplayName(service) })
+  }
+  return options
 }
 
 /**
@@ -315,6 +369,8 @@ export function getServiceIcon(serviceName: string): LucideIcon {
     case 'gemini_cli':
       return Sparkles
     case 'codex_cli_rs':
+    case 'codex-app-server':
+    case 'codex-exec-server':
       return Terminal
     case 'copilot-chat':
     case 'github-copilot':

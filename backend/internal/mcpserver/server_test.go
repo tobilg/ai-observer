@@ -294,6 +294,29 @@ func TestUsageSummary(t *testing.T) {
 	if len(out.Rows) != 1 || out.Rows[0].TotalTokens != 12000 || out.Rows[0].Tokens["cacheRead"] != 8000 {
 		t.Errorf("codex usage = %+v", out.Rows)
 	}
+	if len(out.UnpricedModels) != 1 || out.UnpricedModels[0] != "codex: gpt-6" {
+		t.Errorf("unpriced models = %v, want gpt-6, which has tokens and no cost", out.UnpricedModels)
+	}
+
+	// The Codex app and the CLI send their usage as codex-app-server, which
+	// counts as Codex; cache writes are part of the input
+	var app []api.MetricDataPoint
+	for tokenType, v := range map[string]float64{"input": 500, "cacheWrite": 100, "output": 10} {
+		value := v
+		app = append(app, api.MetricDataPoint{Timestamp: now.Add(-time.Hour), ServiceName: "codex-app-server", MetricName: "codex_cli_rs.token.usage",
+			MetricType: "sum", Value: &value, Attributes: map[string]string{"model": "gpt-6", "type": tokenType}})
+	}
+	if err := store.InsertTelemetry(context.Background(), nil, app, nil); err != nil {
+		t.Fatal(err)
+	}
+	call(t, cs, "usage_summary", map[string]any{"tool": "codex"}, &out)
+	if len(out.Rows) != 1 || out.Rows[0].Tool != "codex" || out.Rows[0].TotalTokens != 12510 || out.Rows[0].Tokens["cacheWrite"] != 100 {
+		t.Errorf("codex usage with the app server = %+v", out.Rows)
+	}
+	call(t, cs, "usage_summary", map[string]any{"tool": "codex-app-server"}, &out)
+	if len(out.Rows) != 1 || out.Rows[0].TotalTokens != 510 {
+		t.Errorf("app server usage = %+v", out.Rows)
+	}
 }
 
 func TestLogsTracesAndMetrics(t *testing.T) {
@@ -409,5 +432,25 @@ func TestParseTime(t *testing.T) {
 	}
 	if _, _, err := timeRange("1d", "2d", now, time.Hour); err == nil {
 		t.Error("from after to was accepted")
+	}
+}
+
+func TestListTracesLeavesOutBackgroundTraces(t *testing.T) {
+	cs, store, now := testSession(t)
+	if err := store.InsertSpans(context.Background(), []api.Span{
+		{TraceID: "fs-read", SpanID: "bg1", ServiceName: "codex-app-server", SpanName: "fs.read_file", Timestamp: now.Add(-time.Minute), Duration: 1000},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var traces listTracesOut
+	if errText := call(t, cs, "list_traces", map[string]any{"tool": "codex"}, &traces); errText != "" {
+		t.Fatal(errText)
+	}
+	if len(traces.Traces) != 1 || traces.Traces[0].ID != "trace-1" {
+		t.Errorf("Codex traces = %+v, want only trace-1", traces.Traces)
+	}
+	call(t, cs, "list_traces", map[string]any{"tool": "codex", "include_background": true}, &traces)
+	if len(traces.Traces) != 2 || traces.Traces[0].ID != "fs-read" || traces.Traces[0].Tool != "codex" {
+		t.Errorf("Codex traces with background = %+v", traces.Traces)
 	}
 }

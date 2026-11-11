@@ -58,6 +58,9 @@ func TestAppViewResource(t *testing.T) {
 	if c.URI != appURI || c.MIMEType != appMIMEType || !strings.Contains(c.Text, "<html") || ui["prefersBorder"] != true {
 		t.Errorf("view = %s %s %v, %d characters", c.URI, c.MIMEType, c.Meta, len(c.Text))
 	}
+	if c.Meta["openai/widgetDescription"] != appModelDescription {
+		t.Errorf("openai/widgetDescription = %v", c.Meta["openai/widgetDescription"])
+	}
 	// Self-contained: hosts give the page no network access
 	if strings.Contains(c.Text, `src="/`) || strings.Contains(c.Text, `href="/`) {
 		t.Error("the view loads files instead of inlining them")

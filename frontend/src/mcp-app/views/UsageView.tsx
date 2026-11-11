@@ -95,6 +95,11 @@ export function UsageView({ data, args, callTool }: { data: UsageSummary; args: 
         )}
       </div>
 
+      {summary.unpriced_models?.length ? (
+        <p className="text-xs text-muted-foreground">
+          No price, so not in the cost: {summary.unpriced_models.join(', ')}
+        </p>
+      ) : null}
       <p className="text-[11px] leading-snug text-muted-foreground">{summary.note}</p>
     </div>
   )

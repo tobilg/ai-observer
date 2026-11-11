@@ -10,7 +10,7 @@ import { DataPagination } from '@/components/common/data-pagination'
 import { api } from '@/lib/api'
 import { isAbortError } from '@/lib/errors'
 import { formatTimestamp, getSeverityColor, cn } from '@/lib/utils'
-import { getServiceDisplayName } from '@/lib/metricMetadata'
+import { getServiceDisplayName, serviceFilterOptions } from '@/lib/metricMetadata'
 import type { LogRecord } from '@/types/logs'
 import { ChevronDown, ChevronUp, RefreshCw } from 'lucide-react'
 import { useTelemetryStore } from '@/stores/telemetryStore'
@@ -168,9 +168,9 @@ export function LogsPage() {
                 setService(e.target.value)
               }}>
                 <option value="">All Services</option>
-                {services.map((s) => (
-                  <option key={s} value={s}>
-                    {getServiceDisplayName(s)}
+                {serviceFilterOptions(services).map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
                   </option>
                 ))}
               </Select>

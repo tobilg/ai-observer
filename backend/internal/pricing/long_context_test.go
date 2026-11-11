@@ -64,9 +64,9 @@ func TestClaudeLongContextTierCountsCachedTokens(t *testing.T) {
 
 func TestCodexLongContextTier(t *testing.T) {
 	// 200k prompt: base tier, $5 input / $30 output per MTok
-	below := CalculateCodexCost("gpt-5.5", 200_000, 0, 1_000)
+	below := CalculateCodexCost("gpt-5.5", 200_000, 0, 0, 1_000)
 	// 300k prompt (100k cached): $10 input, $1 cached, $45 output per MTok
-	above := CalculateCodexCost("gpt-5.5", 300_000, 100_000, 1_000)
+	above := CalculateCodexCost("gpt-5.5", 300_000, 100_000, 0, 1_000)
 	if below == nil || above == nil {
 		t.Fatal("expected gpt-5.5 to be priced")
 	}
@@ -78,7 +78,7 @@ func TestCodexLongContextTier(t *testing.T) {
 	}
 
 	// Models without a long-context tier keep their base price
-	mini := CalculateCodexCost("gpt-5.4-mini", 300_000, 0, 0)
+	mini := CalculateCodexCost("gpt-5.4-mini", 300_000, 0, 0, 0)
 	if mini == nil || !approxEqual(*mini, 300_000*0.75e-6) {
 		t.Errorf("gpt-5.4-mini 300k prompt cost = %v, want base price %v", mini, 300_000*0.75e-6)
 	}

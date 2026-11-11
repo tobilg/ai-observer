@@ -1,18 +1,21 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
+import { Label } from '@/components/ui/label'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { DateRangePicker } from '@/components/common/date-range-picker'
 import { DataPagination } from '@/components/common/data-pagination'
 import { WaterfallView } from '@/components/traces/WaterfallView'
 import { api } from '@/lib/api'
 import { isAbortError } from '@/lib/errors'
 import { formatDuration, formatTimestamp, getStatusColor, cn } from '@/lib/utils'
-import { getServiceDisplayName } from '@/lib/metricMetadata'
-import type { TraceOverview, Span } from '@/types/traces'
+import { getServiceDisplayName, serviceFilterOptions } from '@/lib/metricMetadata'
+import type { TraceOverview, SpansResponse } from '@/types/traces'
 import { ChevronRight, ChevronDown, RefreshCw } from 'lucide-react'
 import { isAbsoluteTimeSelection, type TimeSelection } from '@/types/dashboard'
 import { useDebounce } from '@/hooks/useDebounce'
@@ -52,11 +55,16 @@ export function TracesPage() {
   const [traces, setTraces] = useState<TraceOverview[]>([])
   const [total, setTotal] = useState(0)
   const [expandedTraceKey, setExpandedTraceKey] = useState<string | null>(null)
-  const [spansMap, setSpansMap] = useState<Map<string, Span[]>>(new Map())
+  // The first page of the expanded traces' spans
+  const [spansMap, setSpansMap] = useState<Map<string, SpansResponse>>(new Map())
   const [services, setServices] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [service, setService] = useState(searchParams.get('service') || '')
   const [search, setSearch] = useState(searchParams.get('search') || '')
+  // Codex's app and exec servers record internal requests (file, settings
+  // and account reads) as hundreds of traces an hour; the API leaves out
+  // those outside a conversation unless asked for
+  const [background, setBackground] = useState(searchParams.get('background') === 'true')
   const debouncedSearch = useDebounce(search, 200)
 
   // Time selection with localStorage persistence
@@ -116,6 +124,7 @@ export function TracesPage() {
         const data = await api.getTraces({
           service: service || undefined,
           search: debouncedSearch || undefined,
+          background,
           from: fromTime.toISOString(),
           to: toTime.toISOString(),
           limit: pageSize,
@@ -139,7 +148,7 @@ export function TracesPage() {
     fetchTraces()
 
     return () => abortController.abort()
-  }, [service, debouncedSearch, fromTime, toTime, pageSize, cursor, setNextCursor])
+  }, [service, debouncedSearch, background, fromTime, toTime, pageSize, cursor, setNextCursor])
 
   useEffect(() => {
     if (!hasNewSpans) {
@@ -152,6 +161,7 @@ export function TracesPage() {
         const data = await api.getTraces({
           service: service || undefined,
           search: debouncedSearch || undefined,
+          background,
           from: anchorTime.toISOString(),
           to: new Date().toISOString(),
           limit: 1,
@@ -171,7 +181,7 @@ export function TracesPage() {
       window.clearTimeout(timeout)
       abortController.abort()
     }
-  }, [hasNewSpans, anchorTime, service, debouncedSearch])
+  }, [hasNewSpans, anchorTime, service, debouncedSearch, background])
 
   useEffect(() => {
     const abortController = new AbortController()
@@ -190,7 +200,7 @@ export function TracesPage() {
       try {
         const data = await api.getTraceSpans(getTraceRequestId(expandedTrace), getTraceKind(expandedTrace), { signal: abortController.signal })
         if (!abortController.signal.aborted) {
-          setSpansMap(prev => new Map(prev).set(expandedTraceKey, data.spans ?? []))
+          setSpansMap(prev => new Map(prev).set(expandedTraceKey, { ...data, spans: data.spans ?? [] }))
         }
       } catch (err) {
         if (isAbortError(err)) {
@@ -205,14 +215,16 @@ export function TracesPage() {
     return () => abortController.abort()
   }, [expandedTraceKey, spansMap, traces])
 
-  const updateSearchParams = (updates: { service?: string; search?: string; timeSelection?: TimeSelection }) => {
+  const updateSearchParams = (updates: { service?: string; search?: string; background?: boolean; timeSelection?: TimeSelection }) => {
     const params: Record<string, string> = {}
     const newService = updates.service ?? service
     const newSearch = updates.search ?? search
+    const newBackground = updates.background ?? background
     const newTimeSelection = updates.timeSelection ?? timeSelection
 
     if (newService) params.service = newService
     if (newSearch) params.search = newSearch
+    if (newBackground) params.background = 'true'
 
     // Handle time selection params
     if (isAbsoluteTimeSelection(newTimeSelection)) {
@@ -229,6 +241,12 @@ export function TracesPage() {
     resetToFirstPage()
     setService(value)
     updateSearchParams({ service: value })
+  }
+
+  const handleBackgroundChange = (checked: boolean) => {
+    resetToFirstPage()
+    setBackground(checked)
+    updateSearchParams({ background: checked })
   }
 
   const handleTimeSelectionChange = (selection: TimeSelection) => {
@@ -288,9 +306,9 @@ export function TracesPage() {
                 onChange={(e) => handleServiceChange(e.target.value)}
               >
                 <option value="">All Services</option>
-                {services.map((s) => (
-                  <option key={s} value={s}>
-                    {getServiceDisplayName(s)}
+                {serviceFilterOptions(services).map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
                   </option>
                 ))}
               </Select>
@@ -305,6 +323,19 @@ export function TracesPage() {
                 }}
               />
             </div>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="flex items-center gap-2">
+                  <Switch id="background-traces" checked={background} onCheckedChange={handleBackgroundChange} />
+                  <Label htmlFor="background-traces" className="whitespace-nowrap text-sm text-muted-foreground">
+                    Background requests
+                  </Label>
+                </div>
+              </TooltipTrigger>
+              <TooltipContent>
+                Codex app server traces outside a conversation: file, settings and account reads
+              </TooltipContent>
+            </Tooltip>
           </div>
         </CardContent>
       </Card>
@@ -329,7 +360,8 @@ export function TracesPage() {
                 {traces.map((trace, index) => {
                   const traceKey = getTraceRowKey(trace, index)
                   const isExpanded = expandedTraceKey === traceKey
-                  const spans = spansMap.get(traceKey)
+                  const spanPage = spansMap.get(traceKey)
+                  const spans = spanPage?.spans
 
                   return (
                     <div key={traceKey} className="rounded-lg border">
@@ -378,7 +410,21 @@ export function TracesPage() {
                               No spans found
                             </div>
                           ) : (
-                            <WaterfallView spans={spans} trace={trace} />
+                            <>
+                              <WaterfallView spans={spans} trace={trace} />
+                              {spanPage?.hasMore && (
+                                <div className="mt-3 border-t pt-3 text-center text-sm text-muted-foreground">
+                                  Showing the first {spans.length.toLocaleString('en-US')} of {(spanPage.total ?? trace.spanCount).toLocaleString('en-US')} spans.{' '}
+                                  <Link
+                                    className="underline underline-offset-4 hover:text-foreground"
+                                    to={`/traces/${getTraceKind(trace)}/${encodeURIComponent(getTraceRequestId(trace))}`}
+                                  >
+                                    Open the trace
+                                  </Link>{' '}
+                                  to load more.
+                                </div>
+                              )}
+                            </>
                           )}
                         </div>
                       )}

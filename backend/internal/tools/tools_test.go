@@ -1,6 +1,9 @@
 package tools
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestServiceName(t *testing.T) {
 	tests := []struct {
@@ -90,15 +93,17 @@ func TestServiceNameFor(t *testing.T) {
 	}
 }
 
-func TestNormalizeServiceName(t *testing.T) {
+func TestResolveFilter(t *testing.T) {
 	tests := []struct {
 		input    string
 		expected string
 	}{
 		{"claude-code", "claude-code"},
-		{"codex", "codex_cli_rs"},
+		{"codex", "codex"},
 		{"codex_cli_rs", "codex_cli_rs"},
-		{"gemini", "gemini_cli"},
+		{"codex-app-server", "codex-app-server"},
+		{"codex-exec-server", "codex-exec-server"},
+		{"gemini", "gemini"},
 		{"gemini_cli", "gemini_cli"},
 		{"opencode", "opencode"},
 		{"copilot-chat", "copilot-chat"},
@@ -108,11 +113,54 @@ func TestNormalizeServiceName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			result := NormalizeServiceName(tt.input)
+			result := ResolveFilter(tt.input)
 			if result != tt.expected {
 				t.Errorf("expected %q, got %q", tt.expected, result)
 			}
 		})
+	}
+}
+
+func TestFilterServices(t *testing.T) {
+	tests := []struct {
+		filter string
+		want   []string
+	}{
+		{"", nil},
+		{"codex", []string{"codex_cli_rs", "codex-app-server", "codex-exec-server"}},
+		{"codex-app-server", []string{"codex-app-server"}},
+		{"gemini", []string{"gemini_cli"}},
+		{"claude-code", []string{"claude-code"}},
+		{"some-service", []string{"some-service"}},
+	}
+	for _, tt := range tests {
+		if got := FilterServices(tt.filter); !slices.Equal(got, tt.want) {
+			t.Errorf("FilterServices(%q) = %v, want %v", tt.filter, got, tt.want)
+		}
+	}
+}
+
+func TestToolForService(t *testing.T) {
+	for service, want := range map[string]Tool{
+		"codex_cli_rs":      Codex,
+		"codex-app-server":  Codex,
+		"codex-exec-server": Codex,
+		"claude-code":       Claude,
+		"copilot-chat":      CopilotVSCode,
+	} {
+		if got, ok := ToolForService(service); !ok || got != want {
+			t.Errorf("ToolForService(%q) = %q, %v; want %q", service, got, ok, want)
+		}
+	}
+	if got, ok := ToolForService("codex"); ok {
+		t.Errorf("ToolForService(codex) = %q, want no tool: codex is a tool name, not a service", got)
+	}
+}
+
+func TestBackgroundTraceServices(t *testing.T) {
+	want := []string{"codex-app-server", "codex-exec-server"}
+	if got := BackgroundTraceServices(); !slices.Equal(got, want) {
+		t.Errorf("BackgroundTraceServices() = %v, want %v", got, want)
 	}
 }
 

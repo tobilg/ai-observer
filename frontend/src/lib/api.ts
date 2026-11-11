@@ -176,6 +176,8 @@ export interface Provider {
   serviceName: string
   displayName: string
   sessionFiles: boolean
+  // Further service names the tool sends (Codex: codex-app-server, codex-exec-server)
+  otherServices?: { serviceName: string; displayName: string }[]
 }
 
 interface ProvidersResponse {
@@ -370,10 +372,14 @@ export const api = {
   },
 
   // Traces
-  async getTraces(params: QueryParams & { search?: string } = {}, options?: FetchOptions): Promise<TracesResponse> {
+  // background includes the background traces of Codex's app and exec
+  // servers (internal requests outside a conversation), which are left out
+  // by default
+  async getTraces(params: QueryParams & { search?: string; background?: boolean } = {}, options?: FetchOptions): Promise<TracesResponse> {
     const query = buildQueryString({
       service: params.service,
       search: params.search,
+      background: params.background ? 'true' : undefined,
       from: params.from,
       to: params.to,
       limit: params.limit ?? 10,
@@ -387,8 +393,11 @@ export const api = {
     return fetchJSON(`${API_BASE}/traces/${encodeURIComponent(id)}?kind=${kind}`, options)
   },
 
-  async getTraceSpans(id: string, kind: TraceKind, options?: FetchOptions): Promise<SpansResponse> {
-    return fetchJSON(`${API_BASE}/traces/${encodeURIComponent(id)}/spans?kind=${kind}`, options)
+  // A page of a trace's spans, oldest first (1,000 a page); cursor is the
+  // previous page's nextCursor
+  async getTraceSpans(id: string, kind: TraceKind, options?: FetchOptions, cursor?: string): Promise<SpansResponse> {
+    const query = buildQueryString({ kind, cursor })
+    return fetchJSON(`${API_BASE}/traces/${encodeURIComponent(id)}/spans${query}`, options)
   },
 
   async getRecentTraces(limit: number = 10, params: Pick<QueryParams, 'from' | 'to'> = {}, options?: FetchOptions): Promise<TracesResponse> {
@@ -513,8 +522,10 @@ export const api = {
     return fetchJSON(`${API_BASE}/sessions${query}`, options)
   },
 
-  async getSessionTranscript(sessionId: string, options?: FetchOptions): Promise<TranscriptResponse> {
-    return fetchJSON(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/transcript`, options)
+  // A page of a session's transcript; cursor is the previous page's nextCursor
+  async getSessionTranscript(sessionId: string, options?: FetchOptions, cursor?: string): Promise<TranscriptResponse> {
+    const query = buildQueryString({ cursor })
+    return fetchJSON(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/transcript${query}`, options)
   },
 
   // Dashboards

@@ -193,7 +193,7 @@ func TestQueryTraces(t *testing.T) {
 	from := now.Add(-1 * time.Hour)
 	to := now.Add(1 * time.Hour)
 
-	resp, err := store.QueryTraces(ctx, "", "", from, to, Page{Limit: 10})
+	resp, err := store.QueryTraces(ctx, TraceFilter{}, from, to, Page{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryTraces failed: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestQueryTraces_WithServiceFilter(t *testing.T) {
 	from := now.Add(-1 * time.Hour)
 	to := now.Add(1 * time.Hour)
 
-	resp, err := store.QueryTraces(ctx, "service-a", "", from, to, Page{Limit: 10})
+	resp, err := store.QueryTraces(ctx, TraceFilter{Service: "service-a"}, from, to, Page{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryTraces failed: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestQueryTraces_EmptyResult(t *testing.T) {
 	from := time.Now().Add(-1 * time.Hour)
 	to := time.Now()
 
-	resp, err := store.QueryTraces(context.Background(), "", "", from, to, Page{Limit: 10})
+	resp, err := store.QueryTraces(context.Background(), TraceFilter{}, from, to, Page{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryTraces failed: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestGetTraceSpans_CopilotTraceID(t *testing.T) {
 		t.Fatalf("InsertSpans failed: %v", err)
 	}
 
-	resp, err := store.QueryTraces(ctx, "copilot-chat", "", now.Add(-time.Minute), now.Add(time.Minute), Page{Limit: 10})
+	resp, err := store.QueryTraces(ctx, TraceFilter{Service: "copilot-chat"}, now.Add(-time.Minute), now.Add(time.Minute), Page{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryTraces failed: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestQueryTraces_CodexUsesRawTraceRows(t *testing.T) {
 		t.Fatalf("InsertSpans failed: %v", err)
 	}
 
-	resp, err := store.QueryTraces(ctx, "codex_cli_rs", "", now.Add(-time.Minute), now.Add(time.Hour), Page{Limit: 10})
+	resp, err := store.QueryTraces(ctx, TraceFilter{Service: "codex_cli_rs"}, now.Add(-time.Minute), now.Add(time.Hour), Page{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryTraces failed: %v", err)
 	}
@@ -421,7 +421,7 @@ func TestQueryTraces_CodexSearchReturnsRawTrace(t *testing.T) {
 		t.Fatalf("InsertSpans failed: %v", err)
 	}
 
-	resp, err := store.QueryTraces(ctx, "codex_cli_rs", "ripgrep", now.Add(-time.Minute), now.Add(time.Hour), Page{Limit: 10})
+	resp, err := store.QueryTraces(ctx, TraceFilter{Service: "codex_cli_rs", Search: "ripgrep"}, now.Add(-time.Minute), now.Add(time.Hour), Page{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryTraces failed: %v", err)
 	}
@@ -452,7 +452,7 @@ func TestQueryTraces_CodexSearchMatchesSpanInsideTimeRange(t *testing.T) {
 		t.Fatalf("InsertSpans failed: %v", err)
 	}
 
-	resp, err := store.QueryTraces(ctx, "codex_cli_rs", "inside-window-hit", now.Add(-time.Minute), now.Add(time.Minute), Page{Limit: 10})
+	resp, err := store.QueryTraces(ctx, TraceFilter{Service: "codex_cli_rs", Search: "inside-window-hit"}, now.Add(-time.Minute), now.Add(time.Minute), Page{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryTraces failed: %v", err)
 	}
@@ -482,7 +482,7 @@ func TestQueryTraces_MixedCodexAndNonCodexPagination(t *testing.T) {
 		t.Fatalf("InsertSpans failed: %v", err)
 	}
 
-	resp, err := store.QueryTraces(ctx, "", "", now.Add(-time.Minute), now.Add(time.Hour), Page{Limit: 2, Offset: 1})
+	resp, err := store.QueryTraces(ctx, TraceFilter{}, now.Add(-time.Minute), now.Add(time.Hour), Page{Limit: 2, Offset: 1})
 	if err != nil {
 		t.Fatalf("QueryTraces failed: %v", err)
 	}
@@ -961,7 +961,7 @@ func TestQueryTraces_Pagination(t *testing.T) {
 	to := now.Add(1 * time.Hour)
 
 	// Get first page
-	resp, err := store.QueryTraces(ctx, "", "", from, to, Page{Limit: 2})
+	resp, err := store.QueryTraces(ctx, TraceFilter{}, from, to, Page{Limit: 2})
 	if err != nil {
 		t.Fatalf("QueryTraces failed: %v", err)
 	}
@@ -974,7 +974,7 @@ func TestQueryTraces_Pagination(t *testing.T) {
 	}
 
 	// Get second page
-	resp, err = store.QueryTraces(ctx, "", "", from, to, Page{Limit: 2, Offset: 2})
+	resp, err = store.QueryTraces(ctx, TraceFilter{}, from, to, Page{Limit: 2, Offset: 2})
 	if err != nil {
 		t.Fatalf("QueryTraces failed: %v", err)
 	}

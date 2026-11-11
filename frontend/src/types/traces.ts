@@ -56,6 +56,13 @@ export interface TracesResponse {
   nextCursor?: string
 }
 
+// A page of the spans of a trace view, oldest first
 export interface SpansResponse {
   spans: Span[]
+  // Describes all spans of the trace view, not only this page's
+  trace?: TraceOverview
+  total?: number
+  hasMore?: boolean
+  // Requests the next page (cursor parameter) when hasMore
+  nextCursor?: string
 }

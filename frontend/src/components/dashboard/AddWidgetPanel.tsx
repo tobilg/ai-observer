@@ -23,7 +23,7 @@ import {
   type CreateWidgetRequest,
   type WidgetDefinition,
 } from '@/types/dashboard'
-import { getMetricMetadata, getServiceDisplayName } from '@/lib/metricMetadata'
+import { getMetricMetadata, serviceFilterOptions } from '@/lib/metricMetadata'
 import { groupMetricsBySource } from '@/lib/metricGroups'
 import { nextFreePosition, widgetFitError } from '@/lib/dashboardGrid'
 import { MetricOptions } from '@/components/common/metric-options'
@@ -292,9 +292,9 @@ export function AddWidgetPanel() {
                   onChange={(e) => setSelectedService(e.target.value)}
                 >
                   <option value="">All Services</option>
-                  {services.map((s) => (
-                    <option key={s} value={s}>
-                      {getServiceDisplayName(s)}
+                  {serviceFilterOptions(services).map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
                     </option>
                   ))}
                 </Select>

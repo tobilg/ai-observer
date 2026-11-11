@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,16 @@ type DuckDBStore struct {
 	// redactor replaces secrets (and personal data) in the text of stored
 	// telemetry; nil stores it as it is
 	redactor *redact.Redactor
+	// storeAllSpans keeps the tools' noise spans of OTLP exports
+	// (dropNoiseSpans)
+	storeAllSpans bool
+}
+
+// SetStoreAllSpans makes InsertTraces store the tools' noise spans too
+// (AI_OBSERVER_STORE_ALL_SPANS). It must be called before telemetry is
+// written.
+func (s *DuckDBStore) SetStoreAllSpans(all bool) {
+	s.storeAllSpans = all
 }
 
 // SetRedactor sets what is redacted in telemetry before it is stored
@@ -36,7 +47,33 @@ func (s *DuckDBStore) Redactor() *redact.Redactor {
 	return s.redactor
 }
 
+// Options are optional settings of the database
+type Options struct {
+	// MemoryLimit bounds the memory DuckDB uses for data and query
+	// processing, as a size such as "2GB" (DuckDB's memory_limit). Empty
+	// keeps DuckDB's default, 80% of the machine's memory.
+	MemoryLimit string
+	// Threads is the number of threads DuckDB runs queries on. 0 keeps
+	// DuckDB's default, one per CPU core.
+	Threads int
+}
+
+var memoryLimitPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?\s*([KMGT]i?B)$`)
+
+// ValidMemoryLimit reports whether limit is a size Options.MemoryLimit
+// accepts: a number and a unit (KB, MB, GB, TB, or KiB, MiB, GiB, TiB)
+func ValidMemoryLimit(limit string) bool {
+	return memoryLimitPattern.MatchString(limit)
+}
+
+// NewDuckDBStore opens the database at dbPath with DuckDB's default limits
 func NewDuckDBStore(dbPath string) (*DuckDBStore, error) {
+	return NewDuckDBStoreWithOptions(dbPath, Options{})
+}
+
+// NewDuckDBStoreWithOptions opens the database at dbPath, creating or
+// migrating its schema
+func NewDuckDBStoreWithOptions(dbPath string, opts Options) (*DuckDBStore, error) {
 	// Ensure directory exists
 	dir := filepath.Dir(dbPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -68,6 +105,25 @@ func NewDuckDBStore(dbPath string) (*DuckDBStore, error) {
 	if _, err := db.Exec(fmt.Sprintf("SET GLOBAL late_materialization_max_rows = %d", maxPageSize+1)); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("configuring database: %w", err)
+	}
+
+	// Set before the schema runs, so migrations of a large database stay
+	// within the limits too. Neither setting takes parameters.
+	if opts.MemoryLimit != "" {
+		if !ValidMemoryLimit(opts.MemoryLimit) {
+			db.Close()
+			return nil, fmt.Errorf("invalid memory limit %q: use a size such as 2GB", opts.MemoryLimit)
+		}
+		if _, err := db.Exec("SET GLOBAL memory_limit = '" + opts.MemoryLimit + "'"); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("setting memory limit %s: %w", opts.MemoryLimit, err)
+		}
+	}
+	if opts.Threads > 0 {
+		if _, err := db.Exec(fmt.Sprintf("SET GLOBAL threads = %d", opts.Threads)); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("setting threads to %d: %w", opts.Threads, err)
+		}
 	}
 
 	store := &DuckDBStore{db: db}

@@ -19,6 +19,8 @@ export interface UsageSummary {
   group_by: UsageGroup
   rows: UsageRow[]
   total_cost_usd: number
+  // Models with tokens but no cost ("tool: model"), which have no price
+  unpriced_models?: string[]
   note: string
 }
 

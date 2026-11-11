@@ -52,11 +52,12 @@ type Server struct {
 }
 
 func New(cfg *config.Config) (*Server, error) {
-	store, err := storage.NewDuckDBStore(cfg.DatabasePath)
+	store, err := storage.NewDuckDBStoreWithOptions(cfg.DatabasePath, cfg.StorageOptions())
 	if err != nil {
 		return nil, fmt.Errorf("initializing storage: %w", err)
 	}
 	store.SetRedactor(NewRedactor(cfg.Redaction))
+	store.SetStoreAllSpans(cfg.StoreAllSpans)
 
 	hub := websocket.NewHub()
 	go hub.Run()

@@ -118,12 +118,18 @@ export OTEL_LOGS_EXPORT_TIMEOUT=5000
 		fmt.Print(`OpenAI Codex CLI Setup
 ======================
 
-Add to ~/.codex/config.toml:
+Add to ~/.codex/config.toml (used by the CLI and the Codex app):
 
 [otel]
 exporter = { otlp-http = { endpoint = "http://localhost:4318/v1/logs", protocol = "binary" } }
 trace_exporter = { otlp-http = { endpoint = "http://localhost:4318/v1/traces", protocol = "binary" } }
-	log_user_prompt = true
+metrics_exporter = { otlp-http = { endpoint = "http://localhost:4318/v1/metrics", protocol = "binary" } }
+log_user_prompt = true
+
+Codex 0.167 and later run the CLI's conversations in a background app server,
+which keeps the settings it started with. After changing [otel], quit Codex,
+stop it with pkill -f app-server-daemon, and start Codex again. The CLI and
+the Codex app then send their conversations as codex-app-server.
 `)
 	case "opencode":
 		fmt.Print(`OpenCode OTEL Plugin Setup

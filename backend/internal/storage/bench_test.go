@@ -227,7 +227,7 @@ func BenchmarkQueryTraces(b *testing.B) {
 	for _, window := range []time.Duration{24 * time.Hour, benchDays * 24 * time.Hour} {
 		b.Run(window.String(), func(b *testing.B) {
 			for b.Loop() {
-				if _, err := db.store.QueryTraces(ctx, "", "", db.end.Add(-window), db.end, Page{Limit: 50}); err != nil {
+				if _, err := db.store.QueryTraces(ctx, TraceFilter{}, db.end.Add(-window), db.end, Page{Limit: 50}); err != nil {
 					b.Fatal(err)
 				}
 			}

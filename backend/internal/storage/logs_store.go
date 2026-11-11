@@ -68,9 +68,7 @@ func insertLogsTx(ctx context.Context, w *writeTx, logs []api.LogRecord, sourceF
 func (s *DuckDBStore) QueryLogs(ctx context.Context, service, severity, traceID, search string, from, to time.Time, page Page) (*api.LogsResponse, error) {
 	var where conditions
 	where.add("Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP", formatTimeForDB(from), formatTimeForDB(to))
-	if service != "" {
-		where.add("ServiceName = ?", service)
-	}
+	where.addService(service)
 	if severity != "" {
 		where.add("SeverityText = ?", severity)
 	}
@@ -228,9 +226,7 @@ func (s *DuckDBStore) QuerySessions(ctx context.Context, service string, from, t
 	var where conditions
 	where.add("Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP", formatTimeForDB(from), formatTimeForDB(to))
 	where.add("SessionId IS NOT NULL")
-	if service != "" {
-		where.add("ServiceName = ?", service)
-	}
+	where.addService(service)
 
 	limit, offset, err := pageLimit(page)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"testing"
@@ -141,9 +142,9 @@ func TestCodexParser(t *testing.T) {
 	entries := []string{
 		`{"timestamp":"2025-01-02T10:00:00.000Z","type":"session_meta","payload":{"id":"session-abc123","timestamp":"2025-01-02T10:00:00.000Z","cwd":"/home/user/project","originator":"cli","cli_version":"1.0.0","model_provider":"openai","model":"gpt-4o"}}`,
 		`{"timestamp":"2025-01-02T10:01:00.000Z","type":"event_msg","payload":{"type":"user_message"}}`,
-		`{"timestamp":"2025-01-02T10:02:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":500,"output_tokens":200,"cache_creation_input_tokens":0,"cached_input_tokens":0,"reasoning_output_tokens":50,"tool_tokens":10}}}}`,
+		`{"timestamp":"2025-01-02T10:02:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":500,"output_tokens":200,"cached_input_tokens":100,"reasoning_output_tokens":50,"total_tokens":700}}}}`,
 		`{"timestamp":"2025-01-02T10:03:00.000Z","type":"event_msg","payload":{"type":"agent_message"}}`,
-		`{"timestamp":"2025-01-02T10:04:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":800,"output_tokens":350,"cache_creation_input_tokens":0,"cached_input_tokens":0,"reasoning_output_tokens":100,"tool_tokens":20}}}}`,
+		`{"timestamp":"2025-01-02T10:04:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":800,"output_tokens":350,"cached_input_tokens":300,"cache_write_input_tokens":40,"reasoning_output_tokens":100,"total_tokens":1150}}}}`,
 	}
 
 	if err := os.WriteFile(testFile, []byte(joinLines(entries)), 0644); err != nil {
@@ -186,11 +187,21 @@ func TestCodexParser(t *testing.T) {
 		t.Errorf("expected 3 logs, got %d", len(result.Logs))
 	}
 
-	// First token_count: 500 input, 200 output, 50 reasoning, 10 tool = 4 token metrics + 1 cost metric = 5
-	// Second token_count (delta): 300 input, 150 output, 50 reasoning, 10 tool = 4 token metrics + 1 cost metric = 5
-	// Total = 10 metrics
-	if len(result.Metrics) != 10 {
-		t.Errorf("expected 10 metrics, got %d", len(result.Metrics))
+	// First token_count: 500 input, 200 output, 100 cached, 50 reasoning = 4 token metrics + 1 cost metric = 5
+	// Second token_count (delta): 300 input, 150 output, 200 cached, 40 cache writes, 50 reasoning = 5 + 1 = 6
+	// total_tokens (input plus output) is not a token type
+	if len(result.Metrics) != 11 {
+		t.Errorf("expected 11 metrics, got %d", len(result.Metrics))
+	}
+	tokens := make(map[string]float64)
+	for _, m := range result.Metrics {
+		if m.MetricName == "codex_cli_rs.token.usage" {
+			tokens[m.Attributes["type"]] += *m.Value
+		}
+	}
+	want := map[string]float64{"input": 800, "output": 350, "cacheRead": 300, "cacheWrite": 40, "reasoning": 100}
+	if !maps.Equal(tokens, want) {
+		t.Errorf("tokens = %v, want %v", tokens, want)
 	}
 
 	// Verify time range

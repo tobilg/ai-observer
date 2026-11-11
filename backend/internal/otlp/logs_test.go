@@ -258,12 +258,22 @@ func TestCodexEventTypes(t *testing.T) {
 }
 
 func TestConvertLogs_CodexSSEEvent_ExtractsMetrics(t *testing.T) {
-	// Test that codex.sse_event with response.completed extracts metrics
-	payload := `{
+	// codex.sse_event with response.completed becomes token and cost
+	// metrics, for each of Codex's services; other services keep the log
+	for _, tc := range []struct {
+		service string
+		codex   bool
+	}{
+		{"codex_cli_rs", true},
+		{"codex-app-server", true},
+		{"other-service", false},
+	} {
+		t.Run(tc.service, func(t *testing.T) {
+			payload := `{
 		"resourceLogs": [{
 			"resource": {
 				"attributes": [
-					{"key": "service.name", "value": {"stringValue": "codex_cli_rs"}}
+					{"key": "service.name", "value": {"stringValue": "` + tc.service + `"}}
 				]
 			},
 			"scopeLogs": [{
@@ -279,6 +289,7 @@ func TestConvertLogs_CodexSSEEvent_ExtractsMetrics(t *testing.T) {
 							{"key": "input_token_count", "value": {"stringValue": "1000"}},
 							{"key": "output_token_count", "value": {"stringValue": "500"}},
 							{"key": "cached_token_count", "value": {"stringValue": "200"}},
+							{"key": "tool_token_count", "value": {"stringValue": "1500"}},
 							{"key": "model", "value": {"stringValue": "gpt-5"}}
 						]
 					}
@@ -287,52 +298,49 @@ func TestConvertLogs_CodexSSEEvent_ExtractsMetrics(t *testing.T) {
 		}]
 	}`
 
-	decoder, err := GetDecoder("application/json")
-	if err != nil {
-		t.Fatalf("Failed to get decoder: %v", err)
-	}
+			decoder, err := GetDecoder("application/json")
+			if err != nil {
+				t.Fatalf("Failed to get decoder: %v", err)
+			}
+			req, err := decoder.DecodeLogs(strings.NewReader(payload))
+			if err != nil {
+				t.Fatalf("Failed to decode logs: %v", err)
+			}
+			result := ConvertLogs(req)
 
-	req, err := decoder.DecodeLogs(strings.NewReader(payload))
-	if err != nil {
-		t.Fatalf("Failed to decode logs: %v", err)
-	}
+			if !tc.codex {
+				if len(result.Logs) != 1 || len(result.DerivedMetrics) != 0 {
+					t.Errorf("other service: %d logs, %d derived metrics; want the log and no metrics", len(result.Logs), len(result.DerivedMetrics))
+				}
+				return
+			}
 
-	result := ConvertLogs(req)
+			// SSE events should NOT be stored as logs
+			if len(result.Logs) != 0 {
+				t.Errorf("Expected 0 log records (SSE events filtered), got %d", len(result.Logs))
+			}
 
-	// SSE events should NOT be stored as logs
-	if len(result.Logs) != 0 {
-		t.Errorf("Expected 0 log records (SSE events filtered), got %d", len(result.Logs))
-	}
-
-	// But metrics should be extracted
-	if len(result.DerivedMetrics) == 0 {
-		t.Fatal("Expected derived metrics to be extracted from SSE event")
-	}
-
-	// Should have token metrics + cost metric
-	// 3 token types (input, output, cacheRead) + 1 cost = 4 metrics
-	expectedMetrics := 4
-	if len(result.DerivedMetrics) != expectedMetrics {
-		t.Errorf("Expected %d derived metrics, got %d", expectedMetrics, len(result.DerivedMetrics))
-	}
-
-	// Verify we have both token and cost metrics
-	hasTokenMetric := false
-	hasCostMetric := false
-	for _, m := range result.DerivedMetrics {
-		if m.MetricName == CodexTokenUsageMetric {
-			hasTokenMetric = true
-		}
-		if m.MetricName == CodexCostUsageMetric {
-			hasCostMetric = true
-		}
-	}
-
-	if !hasTokenMetric {
-		t.Error("Expected token usage metric")
-	}
-	if !hasCostMetric {
-		t.Error("Expected cost usage metric")
+			// 3 token types (input, output, cacheRead) + 1 cost = 4 metrics;
+			// tool_token_count is Codex's total, not a type
+			if len(result.DerivedMetrics) != 4 {
+				t.Errorf("Expected 4 derived metrics, got %d", len(result.DerivedMetrics))
+			}
+			hasTokenMetric, hasCostMetric := false, false
+			for _, m := range result.DerivedMetrics {
+				if m.ServiceName != tc.service {
+					t.Errorf("metric %s has service %q, want %q", m.MetricName, m.ServiceName, tc.service)
+				}
+				switch m.MetricName {
+				case CodexTokenUsageMetric:
+					hasTokenMetric = true
+				case CodexCostUsageMetric:
+					hasCostMetric = true
+				}
+			}
+			if !hasTokenMetric || !hasCostMetric {
+				t.Errorf("token metric %v, cost metric %v; want both", hasTokenMetric, hasCostMetric)
+			}
+		})
 	}
 }
 

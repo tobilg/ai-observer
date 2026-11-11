@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/tobilg/ai-observer/internal/api"
+	"github.com/tobilg/ai-observer/internal/tools"
 )
 
 func (s *DuckDBStore) InsertSpans(ctx context.Context, spans []api.Span) error {
@@ -175,29 +176,69 @@ func spanRow(span api.Span, w *writeTx) []driver.Value {
 	}
 }
 
+// TraceFilter selects the traces of a trace list
+type TraceFilter struct {
+	// Service is a service filter (serviceCondition): a service or tool name
+	Service string
+	// Search is text that a span of the trace contains
+	Search string
+	// Background includes the background traces of services that send
+	// internal requests as traces (tools.BackgroundTraceServices, Codex's
+	// app and exec servers): traces of only those services in which no span
+	// belongs to a session, and traces whose root span is one of
+	// tools.BackgroundTraceRoots (Codex's approval reviews and the CLI's
+	// startup spans). Lists leave them out by default; they are most of
+	// these services' traces.
+	Background bool
+}
+
 // QueryTraces returns a page of the traces with spans in [from, to],
 // newest first
-func (s *DuckDBStore) QueryTraces(ctx context.Context, service, search string, from, to time.Time, page Page) (*api.TracesResponse, error) {
-	return s.queryRawTraceOverviews(ctx, service, search, from, to, page, true)
+func (s *DuckDBStore) QueryTraces(ctx context.Context, filter TraceFilter, from, to time.Time, page Page) (*api.TracesResponse, error) {
+	return s.queryRawTraceOverviews(ctx, filter, from, to, page, true)
 }
 
 // queryRawTraceOverviews queries all services as normal OTLP traces,
 // including Codex. Without includeCount, Total is the number of traces
 // returned.
-func (s *DuckDBStore) queryRawTraceOverviews(ctx context.Context, service, search string, from, to time.Time, page Page, includeCount bool) (*api.TracesResponse, error) {
+func (s *DuckDBStore) queryRawTraceOverviews(ctx context.Context, filter TraceFilter, from, to time.Time, page Page, includeCount bool) (*api.TracesResponse, error) {
 	var spanWhere conditions
 	spanWhere.add("Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP", formatTimeForDB(from), formatTimeForDB(to))
-	if service != "" {
-		spanWhere.add("ServiceName = ?", service)
-	}
+	spanWhere.addService(filter.Service)
 
 	// Spans are unique per (ServiceName, TraceId, SpanId): inserts skip stored
 	// spans and migration 2 removed older duplicates. The attribute columns are
 	// only read when searching.
 	columns := "TraceId, SpanId, SpanName, ServiceName, Timestamp, Duration, StatusCode"
 	ctes := conditions{}
-	joinMatching := ""
-	if search != "" {
+	var joins []string
+	if background := tools.BackgroundTraceServices(); !filter.Background && len(background) > 0 {
+		// A trace is kept when one of its spans is not a background span:
+		// one of another service, or one that belongs to a session
+		columns += ", SessionId"
+		placeholders := func(n int) string { return "?" + strings.Repeat(", ?", n-1) }
+		args := stringArgs(background)
+		foreground := `ServiceName NOT IN (` + placeholders(len(background)) + `) OR COALESCE(SessionId, '') <> ''`
+		if services, roots := tools.BackgroundTraceRoots(); len(roots) > 0 {
+			// ... unless it is work the tool does on its own, which can
+			// have sessions too: recognized by the name of its root span
+			columns += ", ParentSpanId"
+			foreground = `(` + foreground + `) AND TraceId NOT IN (
+				SELECT TraceId FROM spans
+				WHERE ServiceName IN (` + placeholders(len(services)) + `)
+				  AND SpanName IN (` + placeholders(len(roots)) + `)
+				  AND COALESCE(ParentSpanId, '') = ''
+			)`
+			args = concatArgs(args, stringArgs(services), stringArgs(roots))
+		}
+		ctes.add(`foreground_traces AS (
+			SELECT DISTINCT TraceId
+			FROM spans
+			WHERE `+foreground+`
+		)`, args...)
+		joins = append(joins, "JOIN foreground_traces ft ON ft.TraceId = spans.TraceId")
+	}
+	if search := filter.Search; search != "" {
 		columns += ", StatusMessage, SpanAttributes, ResourceAttributes"
 		cond, args := containsCondition([]string{
 			"SpanName", "ServiceName", "COALESCE(StatusMessage, '')",
@@ -208,8 +249,9 @@ func (s *DuckDBStore) queryRawTraceOverviews(ctx context.Context, service, searc
 			FROM spans
 			WHERE `+cond+`
 		)`, args...)
-		joinMatching = "JOIN matching_traces mt ON mt.TraceId = spans.TraceId"
+		joins = append(joins, "JOIN matching_traces mt ON mt.TraceId = spans.TraceId")
 	}
+	joinMatching := strings.Join(joins, "\n\t\t")
 	with := "WITH spans AS (SELECT " + columns + " FROM otel_traces" + spanWhere.clause("WHERE") + ")"
 	for _, cte := range ctes.sql {
 		with += ",\n" + cte
@@ -425,8 +467,9 @@ func (s *DuckDBStore) GetServices(ctx context.Context) ([]string, error) {
 }
 
 // GetRecentTraces returns the newest traces in [from, to], without paging
+// and without background traces (TraceFilter.Background)
 func (s *DuckDBStore) GetRecentTraces(ctx context.Context, limit int, from, to time.Time) (*api.TracesResponse, error) {
-	resp, err := s.queryRawTraceOverviews(ctx, "", "", from, to, Page{Limit: limit}, false)
+	resp, err := s.queryRawTraceOverviews(ctx, TraceFilter{}, from, to, Page{Limit: limit}, false)
 	if err != nil {
 		return nil, err
 	}

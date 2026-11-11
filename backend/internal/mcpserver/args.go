@@ -129,29 +129,29 @@ func searchTerms(query string) ([]string, error) {
 }
 
 // toolHelp documents the tool argument
-const toolHelp = "claude-code (or claude), codex, gemini, opencode, copilot-chat (VS Code) or github-copilot (CLI); OTLP service names work too"
+const toolHelp = "claude-code (or claude), codex, gemini, opencode, copilot-chat (VS Code) or github-copilot (CLI); OTLP service names work too and select only that service (Codex sends codex_cli_rs, codex-app-server and codex-exec-server)"
 
-// serviceFor maps a tool argument to its OTLP service name ("" for all)
+// serviceFor maps a tool argument to the storage service filter ("" for
+// all): a tool name, which covers all of the tool's services (Codex sends
+// three), or a service name, which covers only itself
 func serviceFor(tool string) (string, error) {
 	tool = strings.ToLower(strings.TrimSpace(tool))
 	switch tool {
 	case "":
 		return "", nil
 	case "claude", "claude code":
-		return tools.Claude.ServiceName(), nil
+		return string(tools.Claude), nil
 	}
-	if service := tools.NormalizeServiceName(tool); service != "" {
-		return service, nil
+	if filter := tools.ResolveFilter(tool); filter != "" {
+		return filter, nil
 	}
 	return "", fmt.Errorf("unknown tool %q: use %s", tool, toolHelp)
 }
 
 // toolName is the tool of an OTLP service name, for results
 func toolName(service string) string {
-	for _, p := range tools.Providers() {
-		if p.ServiceName == service {
-			return string(p.Tool)
-		}
+	if tool, ok := tools.ToolForService(service); ok {
+		return string(tool)
 	}
 	return service
 }

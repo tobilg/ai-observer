@@ -80,23 +80,23 @@ Then ask, for example: *"What did I try last week to fix the flaky parser test?"
 
 ## Tools
 
-All tools are read-only. Time arguments (`from`, `to`) accept an RFC 3339 time (`2026-11-05T10:00:00Z`), a date (`2026-11-05`, UTC; for `to`, the end of that day) or an age relative to now (`30m`, `24h`, `7d`, `2w`). `tool` accepts `claude-code` (or `claude`), `codex`, `gemini`, `opencode`, `copilot-chat`, `github-copilot`, or an OTLP service name. Lists are paged: pass a result's `next_cursor` as `cursor` with the same arguments.
+All tools are read-only. Time arguments (`from`, `to`) accept an RFC 3339 time (`2026-11-05T10:00:00Z`), a date (`2026-11-05`, UTC; for `to`, the end of that day) or an age relative to now (`30m`, `24h`, `7d`, `2w`). `tool` accepts `claude-code` (or `claude`), `codex`, `gemini`, `opencode`, `copilot-chat`, `github-copilot`, or an OTLP service name, which selects only that service (`codex` covers Codex's three: `codex_cli_rs`, `codex-app-server` and `codex-exec-server`). Lists are paged: pass a result's `next_cursor` as `cursor` with the same arguments.
 
 | Tool | What it returns | Main arguments (defaults) |
 |------|-----------------|---------------------------|
 | `search_conversations` | Sessions with a prompt, reply or tool call that contains all words of the query, in any order, newest match first, with a snippet around the match | `query`, `tool`, `from` (30 days before `to`), `to` (now), `limit` (10, max 50) |
 | `list_sessions` | Sessions with activity in a range, most recently active first: tool, model, start, last activity, message count | `tool`, `from` (7 days), `to`, `limit` (20, max 100), `cursor` |
 | `get_transcript` | A session's messages in order: role, content, model, tool name, input and output, tokens, cost | `session_id`, `roles` (all), `limit` (50, max 200), `cursor`, `max_chars` per text (2000, max 20000) |
-| `usage_summary` | Tokens by type and cost in USD | `from` (7 days), `to`, `group_by`: `tool`, `model`, `day` (UTC) or `repository`, `tool` |
+| `usage_summary` | Tokens by type and cost in USD; `unpriced_models` lists models with tokens but no price (no cost) | `from` (7 days), `to`, `group_by`: `tool`, `model`, `day` (UTC) or `repository`, `tool` |
 | `search_logs` | Log records, newest first | `query`, `tool`, `severity`, `trace_id`, `from` (24 hours), `to`, `limit` (20, max 100), `cursor` |
-| `list_traces` | Traces, newest first: root span, duration, span count, status | `query`, `tool`, `from` (24 hours), `to`, `limit`, `cursor` |
-| `get_trace` | A trace's spans as a tree (depth first): name, start, duration, status, attributes | `id`, `kind` (`otel_trace` or `codex_operation`), `max_spans` (200), `max_chars` per attribute (300) |
+| `list_traces` | Traces, newest first: root span, duration, span count, status. Leaves out Codex's background traces (internal requests outside a conversation, automatic approval reviews) | `query`, `tool`, `from` (24 hours), `to`, `limit`, `cursor`, `include_background` (false) |
+| `get_trace` | A trace's spans as a tree (depth first): name, start, duration, status, attributes. Of traces with more than 1,000 spans, the tree of the first 1,000 by start time | `id`, `kind` (`otel_trace` or `codex_operation`), `max_spans` (200), `max_chars` per attribute (300) |
 | `list_metric_names` | Stored metric names | `tool` |
 | `query_metrics` | A metric as time buckets or totals per series (service, type, model); cumulative counters become increases | `name`, `tool`, `from` (24 hours), `to`, `aggregate`, `interval` (about 50 buckets) |
 
 Results are JSON (also as structured content with an output schema). Long text is cut and marked (`… [1234 more characters]`, `"truncated": true`), so a single result does not fill the agent's context. Invalid arguments return a tool error that explains what to pass instead.
 
-`usage_summary` reports what AI Observer recorded: sessions that were both imported from files and sent over OTLP count twice, and `repository` is known for imported and watched Claude Code and Codex sessions only (others show `unknown`). `tokens` lists every token type; `total_tokens` counts each token once, so it leaves out the types that another one includes: cached input of Codex, Gemini and GitHub Copilot (part of their input) and Codex reasoning tokens (part of its output).
+`usage_summary` reports what AI Observer recorded: sessions that were both imported from files and sent over OTLP count twice, and `repository` is known for imported and watched Claude Code and Codex sessions only (others show `unknown`). `tokens` lists every token type; `total_tokens` counts each token once, so it leaves out the types that another one includes: cached input of Codex, Gemini and GitHub Copilot and Codex's cache writes (part of their input), and Codex reasoning tokens (part of its output).
 
 ### Searching conversations
 
@@ -131,12 +131,15 @@ Hosts that render [MCP Apps](https://modelcontextprotocol.io/docs/extensions/app
 | `get_trace` | The trace page's waterfall; click a span for its attributes and error |
 | `list_sessions` | Sessions per tool and a table of them; *Load more* reads the next page |
 
-**Which agents show it:** hosts that support MCP Apps, such as Claude (desktop and web), VS Code with GitHub Copilot (turn on the experimental setting `chat.mcp.apps.enabled`), Cursor and Goose; see the [client matrix](https://modelcontextprotocol.io/extensions/client-matrix). The host must reach the endpoint: one that connects from the cloud cannot reach `127.0.0.1`. Claude Code, Codex CLI, Gemini CLI and OpenCode don't render MCP Apps; they get the same results as before, and nothing of the view enters their context.
+**Which agents show it:** hosts that support MCP Apps and run on your machine, such as the Codex app (with `apps = true` and `enable_mcp_apps = true` under `[features]` in `~/.codex/config.toml`), VS Code with GitHub Copilot (turn on the experimental setting `chat.mcp.apps.enabled`), Cursor and Goose; see the [client matrix](https://modelcontextprotocol.io/extensions/client-matrix). The host must reach the endpoint: one that connects from the cloud cannot reach `127.0.0.1`. Claude Code, Codex CLI, Gemini CLI and OpenCode don't render MCP Apps; they get the same results as before, and nothing of the view enters their context.
+
+**Claude Desktop doesn't show the view of a local AI Observer.** It connects to servers added by URL (**Connectors**) from Anthropic's cloud, which can't reach `127.0.0.1`. Servers from its configuration file (`claude_desktop_config.json`, for AI Observer through `mcp-remote`) work, but their tools answer as text only: in a test with app version 4.23118.0 (November 2026) Claude never loaded the view, and Anthropic's own MCP Apps example (`@modelcontextprotocol/server-map`) showed no view either.
 
 **How it works:**
 
 - The four tools name the view in their `_meta.ui.resourceUri`: `ui://ai-observer/view.html`. The host reads it with `resources/read` (`text/html;profile=mcp-app`): a single page with its scripts and styles inlined, built into the binary. The host shows it in a sandboxed frame and passes it the tool's arguments and result.
 - The view has no network access. It gets results from the host and calls tools through the host (another grouping, the next page), so the endpoint's Host, Origin and token checks apply as to any call.
+- The agent still gets the whole result as text and may repeat it below the view. The MCP Apps specification has no setting against that; the page carries OpenAI's `openai/widgetDescription`, which ChatGPT shows the model when the view loads ("the user sees all values in the view, don't repeat them"), and other hosts ignore. Whether a host's model follows it is up to the host; to be sure, tell the agent, e.g. in its global instructions (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`): *"When an MCP tool result is shown as an app view, don't restate the data it shows."*
 - `resources/list` leaves out `ui://` resources, as the MCP Apps specification allows: hosts find the view through the tools, while agents that browse resources (Claude Code and Codex have tools for that) would otherwise read the page, about 1 MB, into their context.
 
 ## Security

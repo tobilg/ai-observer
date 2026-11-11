@@ -1,6 +1,7 @@
 package otlp
 
 import (
+	"maps"
 	"time"
 
 	"github.com/tobilg/ai-observer/internal/api"
@@ -8,13 +9,13 @@ import (
 	"github.com/tobilg/ai-observer/internal/pricing"
 )
 
-// Token type constants matching claude_code.token.usage
+// Codex token types (pricing.CodexTokenType*)
 const (
-	TokenTypeInput     = "input"
-	TokenTypeOutput    = "output"
-	TokenTypeCacheRead = "cacheRead"
-	TokenTypeReasoning = "reasoning"
-	TokenTypeTool      = "tool"
+	TokenTypeInput      = pricing.CodexTokenTypeInput
+	TokenTypeOutput     = pricing.CodexTokenTypeOutput
+	TokenTypeCacheRead  = pricing.CodexTokenTypeCacheRead
+	TokenTypeCacheWrite = pricing.CodexTokenTypeCacheWrite
+	TokenTypeReasoning  = pricing.CodexTokenTypeReasoning
 )
 
 // Metric names
@@ -23,8 +24,11 @@ const (
 	CodexCostUsageMetric  = "codex_cli_rs.cost.usage"
 )
 
-// ExtractCodexMetrics extracts token usage and cost metrics from a codex.sse_event log record.
-// Returns nil if the event is not a response.completed event or has no token data.
+// ExtractCodexMetrics extracts token usage and cost metrics from a
+// codex.sse_event log record of any Codex service (codex_cli_rs,
+// codex-app-server). Returns nil if the event is not a response.completed
+// event or has no token data. tool_token_count is not read: Codex sends its
+// total_tokens (input plus output) in it.
 func ExtractCodexMetrics(
 	logAttrs map[string]string,
 	timestamp time.Time,
@@ -39,19 +43,15 @@ func ExtractCodexMetrics(
 		return nil
 	}
 
-	// Extract token counts
 	inputTokens := int64(attrval.Int(logAttrs, "input_token_count"))
 	outputTokens := int64(attrval.Int(logAttrs, "output_token_count"))
 	cachedTokens := int64(attrval.Int(logAttrs, "cached_token_count"))
+	cacheWriteTokens := int64(attrval.Int(logAttrs, "cache_write_token_count"))
 	reasoningTokens := int64(attrval.Int(logAttrs, "reasoning_token_count"))
-	toolTokens := int64(attrval.Int(logAttrs, "tool_token_count"))
-
-	// If no tokens at all, skip
-	if inputTokens == 0 && outputTokens == 0 && cachedTokens == 0 && reasoningTokens == 0 && toolTokens == 0 {
+	if inputTokens == 0 && outputTokens == 0 && cachedTokens == 0 && cacheWriteTokens == 0 && reasoningTokens == 0 {
 		return nil
 	}
 
-	// Extract model name
 	model := logAttrs["model"]
 	if model == "" {
 		model = resourceAttrs["model"]
@@ -60,71 +60,56 @@ func ExtractCodexMetrics(
 		model = "unknown"
 	}
 
-	var metrics []api.MetricDataPoint
-
-	// Create base metric attributes
-	baseAttrs := map[string]string{
-		"model": model,
+	// originator tells the Codex app (Codex_Desktop) from the CLI
+	// (codex-tui), which share the app server's service name
+	baseAttrs := map[string]string{"model": model}
+	if originator := logAttrs["originator"]; originator != "" {
+		baseAttrs["originator"] = originator
 	}
 
-	// Helper to create a token usage metric data point
-	createTokenMetric := func(tokenType string, value int64) api.MetricDataPoint {
-		attrs := make(map[string]string)
-		for k, v := range baseAttrs {
-			attrs[k] = v
+	var metrics []api.MetricDataPoint
+	for _, t := range []struct {
+		tokenType string
+		value     int64
+	}{
+		{TokenTypeInput, inputTokens},
+		{TokenTypeOutput, outputTokens},
+		{TokenTypeCacheRead, cachedTokens},
+		{TokenTypeCacheWrite, cacheWriteTokens},
+		{TokenTypeReasoning, reasoningTokens},
+	} {
+		if t.value <= 0 {
+			continue
 		}
-		attrs["type"] = tokenType
-
-		floatValue := float64(value)
-		metricType := "sum"
-
-		return api.MetricDataPoint{
+		attrs := maps.Clone(baseAttrs)
+		attrs["type"] = t.tokenType
+		value := float64(t.value)
+		metrics = append(metrics, api.MetricDataPoint{
 			Timestamp:          timestamp,
 			ServiceName:        serviceName,
 			MetricName:         CodexTokenUsageMetric,
-			MetricDescription:  "Number of tokens consumed by Codex CLI",
+			MetricDescription:  "Number of tokens consumed by Codex",
 			MetricUnit:         "tokens",
 			ResourceAttributes: resourceAttrs,
 			Attributes:         attrs,
-			MetricType:         metricType,
-			Value:              &floatValue,
-		}
-	}
-
-	// Add token metrics for each type with non-zero values
-	if inputTokens > 0 {
-		metrics = append(metrics, createTokenMetric(TokenTypeInput, inputTokens))
-	}
-	if outputTokens > 0 {
-		metrics = append(metrics, createTokenMetric(TokenTypeOutput, outputTokens))
-	}
-	if cachedTokens > 0 {
-		metrics = append(metrics, createTokenMetric(TokenTypeCacheRead, cachedTokens))
-	}
-	if reasoningTokens > 0 {
-		metrics = append(metrics, createTokenMetric(TokenTypeReasoning, reasoningTokens))
-	}
-	if toolTokens > 0 {
-		metrics = append(metrics, createTokenMetric(TokenTypeTool, toolTokens))
+			MetricType:         "sum",
+			Value:              &value,
+		})
 	}
 
 	// Calculate and add cost metric if model is known
-	cost := CalculateCodexCost(model, inputTokens, cachedTokens, outputTokens)
-	if cost != nil {
-		metricType := "sum"
-
-		costMetric := api.MetricDataPoint{
+	if cost := CalculateCodexCost(model, inputTokens, cachedTokens, cacheWriteTokens, outputTokens); cost != nil {
+		metrics = append(metrics, api.MetricDataPoint{
 			Timestamp:          timestamp,
 			ServiceName:        serviceName,
 			MetricName:         CodexCostUsageMetric,
-			MetricDescription:  "Total cost in USD for Codex CLI usage",
+			MetricDescription:  "Total cost in USD for Codex usage",
 			MetricUnit:         "USD",
 			ResourceAttributes: resourceAttrs,
-			Attributes:         baseAttrs,
-			MetricType:         metricType,
+			Attributes:         maps.Clone(baseAttrs),
+			MetricType:         "sum",
 			Value:              cost,
-		}
-		metrics = append(metrics, costMetric)
+		})
 	}
 
 	return metrics
@@ -133,6 +118,6 @@ func ExtractCodexMetrics(
 // CalculateCodexCost calculates the cost in USD for Codex token usage.
 // Returns nil if the model is not in the pricing table.
 // Delegates to the pricing package for actual calculation.
-func CalculateCodexCost(model string, inputTokens, cachedTokens, outputTokens int64) *float64 {
-	return pricing.CalculateCodexCost(model, inputTokens, cachedTokens, outputTokens)
+func CalculateCodexCost(model string, inputTokens, cachedTokens, cacheWriteTokens, outputTokens int64) *float64 {
+	return pricing.CalculateCodexCost(model, inputTokens, cachedTokens, cacheWriteTokens, outputTokens)
 }

@@ -99,19 +99,20 @@ func runDelete(args []string) error {
 		return fmt.Errorf("--from date must be before --to date")
 	}
 
-	// Normalize service name (accept short names like "claude" or full names like "claude-code")
+	// A tool name selects all of the tool's services (codex: codex_cli_rs,
+	// codex-app-server, codex-exec-server), a service name only that one
 	serviceName := flags.Service
 	if serviceName != "" {
-		normalized := tools.NormalizeServiceName(serviceName)
-		if normalized == "" {
-			return fmt.Errorf("unknown tool/service: %s\nSupported tools/services: claude-code, codex, gemini, opencode, copilot-chat, github-copilot", serviceName)
+		filter := tools.ResolveFilter(serviceName)
+		if filter == "" {
+			return fmt.Errorf("unknown tool/service: %s\nSupported tools: claude-code, codex, gemini, opencode, copilot-chat, github-copilot (or one of their service names)", serviceName)
 		}
-		serviceName = normalized
+		serviceName = filter
 	}
 
 	// Load config and initialize store
 	cfg := config.Load()
-	store, err := storage.NewDuckDBStore(cfg.DatabasePath)
+	store, err := storage.NewDuckDBStoreWithOptions(cfg.DatabasePath, cfg.StorageOptions())
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}

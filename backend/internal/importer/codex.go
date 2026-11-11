@@ -151,15 +151,17 @@ type CodexTokenInfo struct {
 	TotalTokenUsage *CodexTokenCount `json:"total_token_usage"`
 }
 
-// CodexTokenCount represents token count data
+// CodexTokenCount represents token count data. Input includes the cached
+// input and the cache writes, output the reasoning; total_tokens (input plus
+// output) is not read.
 type CodexTokenCount struct {
 	InputTokens              int `json:"input_tokens"`
 	OutputTokens             int `json:"output_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheWriteInputTokens    int `json:"cache_write_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"` // Alternative field name
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 	CachedInputTokens        int `json:"cached_input_tokens"` // Alternative field name
 	ReasoningTokens          int `json:"reasoning_output_tokens"`
-	ToolTokens               int `json:"tool_tokens"`
 }
 
 // ParseFile parses a Codex CLI JSONL file
@@ -408,18 +410,25 @@ func ConvertCodexEntry(entry CodexJSONLEntry, ts time.Time, state *CodexState, i
 // event. Codex reports running totals, so the metrics hold the increase over
 // the previous event's totals (last, nil for the first event).
 func codexTokenMetrics(ts time.Time, model string, total, last *CodexTokenCount) []api.MetricDataPoint {
+	// Handle alternative field names
 	cached := func(c *CodexTokenCount) int {
-		// Handle alternative field name for cached tokens
 		if c.CacheReadInputTokens != 0 {
 			return c.CacheReadInputTokens
 		}
 		return c.CachedInputTokens
+	}
+	cacheWrite := func(c *CodexTokenCount) int {
+		if c.CacheWriteInputTokens != 0 {
+			return c.CacheWriteInputTokens
+		}
+		return c.CacheCreationInputTokens
 	}
 	if last == nil {
 		last = &CodexTokenCount{}
 	}
 	deltaInput := total.InputTokens - last.InputTokens
 	deltaCacheRead := cached(total) - cached(last)
+	deltaCacheWrite := cacheWrite(total) - cacheWrite(last)
 	deltaOutput := total.OutputTokens - last.OutputTokens
 
 	var metrics []api.MetricDataPoint
@@ -427,20 +436,18 @@ func codexTokenMetrics(ts time.Time, model string, total, last *CodexTokenCount)
 		tokenType string
 		delta     int
 	}{
-		{"input", deltaInput},
-		{"output", deltaOutput},
-		{"cache_creation", total.CacheCreationInputTokens - last.CacheCreationInputTokens},
-		{"cache_read", deltaCacheRead},
-		{"reasoning", total.ReasoningTokens - last.ReasoningTokens},
-		{"tool", total.ToolTokens - last.ToolTokens},
+		{pricing.CodexTokenTypeInput, deltaInput},
+		{pricing.CodexTokenTypeOutput, deltaOutput},
+		{pricing.CodexTokenTypeCacheRead, deltaCacheRead},
+		{pricing.CodexTokenTypeCacheWrite, deltaCacheWrite},
+		{pricing.CodexTokenTypeReasoning, total.ReasoningTokens - last.ReasoningTokens},
 	} {
 		if t.delta > 0 {
 			metrics = append(metrics, CreateCodexTokenMetric(ts, model, t.tokenType, float64(t.delta)))
 		}
 	}
 
-	// cache_read is used for cost calculation (cache_creation tokens are billed at input rate)
-	cost := pricing.CalculateCodexCost(model, int64(deltaInput), int64(deltaCacheRead), int64(deltaOutput))
+	cost := pricing.CalculateCodexCost(model, int64(deltaInput), int64(deltaCacheRead), int64(deltaCacheWrite), int64(deltaOutput))
 	if cost != nil && *cost > 0 {
 		metrics = append(metrics, CreateCodexCostMetric(ts, model, *cost))
 	}

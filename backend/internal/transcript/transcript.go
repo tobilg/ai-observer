@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -519,7 +520,37 @@ func Build(sessionID string, logRows []storage.SessionLog, spans []api.Span) *ap
 		StartTime:   startTime,
 		LastTime:    lastTime,
 		Messages:    messages,
+		Total:       len(messages),
 	}
+}
+
+// ErrInvalidCursor indicates a cursor that Page did not return
+var ErrInvalidCursor = errors.New("invalid cursor")
+
+// Page returns the limit messages of a transcript that follow cursor, the
+// NextCursor of the previous page (empty for the first). The transcript is
+// assembled whole from the session's records, so pages bound what is sent
+// and shown, not what is read.
+func Page(resp *api.TranscriptResponse, limit int, cursor string) (*api.TranscriptResponse, error) {
+	offset := 0
+	if cursor != "" {
+		var err error
+		if offset, err = strconv.Atoi(cursor); err != nil || offset < 0 {
+			return nil, fmt.Errorf("%w: %q", ErrInvalidCursor, cursor)
+		}
+	}
+	page := *resp
+	page.Total = len(resp.Messages)
+	start := min(offset, len(resp.Messages))
+	end := min(start+max(limit, 1), len(resp.Messages))
+	// Never nil: clients read the messages as a list
+	page.Messages = append([]api.TranscriptMessage{}, resp.Messages[start:end]...)
+	page.HasMore = end < len(resp.Messages)
+	page.NextCursor = ""
+	if page.HasMore {
+		page.NextCursor = strconv.Itoa(end)
+	}
+	return &page, nil
 }
 
 func sessionTranscriptBounds(logRows []storage.SessionLog, spans []api.Span) (string, time.Time, time.Time) {

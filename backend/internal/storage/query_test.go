@@ -71,7 +71,7 @@ func TestSearchTreatsWildcardsLiterally(t *testing.T) {
 		}
 	}
 
-	resp, err := store.QueryTraces(ctx, "", "load_config", now.Add(-time.Hour), now, Page{Limit: 10})
+	resp, err := store.QueryTraces(ctx, TraceFilter{Search: "load_config"}, now.Add(-time.Hour), now, Page{Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,4 +1,4 @@
-import { createElement, useEffect, useMemo, useState } from 'react'
+import { createElement, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { api } from '@/lib/api'
+import { isAbortError } from '@/lib/errors'
 import { formatTimestamp } from '@/lib/utils'
 import { getServiceDisplayName, getServiceIcon } from '@/lib/metricMetadata'
 import { ChatBubbleView } from '@/components/sessions/ChatBubbleView'
@@ -58,12 +59,26 @@ function isMetadataOnlyAssistant(message: {
   )
 }
 
+// The server stops queries after 5 seconds (504), and the client gives up on
+// a response after 30: both mean the session has too many records
+function loadErrorMessage(err: unknown): string {
+  const status = (err as { status?: number } | null)?.status
+  const timedOut = err instanceof Error && err.message.startsWith('Request timed out')
+  if (status === 504 || timedOut) {
+    return 'This session has too many records to load in time'
+  }
+  return 'Failed to load session transcript'
+}
+
 export function SessionTranscriptPage() {
   const { sessionId } = useParams<{ sessionId: string }>()
   const navigate = useNavigate()
   const [transcript, setTranscript] = useState<TranscriptResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [loadingMore, setLoadingMore] = useState(false)
+  // The session shown, so a page of another session that arrives late is dropped
+  const shownSessionRef = useRef(sessionId)
   const [viewMode, setViewMode] = useState<'chat' | 'timeline'>('chat')
   const [filters, setFilters] = useLocalStorage<TranscriptFilters>(TRANSCRIPT_FILTERS_STORAGE_KEY, DEFAULT_FILTERS)
 
@@ -77,23 +92,58 @@ export function SessionTranscriptPage() {
       return
     }
 
+    shownSessionRef.current = sessionId
+    const abortController = new AbortController()
+
     const fetchTranscript = async () => {
       setLoading(true)
       setError(null)
+      setTranscript(null)
       try {
-        const data = await api.getSessionTranscript(sessionId)
+        const data = await api.getSessionTranscript(sessionId, { signal: abortController.signal })
+        if (abortController.signal.aborted) {
+          return // another session was opened
+        }
         setTranscript(data)
       } catch (err) {
+        if (isAbortError(err)) {
+          return // another session was opened
+        }
         console.error('Failed to fetch transcript:', err)
-        setError('Failed to load session transcript')
-        toast.error('Failed to load session transcript')
+        const message = loadErrorMessage(err)
+        setError(message)
+        toast.error(message)
       } finally {
-        setLoading(false)
+        if (!abortController.signal.aborted) {
+          setLoading(false)
+        }
       }
     }
 
     fetchTranscript()
+    return () => abortController.abort()
   }, [sessionId])
+
+  const loadMore = async () => {
+    if (!sessionId || !transcript?.nextCursor || loadingMore) return
+    setLoadingMore(true)
+    try {
+      const page = await api.getSessionTranscript(sessionId, undefined, transcript.nextCursor)
+      if (shownSessionRef.current !== sessionId) return
+      setTranscript((prev) => prev && {
+        ...prev,
+        messages: [...prev.messages, ...page.messages],
+        total: page.total,
+        hasMore: page.hasMore,
+        nextCursor: page.nextCursor,
+      })
+    } catch (err) {
+      console.error('Failed to fetch more of the transcript:', err)
+      toast.error('Failed to load more messages')
+    } finally {
+      setLoadingMore(false)
+    }
+  }
 
   const counts = useMemo(() => {
     const result: Record<TranscriptMessageRole, number> = {
@@ -188,6 +238,8 @@ export function SessionTranscriptPage() {
   }
 
   const serviceIcon = getServiceIcon(transcript.serviceName)
+  const totalMessages = transcript.total ?? transcript.messages.length
+  const hasMore = Boolean(transcript.hasMore && transcript.nextCursor)
 
   const setRoleFilter = (key: keyof Pick<TranscriptFilters, 'showUser' | 'showAssistant' | 'showToolUse' | 'showToolResult'>) => {
     setFilters((prev) => ({ ...prev, [key]: !prev[key] }))
@@ -233,7 +285,7 @@ export function SessionTranscriptPage() {
                 </span>
                 <span className="flex items-center gap-1">
                   <MessageSquare className="h-4 w-4" />
-                  {transcript.messages.length} messages
+                  {totalMessages.toLocaleString('en-US')} messages
                 </span>
               </div>
             </div>
@@ -321,7 +373,8 @@ export function SessionTranscriptPage() {
                 </div>
 
                 <div className="text-xs text-muted-foreground">
-                  Showing {filteredMessages.length.toLocaleString()} of {transcript.messages.length.toLocaleString()} messages
+                  Showing {filteredMessages.length.toLocaleString('en-US')} of {transcript.messages.length.toLocaleString('en-US')}
+                  {hasMore ? ` loaded messages (${totalMessages.toLocaleString('en-US')} in the session)` : ' messages'}
                 </div>
               </div>
             </>
@@ -345,6 +398,16 @@ export function SessionTranscriptPage() {
             <ChatBubbleView messages={filteredMessages} />
           ) : (
             <TimelineView messages={filteredMessages} />
+          )}
+          {hasMore && (
+            <div className="mt-6 flex flex-col items-center gap-2 text-sm text-muted-foreground">
+              <span>
+                Loaded the first {transcript.messages.length.toLocaleString('en-US')} of {totalMessages.toLocaleString('en-US')} messages
+              </span>
+              <Button type="button" variant="outline" size="sm" onClick={loadMore} disabled={loadingMore}>
+                {loadingMore ? 'Loading...' : 'Load more messages'}
+              </Button>
+            </div>
           )}
         </CardContent>
       </Card>

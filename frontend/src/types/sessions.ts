@@ -39,5 +39,11 @@ export interface TranscriptResponse {
   serviceName: string
   startTime: string
   lastTime: string
+  // A page of the session's messages, oldest first
   messages: TranscriptMessage[]
+  // All messages of the session
+  total?: number
+  hasMore?: boolean
+  // Requests the next page (cursor parameter) when hasMore
+  nextCursor?: string
 }

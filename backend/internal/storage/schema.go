@@ -379,6 +379,25 @@ var migrations = []migration{
 			migration9LinkIDsSQL(`"Links.SpanId"`, 8),
 		},
 	},
+	{
+		// Codex token types: OTLP stored Codex's total_tokens, which it
+		// sends as tool_token_count, as a "tool" type, doubling token
+		// totals; imports named the cache types differently from OTLP
+		// (cache_read, cache_creation). Codex 0.167 and later send their
+		// conversations as codex-app-server, whose codex.sse_event logs
+		// earlier versions stored without deriving usage from them.
+		version: 10,
+		name:    "codex token types and app server usage",
+		stmts: []string{
+			`DELETE FROM otel_metrics
+			WHERE MetricName = 'codex_cli_rs.token.usage' AND json_extract_string(Attributes, '$.type') = 'tool'`,
+			`UPDATE otel_metrics SET Attributes = json_merge_patch(Attributes, '{"type": "cacheRead"}')
+			WHERE MetricName = 'codex_cli_rs.token.usage' AND json_extract_string(Attributes, '$.type') = 'cache_read'`,
+			`UPDATE otel_metrics SET Attributes = json_merge_patch(Attributes, '{"type": "cacheWrite"}')
+			WHERE MetricName = 'codex_cli_rs.token.usage' AND json_extract_string(Attributes, '$.type') = 'cache_creation'`,
+		},
+		run: deriveCodexServerUsage,
+	},
 }
 
 // migration9SentID is the ID that was sent for an ID expr of size bytes,

@@ -9,8 +9,10 @@ import (
 	"github.com/tobilg/ai-observer/internal/frontend"
 )
 
-// The tools' view for hosts that render MCP Apps (Claude Desktop and web,
-// VS Code, Cursor and others; SEP-1865): a tool's _meta.ui.resourceUri names
+// The tools' view for hosts that render MCP Apps (the Codex app, VS Code,
+// Cursor and others; SEP-1865; Claude Desktop renders none for servers from
+// its config file, and reaches URL servers from the cloud, so it shows no
+// view of a local AI Observer): a tool's _meta.ui.resourceUri names
 // the page, the host reads it with resources/read, shows it in a sandboxed
 // iframe and passes it the tool's arguments and result, from whose
 // structured content it draws charts and tables. The page calls tools
@@ -21,6 +23,15 @@ const (
 	appURI      = "ui://ai-observer/view.html"
 	appMIMEType = "text/html;profile=mcp-app"
 )
+
+// appModelDescription tells the model what the user sees in the view, so it
+// does not restate the values below it. The MCP Apps specification has no
+// field for this; "openai/widgetDescription" is OpenAI's (ChatGPT, Codex),
+// "surfaced to the model when the component loads", and other hosts ignore
+// it.
+const appModelDescription = "The user sees this tool's result in an interactive view with all of its values: " +
+	"cost and tokens per tool, model, repository or day; a metric over time; a trace waterfall; or a table of sessions. " +
+	"Don't repeat these values in your reply. Answer the user's question, or point out what stands out, in a sentence or two."
 
 // withApp marks a tool as shown by the view. The legacy flat key is set
 // too, as the official SDK's registerAppTool does, for hosts that read only
@@ -49,7 +60,10 @@ func addAppResource(server *mcp.Server) {
 			URI:      appURI,
 			MIMEType: appMIMEType,
 			Text:     html,
-			Meta:     mcp.Meta{"ui": map[string]any{"prefersBorder": true}},
+			Meta: mcp.Meta{
+				"ui":                       map[string]any{"prefersBorder": true},
+				"openai/widgetDescription": appModelDescription,
+			},
 		}}}, nil
 	})
 }

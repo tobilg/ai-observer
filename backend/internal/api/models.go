@@ -118,8 +118,14 @@ type TracesResponse struct {
 	NextCursor string `json:"nextCursor,omitempty"`
 }
 
+// SpansResponse is a page of the spans of a trace view, oldest first
 type SpansResponse struct {
 	Spans []Span `json:"spans"`
+	// Trace describes all spans of the trace view, not only this page's
+	Trace      *TraceOverview `json:"trace,omitempty"`
+	Total      int            `json:"total"`
+	HasMore    bool           `json:"hasMore"`
+	NextCursor string         `json:"nextCursor,omitempty"`
 }
 
 type LogsResponse struct {
@@ -197,6 +203,14 @@ type Provider struct {
 	ServiceName  string `json:"serviceName"`
 	DisplayName  string `json:"displayName"`
 	SessionFiles bool   `json:"sessionFiles"`
+	// OtherServices are further service names the tool sends
+	OtherServices []ProviderService `json:"otherServices,omitempty"`
+}
+
+// ProviderService is a further service name of a tool (tools.Service)
+type ProviderService struct {
+	ServiceName string `json:"serviceName"`
+	DisplayName string `json:"displayName"`
 }
 
 type ProvidersResponse struct {
@@ -249,11 +263,16 @@ type TranscriptMessage struct {
 	OutputSize   int       `json:"outputSize,omitempty"`   // Tool output size in bytes
 }
 
-// TranscriptResponse contains the full transcript for a session
+// TranscriptResponse contains the transcript of a session, or a page of its
+// messages (transcript.Page): Total counts all messages of the session, and
+// NextCursor requests the messages after this page when HasMore
 type TranscriptResponse struct {
 	SessionID   string              `json:"sessionId"`
 	ServiceName string              `json:"serviceName"`
 	StartTime   time.Time           `json:"startTime"`
 	LastTime    time.Time           `json:"lastTime"`
 	Messages    []TranscriptMessage `json:"messages"`
+	Total       int                 `json:"total"`
+	HasMore     bool                `json:"hasMore"`
+	NextCursor  string              `json:"nextCursor,omitempty"`
 }

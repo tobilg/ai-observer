@@ -1,4 +1,4 @@
-import { useState, useMemo, memo } from 'react'
+import { useState, useMemo, useCallback, memo } from 'react'
 import { formatDuration, getSpanKindIcon, formatEventTime, cn } from '@/lib/utils'
 import type { TraceOverview, Span } from '@/types/traces'
 import { ChevronRight, ChevronDown } from 'lucide-react'
@@ -103,7 +103,7 @@ export const WaterfallView = memo(function WaterfallView({ spans, trace, allExpa
   const [expandedSpans, setExpandedSpans] = useState<Set<string>>(allSpanIds)
   const [collapsedSpans, setCollapsedSpans] = useState<Set<string>>(new Set())
 
-  const toggleSpanDetails = (spanId: string) => {
+  const toggleSpanDetails = useCallback((spanId: string) => {
     setExpandedSpans((prev) => {
       const next = new Set(prev)
       if (next.has(spanId)) {
@@ -113,9 +113,9 @@ export const WaterfallView = memo(function WaterfallView({ spans, trace, allExpa
       }
       return next
     })
-  }
+  }, [])
 
-  const toggleSpanChildren = (spanId: string) => {
+  const toggleSpanChildren = useCallback((spanId: string) => {
     setCollapsedSpans((prev) => {
       const next = new Set(prev)
       if (next.has(spanId)) {
@@ -125,7 +125,7 @@ export const WaterfallView = memo(function WaterfallView({ spans, trace, allExpa
       }
       return next
     })
-  }
+  }, [])
 
   const flatNodes = useMemo(() => flattenTree(tree, collapsedSpans), [tree, collapsedSpans])
 
@@ -143,9 +143,10 @@ export const WaterfallView = memo(function WaterfallView({ spans, trace, allExpa
     return getMaxDepth(tree)
   }, [tree])
 
-  // Calculate timing for duration bars from all spans
+  // Timing for the duration bars: the extent of the spans, and of the whole
+  // trace when only its first spans are loaded
   const { traceStart, totalDuration } = useMemo(() => {
-    if (spans.length === 0) return { traceStart: 0, traceEnd: 0, totalDuration: 0 }
+    if (spans.length === 0) return { traceStart: 0, totalDuration: 0 }
 
     let minStart = Number.MAX_SAFE_INTEGER
     let maxEnd = Number.MIN_SAFE_INTEGER
@@ -156,13 +157,17 @@ export const WaterfallView = memo(function WaterfallView({ spans, trace, allExpa
       if (start < minStart) minStart = start
       if (end > maxEnd) maxEnd = end
     }
+    const overviewStart = trace ? new Date(trace.startTime).getTime() : NaN
+    if (trace && !Number.isNaN(overviewStart)) {
+      minStart = Math.min(minStart, overviewStart)
+      maxEnd = Math.max(maxEnd, overviewStart + trace.duration / 1_000_000)
+    }
 
     return {
       traceStart: minStart,
-      traceEnd: maxEnd,
       totalDuration: maxEnd - minStart
     }
-  }, [spans])
+  }, [spans, trace])
 
   // Fixed width for the name column based on max depth
   // Base: 120px for name + 16px per depth level + 24px for icons
@@ -203,101 +208,127 @@ export const WaterfallView = memo(function WaterfallView({ spans, trace, allExpa
           </div>
         </div>
       )}
-      {flatNodes.map((node) => {
-        const span = node.span
-        // Calculate bar position and width using visual extents
-        const left = totalDuration > 0 ? ((node.visualStart - traceStart) / totalDuration) * 100 : 0
-        const width = totalDuration > 0 ? ((node.visualEnd - node.visualStart) / totalDuration) * 100 : 100
-        const isExpanded = expandedSpans.has(span.spanId)
-        const isCollapsed = collapsedSpans.has(span.spanId)
-        const hasChildren = node.children.length > 0
-        const hasDetails = span.spanAttributes && Object.keys(span.spanAttributes).length > 0 ||
-                          span.events && span.events.length > 0 ||
-                          span.statusMessage
+      {flatNodes.map((node) => (
+        <SpanRow
+          key={node.span.spanId}
+          node={node}
+          // Bar position and width from the visual extents
+          left={totalDuration > 0 ? ((node.visualStart - traceStart) / totalDuration) * 100 : 0}
+          width={totalDuration > 0 ? ((node.visualEnd - node.visualStart) / totalDuration) * 100 : 100}
+          isExpanded={expandedSpans.has(node.span.spanId)}
+          isCollapsed={collapsedSpans.has(node.span.spanId)}
+          nameColumnWidth={nameColumnWidth}
+          onToggleDetails={toggleSpanDetails}
+          onToggleChildren={toggleSpanChildren}
+        />
+      ))}
+    </div>
+  )
+})
 
-        return (
-          <div key={span.spanId} className="group">
-            <div
-              className={cn(
-                'flex items-center gap-2 text-xs cursor-pointer rounded py-0.5',
-                'hover:bg-accent transition-colors',
-                isExpanded && 'bg-accent'
-              )}
-              onClick={() => toggleSpanDetails(span.spanId)}
-              role="button"
-              tabIndex={0}
-              aria-expanded={hasDetails ? isExpanded : undefined}
-              aria-controls={hasDetails ? `span-details-${span.spanId}` : undefined}
-              aria-label={`${span.spanName}, ${formatDuration(span.duration)}, ${span.statusCode || 'OK'}`}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault()
-                  toggleSpanDetails(span.spanId)
-                }
-              }}
-            >
-              {/* Name column with indentation - fixed width */}
-              <div
-                className="flex items-center gap-1 shrink-0 overflow-hidden"
-                style={{
-                  width: `${nameColumnWidth}px`,
-                  paddingLeft: `${node.depth * 16}px`
-                }}
-              >
-                {/* Tree expand/collapse indicator */}
-                <div
-                  className="w-4 shrink-0 text-muted-foreground"
-                  aria-hidden="true"
-                  onClick={(e) => {
-                    if (hasChildren) {
-                      e.stopPropagation()
-                      toggleSpanChildren(span.spanId)
-                    }
-                  }}
-                >
-                  {hasChildren ? (
-                    isCollapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
-                  ) : (
-                    <span className="w-3" />
-                  )}
-                </div>
+interface SpanRowProps {
+  node: SpanNode
+  left: number
+  width: number
+  isExpanded: boolean
+  isCollapsed: boolean
+  nameColumnWidth: number
+  onToggleDetails: (spanId: string) => void
+  onToggleChildren: (spanId: string) => void
+}
 
-                {/* SpanKind icon */}
-                <span className="w-4 shrink-0 text-center text-muted-foreground" title={span.spanKind || 'Unknown'} aria-hidden="true">
-                  {getSpanKindIcon(span.spanKind)}
-                </span>
+// One row of the waterfall. Traces have thousands of spans: rows are
+// memoized, so toggling one span renders only that row, and the browser
+// skips layout and paint of rows outside the viewport (content-visibility).
+const SpanRow = memo(function SpanRow({
+  node, left, width, isExpanded, isCollapsed, nameColumnWidth, onToggleDetails, onToggleChildren,
+}: SpanRowProps) {
+  const span = node.span
+  const hasChildren = node.children.length > 0
+  const hasDetails = span.spanAttributes && Object.keys(span.spanAttributes).length > 0 ||
+                    span.events && span.events.length > 0 ||
+                    span.statusMessage
 
-                {/* Span name */}
-                <span className="truncate font-medium" title={span.spanName}>{span.spanName}</span>
-              </div>
-
-              {/* Duration bar - starts at same position for all rows */}
-              <div className="flex-1 h-5 bg-muted rounded relative">
-                <div
-                  className={cn(
-                    'absolute h-full rounded',
-                    span.statusCode === 'ERROR' ? 'bg-error' : 'bg-info'
-                  )}
-                  style={{
-                    left: `${left}%`,
-                    width: `${Math.max(width, 0.5)}%`,
-                  }}
-                />
-              </div>
-
-              {/* Duration text */}
-              <div className="w-20 text-right text-muted-foreground shrink-0">
-                {formatDuration(span.duration)}
-              </div>
-            </div>
-
-            {/* Expanded details */}
-            {isExpanded && hasDetails && (
-              <SpanDetails span={span} id={`span-details-${span.spanId}`} depth={node.depth} />
+  return (
+    <div className="group" style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 24px' }}>
+      <div
+        className={cn(
+          'flex items-center gap-2 text-xs cursor-pointer rounded py-0.5',
+          'hover:bg-accent transition-colors',
+          isExpanded && 'bg-accent'
+        )}
+        onClick={() => onToggleDetails(span.spanId)}
+        role="button"
+        tabIndex={0}
+        aria-expanded={hasDetails ? isExpanded : undefined}
+        aria-controls={hasDetails ? `span-details-${span.spanId}` : undefined}
+        aria-label={`${span.spanName}, ${formatDuration(span.duration)}, ${span.statusCode || 'OK'}`}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            onToggleDetails(span.spanId)
+          }
+        }}
+      >
+        {/* Name column with indentation - fixed width */}
+        <div
+          className="flex items-center gap-1 shrink-0 overflow-hidden"
+          style={{
+            width: `${nameColumnWidth}px`,
+            paddingLeft: `${node.depth * 16}px`
+          }}
+        >
+          {/* Tree expand/collapse indicator */}
+          <div
+            className="w-4 shrink-0 text-muted-foreground"
+            aria-hidden="true"
+            onClick={(e) => {
+              if (hasChildren) {
+                e.stopPropagation()
+                onToggleChildren(span.spanId)
+              }
+            }}
+          >
+            {hasChildren ? (
+              isCollapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
+            ) : (
+              <span className="w-3" />
             )}
           </div>
-        )
-      })}
+
+          {/* SpanKind icon */}
+          <span className="w-4 shrink-0 text-center text-muted-foreground" title={span.spanKind || 'Unknown'} aria-hidden="true">
+            {getSpanKindIcon(span.spanKind)}
+          </span>
+
+          {/* Span name */}
+          <span className="truncate font-medium" title={span.spanName}>{span.spanName}</span>
+        </div>
+
+        {/* Duration bar - starts at same position for all rows */}
+        <div className="flex-1 h-5 bg-muted rounded relative">
+          <div
+            className={cn(
+              'absolute h-full rounded',
+              span.statusCode === 'ERROR' ? 'bg-error' : 'bg-info'
+            )}
+            style={{
+              left: `${left}%`,
+              width: `${Math.max(width, 0.5)}%`,
+            }}
+          />
+        </div>
+
+        {/* Duration text */}
+        <div className="w-20 text-right text-muted-foreground shrink-0">
+          {formatDuration(span.duration)}
+        </div>
+      </div>
+
+      {/* Expanded details */}
+      {isExpanded && hasDetails && (
+        <SpanDetails span={span} id={`span-details-${span.spanId}`} depth={node.depth} />
+      )}
     </div>
   )
 })

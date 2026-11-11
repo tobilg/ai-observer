@@ -134,6 +134,9 @@ make all     # Build single binary with embedded frontend
 | `AI_OBSERVER_AUTH_TOKEN` | _(empty: no authentication)_ | Shared token required on OTLP and API requests (see [Authentication](#authentication)) |
 | `AI_OBSERVER_REDACT` | `secrets` | What is replaced in telemetry before it is stored: `secrets` (API keys, tokens, passwords), `all` (secrets and personal data such as emails and card numbers) or `off` (see [Redaction](docs/redaction.md)) |
 | `AI_OBSERVER_MCP` | `false` | Serve the MCP endpoint for agents at `/mcp` on the API port; same as the `--mcp` flag of `serve` and `watch` (see [Agent Access](#agent-access-mcp)) |
+| `AI_OBSERVER_DB_MEMORY_LIMIT` | _(empty: 80% of memory)_ | Memory DuckDB may use for data and queries, as a size such as `2GB` or `512MB`. Queries that need more use temporary files next to the database and get slower. The process uses more than this: the limit does not cover the server's own memory |
+| `AI_OBSERVER_DB_THREADS` | _(empty: one per CPU core)_ | Number of threads DuckDB runs queries on |
+| `AI_OBSERVER_STORE_ALL_SPANS` | `false` | Also store the spans left out as noise: Codex's spans for every streamed response event and session file write (see the Codex telemetry reference, Traces) |
 
 CORS allows `AI_OBSERVER_FRONTEND_URL` plus `http://localhost:5173` and `http://localhost:8080`; set `AI_OBSERVER_FRONTEND_URL` when serving a custom UI origin. Browser requests and WebSocket connections are accepted from loopback origins, those CORS origins, origins whose host is in `AI_OBSERVER_ALLOWED_HOSTS`, and the dashboard's own origin when it is an IP address.
 
@@ -167,7 +170,7 @@ claude mcp add --transport http ai-observer http://localhost:8080/mcp
 
 `search_conversations` finds the prompts, replies and tool calls that contain all words of a query, in any order and case (`flaky parser test`); words also match inside longer words (`retr` finds `retry` and `retries`), and `"quoted phrases"` match as written.
 
-In hosts that render [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps), such as Claude Desktop, VS Code with GitHub Copilot or Cursor, the results of `usage_summary`, `query_metrics`, `get_trace` and `list_sessions` also appear as charts and tables in the conversation. Terminal agents get the same text results as before.
+In hosts that render [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps), such as the Codex app, VS Code with GitHub Copilot or Cursor, the results of `usage_summary`, `query_metrics`, `get_trace` and `list_sessions` also appear as charts and tables in the conversation. Terminal agents get the same text results as before. Claude Desktop currently shows no views of a local AI Observer (see [Agent Access](docs/mcp.md#charts-in-mcp-apps-hosts)).
 
 The endpoint is off by default and behind the same Host, Origin and token checks as the API; add `--header "Authorization: Bearer <token>"` when `AI_OBSERVER_AUTH_TOKEN` is set. What the tools return is sent to the agent's model provider. See [Agent Access (MCP)](docs/mcp.md) for the other tools' setup, all tools and their arguments.
 
@@ -399,7 +402,7 @@ ai-observer delete [logs|metrics|traces|all] --from DATE --to DATE [options]
 |--------|-------------|
 | `--from DATE` | Start date (YYYY-MM-DD, required) |
 | `--to DATE` | End date (YYYY-MM-DD, required) |
-| `--service NAME` | Only delete data for specific service |
+| `--service NAME` | Only delete data of a tool (`codex`: all three Codex services) or of one service name |
 | `--yes` | Skip confirmation prompt |
 
 **Examples:**
@@ -479,18 +482,29 @@ export OTEL_LOGS_EXPORT_TIMEOUT=5000
 </details>
 
 <details>
-<summary><strong>OpenAI Codex CLI</strong></summary>
+<summary><strong>OpenAI Codex (CLI and app)</strong></summary>
 
-Add to `~/.codex/config.toml`:
+Add to `~/.codex/config.toml`, which the CLI and the Codex app both read:
 
 ```toml
 [otel]
 log_user_prompt = true  # set to false to redact prompts
 exporter = { otlp-http = { endpoint = "http://localhost:4318/v1/logs", protocol = "binary" } }
 trace_exporter = { otlp-http = { endpoint = "http://localhost:4318/v1/traces", protocol = "binary" } }
+metrics_exporter = { otlp-http = { endpoint = "http://localhost:4318/v1/metrics", protocol = "binary" } }
 ```
 
-> **Note**: Codex CLI exports logs and traces (no metrics). The `trace_exporter` option is undocumented but available—if omitted, traces are sent to the same endpoint as logs.
+> **Note**: without `trace_exporter`, Codex sends traces to the logs endpoint.
+
+**Codex 0.167 and later** run conversations in an app server: the Codex app starts its own, and the CLI starts a background one (`app-server-daemon`) once and keeps using it. That server keeps the settings it started with, so after changing `[otel]` quit Codex, stop it (`pkill -f app-server-daemon`) and start Codex again. Codex then sends three service names, which AI Observer all counts as Codex:
+
+| `service.name` | Sent by | Contains |
+|---|---|---|
+| `codex_cli_rs` | the CLI | its startup telemetry (older versions: everything) |
+| `codex-app-server` | the app server of the Codex app or the CLI | conversations, tokens, the traces of turns (`turn/start`); `originator` is `Codex_Desktop` for the app, `codex-tui` for the CLI |
+| `codex-exec-server` | the Codex app's command runner | process and request metrics |
+
+Most of the app and exec servers' traces are internal requests outside a conversation (`fs.read_file`, `getAuthStatus`, `thread/read`, …), hundreds per hour, and each automatic approval review is a trace of its own (`decide_request`). The trace list leaves them out unless you turn on **Background requests**.
 
 </details>
 
@@ -648,12 +662,13 @@ REST API for querying stored telemetry data. Unless otherwise specified, `from`/
 |--------|----------|-------------|
 | `GET` | `/api/traces` | List traces with filtering and pagination |
 | `GET` | `/api/traces/recent` | Get most recent traces |
-| `GET` | `/api/traces/{id}?kind={kind}` | Get spans for a trace row |
-| `GET` | `/api/traces/{id}/spans?kind={kind}` | Get all spans for a trace row |
+| `GET` | `/api/traces/{id}?kind={kind}` | Get spans for a trace row (same as `/spans`) |
+| `GET` | `/api/traces/{id}/spans?kind={kind}` | Get a page of the spans of a trace row, oldest first: `limit` (default and maximum 1,000) and `cursor` (the previous page's `nextCursor`). The response also carries `trace` (start, duration, span count and status of the whole trace), `total` and `hasMore` |
 
 **Query parameters for `/api/traces`:**
-- `service` — Filter by service name
+- `service` — Filter by service name, or by tool name (`codex` covers `codex_cli_rs`, `codex-app-server` and `codex-exec-server`; the other list endpoints accept tool names too)
 - `search` — Full-text search
+- `background=true` — Also list the background traces of Codex's app and exec servers: traces in which no span belongs to a conversation (internal file, settings and account requests), automatic approval reviews and the CLI's startup spans, which are left out by default
 - `from`, `to` — Time range (ISO 8601)
 - `limit`, `cursor` — Pagination: pass the `nextCursor` of the previous page as `cursor` (`offset` still works up to 10,000 rows but is deprecated)
 
@@ -962,18 +977,24 @@ Recognized log events include `session.created`, `session.idle`, `session.error`
 </details>
 
 <details>
-<summary><strong>OpenAI Codex CLI Metrics & Events</strong></summary>
+<summary><strong>OpenAI Codex Metrics & Events</strong></summary>
 
-Codex CLI exports logs and traces directly. AI Observer derives metrics from these log events.
+Codex exports logs, traces and (since 0.167) metrics. Codex 0.167 and later send them under three service names (see [setup](#ai-tool-setup)): conversations of the Codex app and the CLI come from `codex-app-server`, with `originator` `Codex_Desktop` or `codex-tui`. AI Observer derives token usage and cost from the log events of any of them.
 
 ### Derived Metrics
 
-AI Observer computes these metrics from Codex CLI log events:
+AI Observer computes these metrics from Codex's `response.completed` events:
 
 | Metric | Display Name | Type | Description |
 |--------|--------------|------|-------------|
-| `codex_cli_rs.token.usage` | Token Usage | Counter | Tokens by type (input/output/cache/reasoning/tool) |
-| `codex_cli_rs.cost.usage` | Cost | Counter | Session cost in USD |
+| `codex_cli_rs.token.usage` | Token Usage | Counter | Tokens by type: `input` (includes `cacheRead` and `cacheWrite`), `output` (includes `reasoning`), `cacheRead`, `cacheWrite`, `reasoning` |
+| `codex_cli_rs.cost.usage` | Cost | Counter | Cost in USD |
+
+Both carry `model` and, from the app server, `originator`, which tells the Codex app from the CLI. Codex's `tool_token_count` is its total (input plus output) and is not a token type. Models without a price, such as `codex-auto-review` (the conversations Codex's automatic approval reviewer starts at every CLI start), have tokens but no cost; `usage_summary` lists them as `unpriced_models`.
+
+### Codex's Own Metrics
+
+Codex 0.167 and later send about a hundred metrics of their own, e.g. `codex.turn.token_usage` (tokens per turn by `token_type`, with `total` = input + output; the same tokens as the derived metric, so don't add the two), `codex.conversation.turn.count`, `codex.turn.e2e_duration_ms` and `codex.turn.ttft.duration_ms`.
 
 ### Events (Logs)
 
@@ -990,7 +1011,11 @@ AI Observer computes these metrics from Codex CLI log events:
 
 ### Traces
 
-Codex CLI uses a **single trace per session**—all operations within a CLI session share the same trace ID with spans nested hierarchically:
+**Codex 0.167 and later** send a trace per turn (root `turn/start`, often thousands of spans) from `codex-app-server`. Most of the app and exec servers' traces are internal requests outside a conversation (`fs.read_file`, `getAuthStatus`, `thread/read`, …): traces in which no span carries a conversation ID. Codex's automatic approval reviews (root `decide_request`, about 550 spans each, in conversations of their own) and the single spans the CLI records at startup (`auth`, `fs.get_metadata`, `fs.read_file`, `serve_inner`, `transport_worker`) count as background traces too. The trace list, the dashboard's recent traces and the MCP tool `list_traces` leave those out unless asked for (`background=true`, **Background requests**, `include_background`).
+
+The app server also records a span for every streamed response event, every write of the session file and every file status read (`receiving`, `handle_responses`, `append_items`, `persist_rollout_items`, `realtime_conversation.running_state`, `fs.get_metadata`): about 86% of its spans, and over 100,000 in a long turn. AI Observer does not store them, except those that failed and those that are the parent of a stored span (a `handle_responses` span above a tool call). `AI_OBSERVER_STORE_ALL_SPANS=true` stores them all.
+
+**Earlier versions** of the Codex CLI use a **single trace per session**—all operations within a CLI session share the same trace ID with spans nested hierarchically:
 
 ```mermaid
 flowchart TB

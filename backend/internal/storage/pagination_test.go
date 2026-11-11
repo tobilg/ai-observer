@@ -141,7 +141,7 @@ func TestQueryTracesSessionsAndMetricsCursorPages(t *testing.T) {
 	}
 
 	walk("traces", func(p Page) ([]string, bool, string, error) {
-		resp, err := store.QueryTraces(ctx, "", "", from, to, p)
+		resp, err := store.QueryTraces(ctx, TraceFilter{}, from, to, p)
 		if err != nil {
 			return nil, false, "", err
 		}
@@ -253,7 +253,7 @@ func TestTracesAndSessionsTotalOnEveryPage(t *testing.T) {
 		{"cursor past the end", Page{Limit: 3, Cursor: traceCursor}, Page{Limit: 3, Cursor: pastEnd}, 0, 0},
 	}
 	for _, tc := range cases {
-		traces, err := store.QueryTraces(ctx, "", "", from, to, tc.traces)
+		traces, err := store.QueryTraces(ctx, TraceFilter{}, from, to, tc.traces)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -294,7 +294,7 @@ func TestListQueriesRefuseDeepOffsets(t *testing.T) {
 			return err
 		},
 		"traces": func(p Page) error {
-			_, err := store.QueryTraces(ctx, "", "", from, to, p)
+			_, err := store.QueryTraces(ctx, TraceFilter{}, from, to, p)
 			return err
 		},
 		"sessions": func(p Page) error {

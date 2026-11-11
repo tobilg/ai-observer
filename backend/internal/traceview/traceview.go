@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/tobilg/ai-observer/internal/api"
+	"github.com/tobilg/ai-observer/internal/storage"
 	"github.com/tobilg/ai-observer/internal/tools"
 )
 
@@ -24,9 +26,10 @@ var ErrUnsupportedKind = errors.New("unsupported trace kind")
 
 // Store reads spans (implemented by storage.DuckDBStore)
 type Store interface {
-	// TraceSpans returns the spans of a trace, oldest first; an ID that is no
-	// trace ID is looked up as a span ID
-	TraceSpans(ctx context.Context, traceID string) ([]api.Span, error)
+	// TraceSpansPage returns a page of the spans of a trace, oldest first,
+	// with the trace's overview, or nil when there is no such trace; an ID
+	// that is no trace ID is looked up as a span ID
+	TraceSpansPage(ctx context.Context, traceID string, page storage.Page) (*api.SpansResponse, error)
 	// SpanTraceID returns the trace ID of a service's span, or "" when the
 	// service has no such span
 	SpanTraceID(ctx context.Context, service, spanID string) (string, error)
@@ -34,17 +37,65 @@ type Store interface {
 	ServiceTraceSpans(ctx context.Context, service, traceID string) ([]api.Span, error)
 }
 
-// Load returns the spans of the trace view id of the given kind, oldest
-// first, or none when it does not exist
-func Load(ctx context.Context, store Store, id, kind string) ([]api.Span, error) {
+// Load returns a page of the spans of the trace view id of the given kind,
+// oldest first, with the overview of all of its spans, or nil when it does
+// not exist. Traces are read a page at a time: a turn of Codex's app server
+// can have over 100,000 spans.
+func Load(ctx context.Context, store Store, id, kind string, page storage.Page) (*api.SpansResponse, error) {
 	switch kind {
 	case api.TraceKindOTelTrace:
-		return store.TraceSpans(ctx, id)
+		return store.TraceSpansPage(ctx, id, page)
 	case api.TraceKindCodexOperation:
-		return loadCodexOperation(ctx, store, id)
+		spans, err := loadCodexOperation(ctx, store, id)
+		if err != nil || len(spans) == 0 {
+			return nil, err
+		}
+		overview := codexOperationOverview(id, spans)
+		resp, err := storage.PageOfSpans(spans, page)
+		if err != nil {
+			return nil, err
+		}
+		resp.Trace = overview
+		return resp, nil
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedKind, kind)
 	}
+}
+
+// codexOperationOverview describes the spans of the Codex operation with
+// the given root span
+func codexOperationOverview(rootSpanID string, spans []api.Span) *api.TraceOverview {
+	root := spans[0]
+	o := &api.TraceOverview{
+		ID: rootSpanID, Kind: api.TraceKindCodexOperation, GroupLevel: api.TraceGroupLevelCodexOperation,
+		SpanCount: len(spans), StartTime: spans[0].Timestamp,
+	}
+	end := spans[0].Timestamp
+	var failed, ok int
+	for _, span := range spans {
+		if span.SpanID == rootSpanID {
+			root = span
+		}
+		if codexTurnID(span) != "" {
+			o.GroupLevel = api.TraceGroupLevelCodexTurn
+		}
+		if span.Timestamp.Before(o.StartTime) {
+			o.StartTime = span.Timestamp
+		}
+		if spanEnd := span.Timestamp.Add(time.Duration(span.Duration)); spanEnd.After(end) {
+			end = spanEnd
+		}
+		switch span.StatusCode {
+		case "ERROR":
+			failed++
+		case "OK":
+			ok++
+		}
+	}
+	o.TraceID, o.RootSpanID, o.RootSpan, o.ServiceName = root.TraceID, root.SpanID, root.SpanName, root.ServiceName
+	o.Duration = int64(end.Sub(o.StartTime))
+	o.Status = storage.TraceStatus(failed, ok)
+	return o
 }
 
 // loadCodexOperation returns a Codex operation's root span and the spans

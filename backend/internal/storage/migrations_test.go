@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -200,7 +201,7 @@ func TestSpanDeduplicationMigration(t *testing.T) {
 		t.Errorf("spans = %d after migration, want 2", spans)
 	}
 
-	resp, err := store.QueryTraces(ctx, "", "", time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC), time.Date(2025, 1, 3, 0, 0, 0, 0, time.UTC), Page{Limit: 10})
+	resp, err := store.QueryTraces(ctx, TraceFilter{}, time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC), time.Date(2025, 1, 3, 0, 0, 0, 0, time.UTC), Page{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryTraces: %v", err)
 	}
@@ -307,5 +308,108 @@ func TestHexIDMigration(t *testing.T) {
 	}
 	if len(spans) != 2 {
 		t.Errorf("trace %s has %d spans, want 2", traceID, len(spans))
+	}
+}
+
+// Migration 10 drops the "tool" tokens (Codex's total), names the imported
+// cache types like OTLP, and derives the usage of the codex.sse_event logs
+// stored for codex-app-server, which it deletes.
+func TestCodexTokenTypesMigration(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "codex.duckdb")
+	legacy, err := sql.Open("duckdb", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		schemaMetrics,
+		schemaLogs,
+		`INSERT INTO otel_metrics (Timestamp, ServiceName, MetricName, Attributes, MetricType, Value) VALUES
+			('2026-11-01 10:00:00', 'codex_cli_rs', 'codex_cli_rs.token.usage', '{"model": "gpt-5", "type": "input"}', 'sum', 1000),
+			('2026-11-01 10:00:00', 'codex_cli_rs', 'codex_cli_rs.token.usage', '{"model": "gpt-5", "type": "cacheRead"}', 'sum', 200),
+			('2026-11-01 10:00:00', 'codex_cli_rs', 'codex_cli_rs.token.usage', '{"model": "gpt-5", "type": "output"}', 'sum', 10),
+			('2026-11-01 10:00:00', 'codex_cli_rs', 'codex_cli_rs.token.usage', '{"model": "gpt-5", "type": "tool"}', 'sum', 1010),
+			('2026-11-02 10:00:00', 'codex_cli_rs', 'codex_cli_rs.token.usage', '{"model": "gpt-5", "type": "cache_read", "import_source": "local_jsonl"}', 'sum', 300),
+			('2026-11-02 10:00:00', 'codex_cli_rs', 'codex_cli_rs.token.usage', '{"model": "gpt-5", "type": "cache_creation", "import_source": "local_jsonl"}', 'sum', 5),
+			('2026-11-02 10:00:00', 'gemini_cli', 'gemini_cli.token.usage', '{"type": "tool"}', 'sum', 7)`,
+		`INSERT INTO otel_logs (Timestamp, ServiceName, Body, ResourceAttributes, LogAttributes) VALUES
+			('2026-11-08 18:00:00', 'codex-app-server', 'codex.sse_event', '{"service.name": "codex-app-server"}',
+			 '{"event.name": "codex.sse_event", "event.kind": "response.completed", "conversation.id": "c1", "model": "gpt-6-astra",
+			   "originator": "Codex_Desktop", "input_token_count": "1000", "cached_token_count": "400", "cache_write_token_count": "100",
+			   "output_token_count": "20", "reasoning_token_count": "5", "tool_token_count": "1020"}'),
+			('2026-11-08 18:00:01', 'codex-app-server', 'codex.user_prompt', '{}', '{"event.name": "codex.user_prompt", "conversation.id": "c1"}'),
+			('2026-11-08 18:00:02', 'other-service', 'codex.sse_event', '{}', '{"event.name": "codex.sse_event", "event.kind": "response.completed", "input_token_count": "9"}')`,
+	} {
+		if _, err := legacy.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	legacy.Close()
+
+	store, err := NewDuckDBStore(dbPath)
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	defer store.Close()
+
+	tokens := func(service string) map[string]float64 {
+		t.Helper()
+		rows, err := store.db.QueryContext(ctx, `SELECT json_extract_string(Attributes, '$.type'), SUM(Value) FROM otel_metrics
+			WHERE MetricName = 'codex_cli_rs.token.usage' AND ServiceName = ? GROUP BY 1`, service)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		got := make(map[string]float64)
+		for rows.Next() {
+			var tokenType string
+			var value float64
+			if err := rows.Scan(&tokenType, &value); err != nil {
+				t.Fatal(err)
+			}
+			got[tokenType] = value
+		}
+		return got
+	}
+	if got, want := tokens("codex_cli_rs"), map[string]float64{"input": 1000, "cacheRead": 500, "cacheWrite": 5, "output": 10}; !maps.Equal(got, want) {
+		t.Errorf("codex_cli_rs tokens = %v, want %v", got, want)
+	}
+	if got, want := tokens("codex-app-server"), map[string]float64{"input": 1000, "cacheRead": 400, "cacheWrite": 100, "output": 20, "reasoning": 5}; !maps.Equal(got, want) {
+		t.Errorf("codex-app-server tokens = %v, want %v", got, want)
+	}
+	if got := countRows(t, store, `SELECT COUNT(*) FROM otel_metrics WHERE MetricName = 'gemini_cli.token.usage'`); got != 1 {
+		t.Errorf("Gemini's tool tokens were changed: %d points", got)
+	}
+
+	// The cost, with the originator, which tells the Codex app from the CLI
+	var cost float64
+	var originator string
+	if err := store.db.QueryRowContext(ctx, `SELECT Value, json_extract_string(Attributes, '$.originator') FROM otel_metrics
+		WHERE MetricName = 'codex_cli_rs.cost.usage' AND ServiceName = 'codex-app-server'`).Scan(&cost, &originator); err != nil {
+		t.Fatalf("cost of the app server's response: %v", err)
+	}
+	if cost <= 0 || originator != "Codex_Desktop" {
+		t.Errorf("cost = %v, originator %q", cost, originator)
+	}
+
+	// The SSE event is gone, other logs are kept
+	rows, err := store.db.QueryContext(ctx, `SELECT ServiceName, Body FROM otel_logs ORDER BY Timestamp`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	for rows.Next() {
+		var service, body string
+		if err := rows.Scan(&service, &body); err != nil {
+			t.Fatal(err)
+		}
+		logs = append(logs, service+" "+body)
+	}
+	rows.Close()
+	if want := []string{"codex-app-server codex.user_prompt", "other-service codex.sse_event"}; !slices.Equal(logs, want) {
+		t.Errorf("logs = %q, want %q", logs, want)
+	}
+	if names, err := store.GetMetricNames(ctx, "codex-app-server"); err != nil || strings.Join(names, ",") != "codex_cli_rs.cost.usage,codex_cli_rs.token.usage" {
+		t.Errorf("metric names of codex-app-server = %v (%v)", names, err)
 	}
 }

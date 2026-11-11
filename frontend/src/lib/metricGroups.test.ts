@@ -6,6 +6,8 @@ describe('metricGroups', () => {
     expect(sourceFromService('claude-code')).toBe('claude_code')
     expect(sourceFromService('gemini_cli')).toBe('gemini_cli')
     expect(sourceFromService('codex_cli_rs')).toBe('codex_cli_rs')
+    expect(sourceFromService('codex-app-server')).toBe('codex_cli_rs')
+    expect(sourceFromService('codex')).toBe('codex_cli_rs')
     expect(sourceFromService('copilot-chat')).toBe('github_copilot')
     expect(sourceFromService('github-copilot')).toBe('github_copilot')
     expect(sourceFromService('opencode')).toBe('opencode')

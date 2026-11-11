@@ -19,15 +19,20 @@ import (
 	"github.com/tobilg/ai-observer/internal/websocket"
 )
 
-// QueryTraces handles GET /api/traces
+// QueryTraces handles GET /api/traces. Background traces of Codex's app and
+// exec servers (storage.TraceFilter.Background) are listed with
+// background=true only.
 func (h *Handlers) QueryTraces(w http.ResponseWriter, r *http.Request) {
-	service := r.URL.Query().Get("service")
-	search := r.URL.Query().Get("search")
+	filter := storage.TraceFilter{
+		Service:    r.URL.Query().Get("service"),
+		Search:     r.URL.Query().Get("search"),
+		Background: r.URL.Query().Get("background") == "true",
+	}
 	from, to, ok := requestTimeRange(w, r)
 	if !ok {
 		return
 	}
-	resp, err := h.store.QueryTraces(r.Context(), service, search, from, to, requestPage(r))
+	resp, err := h.store.QueryTraces(r.Context(), filter, from, to, requestPage(r))
 	if err != nil {
 		writeQueryError(w, r, "failed to query traces", err)
 		return
@@ -36,7 +41,8 @@ func (h *Handlers) QueryTraces(w http.ResponseWriter, r *http.Request) {
 	api.WriteJSON(w, http.StatusOK, resp)
 }
 
-// GetTrace handles GET /api/traces/{id} and /api/traces/{id}/spans
+// GetTrace handles GET /api/traces/{id} and /api/traces/{id}/spans: a page
+// of the trace's spans (limit, cursor) and the overview of all of them
 func (h *Handlers) GetTrace(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "traceId")
 	if id == "" {
@@ -54,19 +60,26 @@ func (h *Handlers) GetTrace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	spans, err := traceview.Load(r.Context(), h.store, id, kind)
+	// A page of the trace's spans: 1,000 unless asked for fewer
+	page := requestPage(r)
+	if r.URL.Query().Get("limit") == "" {
+		page.Limit = traceSpansPageSize
+	}
+	resp, err := traceview.Load(r.Context(), h.store, id, kind, page)
 	if err != nil {
 		writeQueryError(w, r, "failed to load trace", err)
 		return
 	}
-
-	if len(spans) == 0 {
+	if resp == nil {
 		api.WriteError(w, http.StatusNotFound, "trace not found")
 		return
 	}
 
-	api.WriteJSON(w, http.StatusOK, api.SpansResponse{Spans: spans})
+	api.WriteJSON(w, http.StatusOK, resp)
 }
+
+// traceSpansPageSize is the default number of spans of a trace detail page
+const traceSpansPageSize = 1000
 
 // QueryRecentTraces handles GET /api/traces/recent
 func (h *Handlers) QueryRecentTraces(w http.ResponseWriter, r *http.Request) {
@@ -276,7 +289,15 @@ func (h *Handlers) QuerySessions(w http.ResponseWriter, r *http.Request) {
 	api.WriteJSON(w, http.StatusOK, resp)
 }
 
+// Messages of a transcript page: by default, and at most. Sessions have up
+// to thousands of messages with tool output of several KB each.
+const (
+	transcriptPageSize    = 500
+	maxTranscriptPageSize = 1000
+)
+
 // GetSessionTranscript handles GET /api/sessions/{sessionId}/transcript
+// (limit, cursor)
 func (h *Handlers) GetSessionTranscript(w http.ResponseWriter, r *http.Request) {
 	sessionID := chi.URLParam(r, "sessionId")
 	if sessionID == "" {
@@ -294,7 +315,17 @@ func (h *Handlers) GetSessionTranscript(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	api.WriteJSON(w, http.StatusOK, resp)
+	limit := transcriptPageSize
+	if parsed, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && parsed > 0 {
+		limit = min(parsed, maxTranscriptPageSize)
+	}
+	page, err := transcript.Page(resp, limit, r.URL.Query().Get("cursor"))
+	if err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid cursor: pass the nextCursor of the previous page")
+		return
+	}
+
+	api.WriteJSON(w, http.StatusOK, page)
 }
 
 // ListServices handles GET /api/services
@@ -319,6 +350,10 @@ func (h *Handlers) ListProviders(w http.ResponseWriter, r *http.Request) {
 			ServiceName:  p.ServiceName,
 			DisplayName:  p.DisplayName,
 			SessionFiles: p.SessionFiles,
+		}
+		for _, s := range p.OtherServices {
+			resp.Providers[i].OtherServices = append(resp.Providers[i].OtherServices,
+				api.ProviderService{ServiceName: s.Name, DisplayName: s.DisplayName})
 		}
 	}
 	api.WriteJSON(w, http.StatusOK, resp)

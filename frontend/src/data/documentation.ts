@@ -348,7 +348,7 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       },
       {
         type: 'note',
-        text: 'Codex CLI traces: Codex CLI can use a single trace for a long session. AI Observer shows Codex as raw OTLP trace rows in the trace list for consistent filtering and faster queries; open the trace detail to inspect every span in that session trace.',
+        text: 'Codex traces: Codex 0.167 and later send a trace per turn (root turn/start) from codex-app-server, plus hundreds of traces an hour of internal requests outside a conversation (fs.read_file, getAuthStatus, thread/read, ...) and a trace per automatic approval review (decide_request). The trace list leaves those out; turn on Background requests to list them. The app server\'s spans for every streamed response event, session file write and file status read (receiving, handle_responses, append_items, persist_rollout_items, realtime_conversation.running_state, fs.get_metadata; about 86% of its spans) are not stored, except failed ones and parents of stored spans; AI_OBSERVER_STORE_ALL_SPANS=true stores them all. Earlier Codex CLI versions use a single trace for a long session, which AI Observer shows as one raw OTLP trace row; open the trace detail to inspect every span in it.',
       },
     ],
   },
@@ -391,7 +391,7 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       },
       {
         type: 'note',
-        text: 'Codex CLI metrics include: Token Usage, Cost (derived from log events)',
+        text: 'Codex metrics include: Token Usage and Cost (derived from log events, by model and client: Codex app or CLI), and Codex\'s own turn metrics (Turn Tokens, Turns, Turn Duration, Time to First Token). Select OpenAI Codex (all services) to see the metrics of the Codex app and the CLI together.',
       },
       {
         type: 'note',
@@ -666,7 +666,7 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       },
       {
         type: 'paragraph',
-        text: 'All tools are read-only. Time arguments (from, to) accept an RFC 3339 time (2026-11-05T10:00:00Z), a date (2026-11-05, UTC; for to, the end of that day) or an age relative to now (30m, 24h, 7d, 2w). tool accepts claude-code (or claude), codex, gemini, opencode, copilot-chat, github-copilot, or an OTLP service name. Lists are paged: pass a result\'s next_cursor as cursor with the same arguments.',
+        text: 'All tools are read-only. Time arguments (from, to) accept an RFC 3339 time (2026-11-05T10:00:00Z), a date (2026-11-05, UTC; for to, the end of that day) or an age relative to now (30m, 24h, 7d, 2w). tool accepts claude-code (or claude), codex, gemini, opencode, copilot-chat, github-copilot, or an OTLP service name, which selects only that service (codex covers Codex\'s three: codex_cli_rs, codex-app-server and codex-exec-server). Lists are paged: pass a result\'s next_cursor as cursor with the same arguments.',
       },
       {
         type: 'table',
@@ -676,10 +676,10 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
             { cells: ['search_conversations', 'Sessions with a prompt, reply or tool call that contains all words of the query, in any order, newest match first, with a snippet around the match', 'query, tool, from (30 days before to), to (now), limit (10, max 50)'] },
             { cells: ['list_sessions', 'Sessions with activity in a range, most recently active first: tool, model, start, last activity, message count', 'tool, from (7 days), to, limit (20, max 100), cursor'] },
             { cells: ['get_transcript', 'A session\'s messages in order: role, content, model, tool name, input and output, tokens, cost', 'session_id, roles (all), limit (50, max 200), cursor, max_chars per text (2000, max 20000)'] },
-            { cells: ['usage_summary', 'Tokens by type and cost in USD', 'from (7 days), to, group_by: tool, model, day (UTC) or repository, tool'] },
+            { cells: ['usage_summary', 'Tokens by type and cost in USD; unpriced_models lists models with tokens but no price (no cost)', 'from (7 days), to, group_by: tool, model, day (UTC) or repository, tool'] },
             { cells: ['search_logs', 'Log records, newest first', 'query, tool, severity, trace_id, from (24 hours), to, limit (20, max 100), cursor'] },
-            { cells: ['list_traces', 'Traces, newest first: root span, duration, span count, status', 'query, tool, from (24 hours), to, limit, cursor'] },
-            { cells: ['get_trace', 'A trace\'s spans as a tree (depth first): name, start, duration, status, attributes', 'id, kind (otel_trace or codex_operation), max_spans (200), max_chars per attribute (300)'] },
+            { cells: ['list_traces', 'Traces, newest first: root span, duration, span count, status. Leaves out Codex\'s background traces (internal requests outside a conversation, automatic approval reviews)', 'query, tool, from (24 hours), to, limit, cursor, include_background (false)'] },
+            { cells: ['get_trace', 'A trace\'s spans as a tree (depth first): name, start, duration, status, attributes. Of traces with more than 1,000 spans, the tree of the first 1,000 by start time', 'id, kind (otel_trace or codex_operation), max_spans (200), max_chars per attribute (300)'] },
             { cells: ['list_metric_names', 'Stored metric names', 'tool'] },
             { cells: ['query_metrics', 'A metric as time buckets or totals per series (service, type, model); cumulative counters become increases', 'name, tool, from (24 hours), to, aggregate, interval (about 50 buckets)'] },
           ],
@@ -691,7 +691,7 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       },
       {
         type: 'paragraph',
-        text: 'usage_summary reports what AI Observer recorded: sessions that were both imported from files and sent over OTLP count twice, and repository is known for imported and watched Claude Code and Codex sessions only (others show unknown). tokens lists every token type; total_tokens counts each token once, so it leaves out the types that another one includes: cached input of Codex, Gemini and GitHub Copilot (part of their input) and Codex reasoning tokens (part of its output).',
+        text: 'usage_summary reports what AI Observer recorded: sessions that were both imported from files and sent over OTLP count twice, and repository is known for imported and watched Claude Code and Codex sessions only (others show unknown). tokens lists every token type; total_tokens counts each token once, so it leaves out the types that another one includes: cached input of Codex, Gemini and GitHub Copilot and Codex\'s cache writes (part of their input), and Codex reasoning tokens (part of its output).',
       },
       {
         type: 'heading',
@@ -758,9 +758,11 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       {
         type: 'list',
         items: [
-          'Which agents show it: hosts that support MCP Apps, such as Claude (desktop and web), VS Code with GitHub Copilot (turn on the experimental setting chat.mcp.apps.enabled), Cursor and Goose. The host must reach the endpoint: one that connects from the cloud cannot reach 127.0.0.1. Claude Code, Codex CLI, Gemini CLI and OpenCode don\'t render MCP Apps; they get the same results as before, and nothing of the view enters their context.',
+          'Which agents show it: hosts that support MCP Apps and run on your machine, such as the Codex app (with apps = true and enable_mcp_apps = true under [features] in ~/.codex/config.toml), VS Code with GitHub Copilot (turn on the experimental setting chat.mcp.apps.enabled), Cursor and Goose. The host must reach the endpoint: one that connects from the cloud cannot reach 127.0.0.1. Claude Code, Codex CLI, Gemini CLI and OpenCode don\'t render MCP Apps; they get the same results as before, and nothing of the view enters their context.',
+          'Claude Desktop doesn\'t show the view of a local AI Observer. It connects to servers added by URL (Connectors) from Anthropic\'s cloud, which can\'t reach 127.0.0.1. Servers from its configuration file (claude_desktop_config.json, for AI Observer through mcp-remote) work, but their tools answer as text only: in a test with app version 4.23118.0 (November 2026) Claude never loaded the view, and Anthropic\'s own MCP Apps example (@modelcontextprotocol/server-map) showed no view either.',
           'How it works: the four tools name the view ui://ai-observer/view.html in their _meta.ui.resourceUri. The host reads it, a single page with its scripts and styles inlined, built into the binary, and shows it in a sandboxed frame with the tool\'s arguments and result.',
           'The view has no network access. It calls tools through the host (another grouping, the next page), so the endpoint\'s Host, Origin and token checks apply as to any call.',
+          'The agent still gets the whole result as text and may repeat it below the view. The MCP Apps specification has no setting against that; the page carries OpenAI\'s openai/widgetDescription, which tells the model that the user sees all values in the view, and other hosts ignore it. To be sure, tell the agent in its global instructions (~/.codex/AGENTS.md, ~/.claude/CLAUDE.md): "When an MCP tool result is shown as an app view, don\'t restate the data it shows."',
           'resources/list leaves out ui:// resources, as the MCP Apps specification allows: hosts find the view through the tools, while agents that browse resources (Claude Code and Codex have tools for that) would otherwise read the page, about 1 MB, into their context.',
         ],
       },
@@ -822,7 +824,7 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       { id: 'telemetry-gemini', title: 'Gemini CLI' },
       { id: 'telemetry-copilot', title: 'GitHub Copilot' },
       { id: 'telemetry-opencode', title: 'OpenCode' },
-      { id: 'telemetry-codex', title: 'Codex CLI' },
+      { id: 'telemetry-codex', title: 'Codex' },
     ],
     content: [
       {
@@ -1022,29 +1024,29 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       {
         type: 'heading',
         level: 3,
-        text: 'Codex CLI Metrics & Events',
+        text: 'Codex Metrics & Events',
       },
       {
         type: 'paragraph',
-        text: 'Codex CLI exports logs and traces directly. AI Observer derives the following metrics from log events:',
+        text: 'Codex exports logs, traces and (since 0.167) metrics. Codex 0.167 and later send three service names, which AI Observer counts as Codex: codex_cli_rs (the CLI\'s startup telemetry), codex-app-server (conversations of the Codex app and the CLI; originator is Codex_Desktop or codex-tui) and codex-exec-server (the app\'s command runner). AI Observer derives the following metrics from their response.completed events:',
       },
       {
         type: 'note',
-        text: 'Codex CLI Derived Metrics',
+        text: 'Codex Derived Metrics',
       },
       {
         type: 'table',
         table: {
           headers: ['Metric Name', 'Display Name', 'Unit', 'Description'],
           rows: [
-            { cells: ['codex_cli_rs.token.usage', 'Token Usage', 'tokens', 'Tokens by type (input/output/cache/reasoning/tool)'] },
-            { cells: ['codex_cli_rs.cost.usage', 'Cost', 'USD', 'Session cost in USD'] },
+            { cells: ['codex_cli_rs.token.usage', 'Token Usage', 'tokens', 'Tokens by type: input (includes cacheRead and cacheWrite), output (includes reasoning), cacheRead, cacheWrite, reasoning; by model and originator'] },
+            { cells: ['codex_cli_rs.cost.usage', 'Cost', 'USD', 'Cost in USD by model and originator; models without a price (such as codex-auto-review, the automatic approval reviewer) have none'] },
           ],
         },
       },
       {
         type: 'note',
-        text: 'Codex CLI Events',
+        text: 'Codex Events',
       },
       {
         type: 'table',

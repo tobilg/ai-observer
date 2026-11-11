@@ -81,15 +81,26 @@ func (s *DuckDBStore) SessionLogs(ctx context.Context, sessionID string) ([]Sess
 	return result, nil
 }
 
-// SessionSpans returns all spans of the traces that have a span of the
-// session, oldest first. Spans of those traces without the session ID are
-// included: the transcript decides which of them belong to the session.
+// SessionSpans returns the spans a session's transcript is built from,
+// oldest first: of the traces that have a span of the session, all spans of
+// those with GenAI spans (gen_ai.operation.name, the only spans that become
+// messages; the transcript decides which of them belong to the session, also
+// by their parents), and of the others only the spans carrying the session
+// ID, which give the session's extent. Codex records up to 100,000 spans a
+// turn, none of them GenAI spans: reading them all made transcripts of long
+// sessions time out.
 func (s *DuckDBStore) SessionSpans(ctx context.Context, sessionID string) ([]api.Span, error) {
 	query := `
 		WITH matching_traces AS (
 			SELECT DISTINCT ServiceName, TraceId
 			FROM otel_traces
 			WHERE list_contains(SessionIds, ?)
+		),
+		genai_traces AS (
+			SELECT DISTINCT t.ServiceName, t.TraceId
+			FROM otel_traces t
+			JOIN matching_traces m ON t.ServiceName = m.ServiceName AND t.TraceId = m.TraceId
+			WHERE json_exists(t.SpanAttributes, '$."gen_ai.operation.name"')
 		)
 		SELECT
 			t.Timestamp, t.TraceId, t.SpanId, t.ParentSpanId, t.TraceState,
@@ -98,7 +109,9 @@ func (s *DuckDBStore) SessionSpans(ctx context.Context, sessionID string) ([]api
 			t.StatusCode, t.StatusMessage
 		FROM otel_traces t
 		JOIN matching_traces m ON t.ServiceName = m.ServiceName AND t.TraceId = m.TraceId
+		LEFT JOIN genai_traces g ON t.ServiceName = g.ServiceName AND t.TraceId = g.TraceId
+		WHERE g.TraceId IS NOT NULL OR list_contains(t.SessionIds, ?)
 		ORDER BY t.Timestamp ASC
 	`
-	return s.scanSpans(ctx, query, sessionID)
+	return s.scanSpans(ctx, query, sessionID, sessionID)
 }
