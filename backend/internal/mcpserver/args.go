@@ -5,7 +5,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/tobilg/ai-observer/internal/tools"
@@ -82,50 +81,6 @@ func timeRange(fromArg, toArg string, now time.Time, defaultSpan time.Duration) 
 		return time.Time{}, time.Time{}, fmt.Errorf("from (%s) is after to (%s)", from.Format(time.RFC3339), to.Format(time.RFC3339))
 	}
 	return from, to, nil
-}
-
-// maxSearchTerms bounds the conditions of a search: each term is another
-// case-insensitive scan of every text in the range
-const maxSearchTerms = 10
-
-// searchTerms splits a search query into its terms: words separated by
-// whitespace, or "phrases in double quotes", which are kept as one term.
-// Repeated terms (ignoring case) are dropped.
-func searchTerms(query string) ([]string, error) {
-	var terms []string
-	seen := make(map[string]bool)
-	add := func(term string) {
-		term = strings.TrimSpace(term)
-		key := strings.ToLower(term)
-		if term == "" || seen[key] {
-			return
-		}
-		seen[key] = true
-		terms = append(terms, term)
-	}
-	var term strings.Builder
-	quoted := false
-	for _, r := range query {
-		switch {
-		case r == '"':
-			add(term.String())
-			term.Reset()
-			quoted = !quoted
-		case unicode.IsSpace(r) && !quoted:
-			add(term.String())
-			term.Reset()
-		default:
-			term.WriteRune(r)
-		}
-	}
-	add(term.String())
-	if len(terms) == 0 {
-		return nil, fmt.Errorf(`query is required: one or more words, or "a phrase" in double quotes`)
-	}
-	if len(terms) > maxSearchTerms {
-		return nil, fmt.Errorf("query has %d terms, at most %d are allowed: use fewer or more specific words", len(terms), maxSearchTerms)
-	}
-	return terms, nil
 }
 
 // toolHelp documents the tool argument

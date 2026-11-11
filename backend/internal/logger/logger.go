@@ -40,6 +40,22 @@ func InitializeText(level slog.Level) {
 	slog.SetDefault(defaultLogger)
 }
 
+// Log output formats (AI_OBSERVER_LOG_FORMAT)
+const (
+	FormatText = "text"
+	FormatJSON = "json"
+)
+
+// Init sets up the global logger with level and format: FormatJSON writes
+// one JSON object per record, anything else logfmt-style text
+func Init(level slog.Level, format string) {
+	if format == FormatJSON {
+		Initialize(level)
+		return
+	}
+	InitializeText(level)
+}
+
 // Logger returns the default logger
 func Logger() *slog.Logger {
 	defaultLoggerMu.Lock()

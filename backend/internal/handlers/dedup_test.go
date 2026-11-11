@@ -143,13 +143,13 @@ func TestOTLPRetriedBatchIsStoredOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logsHandler := compression.GzipDecompressMiddleware(http.HandlerFunc(h.HandleLogs))
+	logsHandler := compression.DecompressMiddleware(http.HandlerFunc(h.HandleLogs))
 	metricsHandler := http.HandlerFunc(h.HandleMetrics)
 
 	if rec := postOTLP(logsHandler, "/v1/logs", logs, false); rec.Code != http.StatusOK {
 		t.Fatalf("first logs export: status %d: %s", rec.Code, rec.Body)
 	}
-	storedLogs := countRows(t, h.store, "otel_logs")
+	storedLogs := countRows(t, h.db(), "otel_logs")
 	// The same batch again, once compressed: the decompressed body is compared
 	for _, gzipped := range []bool{false, true} {
 		body := logs
@@ -160,14 +160,14 @@ func TestOTLPRetriedBatchIsStoredOnce(t *testing.T) {
 			t.Fatalf("retried logs export (gzip %v): status %d: %s", gzipped, rec.Code, rec.Body)
 		}
 	}
-	if got := countRows(t, h.store, "otel_logs"); got != storedLogs {
+	if got := countRows(t, h.db(), "otel_logs"); got != storedLogs {
 		t.Errorf("otel_logs rows = %d after retries, want %d", got, storedLogs)
 	}
 
 	postOTLP(metricsHandler, "/v1/metrics", metrics, false)
-	storedMetrics := countRows(t, h.store, "otel_metrics")
+	storedMetrics := countRows(t, h.db(), "otel_metrics")
 	postOTLP(metricsHandler, "/v1/metrics", metrics, false)
-	if got := countRows(t, h.store, "otel_metrics"); got != storedMetrics {
+	if got := countRows(t, h.db(), "otel_metrics"); got != storedMetrics {
 		t.Errorf("otel_metrics rows = %d after a retry, want %d", got, storedMetrics)
 	}
 }
@@ -195,7 +195,7 @@ func TestOTLPDistinctBatchesAreStored(t *testing.T) {
 			t.Fatalf("status %d: %s", rec.Code, rec.Body)
 		}
 	}
-	if got := countRows(t, h.store, "otel_logs"); got != 2 {
+	if got := countRows(t, h.db(), "otel_logs"); got != 2 {
 		t.Errorf("otel_logs rows = %d, want 2", got)
 	}
 }
@@ -204,7 +204,7 @@ func TestOTLPDistinctBatchesAreStored(t *testing.T) {
 func TestOTLPBatchFailedThenRetriedIsStoredOnce(t *testing.T) {
 	h, cleanup := setupTestHandlers(t)
 	defer cleanup()
-	working := h.store
+	working := h.db()
 
 	broken, err := storage.NewDuckDBStore(":memory:")
 	if err != nil {
@@ -243,7 +243,7 @@ func TestOTLPConcurrentIdenticalBatchesAreStoredOnce(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	if got := countRows(t, h.store, "otel_logs"); got != 1 {
+	if got := countRows(t, h.db(), "otel_logs"); got != 1 {
 		t.Errorf("otel_logs rows = %d, want 1", got)
 	}
 }

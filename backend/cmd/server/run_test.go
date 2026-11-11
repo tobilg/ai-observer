@@ -37,6 +37,8 @@ func setupRunEnv(t *testing.T) (dbPath string, apiPort, otlpPort int) {
 	t.Setenv("AI_OBSERVER_DATABASE_PATH", dbPath)
 	t.Setenv("AI_OBSERVER_API_PORT", fmt.Sprint(apiPort))
 	t.Setenv("AI_OBSERVER_OTLP_PORT", fmt.Sprint(otlpPort))
+	// Never the default 4317, which a running AI Observer may use
+	t.Setenv("AI_OBSERVER_OTLP_GRPC_PORT", fmt.Sprint(freePort(t)))
 	t.Setenv("AI_OBSERVER_LOG_LEVEL", "ERROR")
 	t.Setenv("AI_OBSERVER_RETENTION_DAYS", "")
 	t.Setenv("AI_OBSERVER_AUTH_TOKEN", "")
@@ -267,11 +269,11 @@ func TestRunServerMCPFlag(t *testing.T) {
 }
 
 func TestParseServeAndWatchMCPFlags(t *testing.T) {
-	if mcp, err := parseServeArgs([]string{"--mcp"}); err != nil || !mcp {
-		t.Errorf("serve --mcp = %v, %v", mcp, err)
+	if parsed, err := parseServeArgs([]string{"--mcp"}); err != nil || !parsed.MCP {
+		t.Errorf("serve --mcp = %+v, %v", parsed, err)
 	}
-	if mcp, err := parseServeArgs(nil); err != nil || mcp {
-		t.Errorf("serve = %v, %v", mcp, err)
+	if parsed, err := parseServeArgs(nil); err != nil || parsed.MCP {
+		t.Errorf("serve = %+v, %v", parsed, err)
 	}
 	if _, err := parseServeArgs([]string{"extra"}); err == nil {
 		t.Error("serve accepted an argument")

@@ -1,293 +1,320 @@
-import { createElement, useEffect, useMemo, useRef, useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { createElement, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Link, useParams } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
+import { ArrowLeft, ChevronDown, ChevronUp, Clock, MessageSquare, RefreshCw, Search } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { api } from '@/lib/api'
-import { isAbortError } from '@/lib/errors'
-import { formatTimestamp } from '@/lib/utils'
-import { getServiceDisplayName, getServiceIcon } from '@/lib/metricMetadata'
+import { CopyButton } from '@/components/common/copy-button'
+import { EmptyState } from '@/components/common/empty-state'
+import { ListSkeleton } from '@/components/common/list-skeleton'
+import { QueryError } from '@/components/common/query-error'
 import { ChatBubbleView } from '@/components/sessions/ChatBubbleView'
 import { TimelineView } from '@/components/sessions/TimelineView'
-import type { TranscriptResponse } from '@/types/sessions'
-import { ArrowLeft, MessageSquare, Clock } from 'lucide-react'
-import { toast } from 'sonner'
+import { api } from '@/lib/api'
+import { errorText, isAbortError, isTimeoutError } from '@/lib/errors'
+import { formatCost, formatCount, formatTimeSpan, formatTokens } from '@/lib/format'
+import { queryKeys, useSessionTranscript, useTranscriptSearch } from '@/lib/queries'
+import {
+  appendTranscriptPage,
+  countRoles,
+  DEFAULT_TRANSCRIPT_FILTERS,
+  filterTranscript,
+  loadedMessageCount,
+  passesFilters,
+  transcriptMessages,
+  type TranscriptData,
+  type TranscriptFilters,
+} from '@/lib/transcript'
+import { formatTimestamp, cn } from '@/lib/utils'
+import { getServiceIcon } from '@/lib/metricMetadata'
+import { useBackLink } from '@/hooks/useBackLink'
+import { useDebounce } from '@/hooks/useDebounce'
+import { useDocumentTitle } from '@/hooks/useDocumentTitle'
+import { useLiveRefresh } from '@/hooks/useLiveRefresh'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
-
-type TranscriptMessageRole = 'user' | 'assistant' | 'tool_use' | 'tool_result'
-
-type TranscriptFilters = {
-  showUser: boolean
-  showAssistant: boolean
-  showToolUse: boolean
-  showToolResult: boolean
-  hideMetadataOnlyAssistant: boolean
-}
+import { useServiceNames } from '@/hooks/useServiceNames'
+import { useTelemetryStore } from '@/stores/telemetryStore'
+import type { TranscriptTotals } from '@/types/sessions'
 
 const TRANSCRIPT_FILTERS_STORAGE_KEY = 'ai-observer-session-transcript-filters-v1'
 
-const DEFAULT_FILTERS: TranscriptFilters = {
-  showUser: true,
-  showAssistant: true,
-  showToolUse: true,
-  showToolResult: true,
-  // Sane default: hide the “Response content not captured via OTLP telemetry” placeholder entries
-  hideMetadataOnlyAssistant: true,
-}
+// Typing pauses this long before the session is searched
+const SEARCH_DEBOUNCE_MS = 300
 
-function isMetadataOnlyAssistant(message: {
-  role: string
-  content: string
-  inputTokens?: number
-  outputTokens?: number
-  cacheRead?: number
-  cacheWrite?: number
-  costUsd?: number
-  durationMs?: number
-}) {
-  if (message.role !== 'assistant') return false
-  if (message.content) return false
-  return Boolean(
-    message.inputTokens
-    || message.outputTokens
-    || message.cacheRead
-    || message.cacheWrite
-    || message.costUsd
-    || message.durationMs
-  )
-}
+// The tab title shows the start of the session's title
+const DOCUMENT_TITLE_CHARS = 60
+
+const NO_MATCHES: readonly number[] = []
+const NO_TERMS: readonly string[] = []
+
+type RoleFilterKey = keyof Pick<TranscriptFilters, 'showUser' | 'showAssistant' | 'showToolUse' | 'showToolResult'>
 
 // The server stops queries after 5 seconds (504), and the client gives up on
 // a response after 30: both mean the session has too many records
-function loadErrorMessage(err: unknown): string {
-  const status = (err as { status?: number } | null)?.status
-  const timedOut = err instanceof Error && err.message.startsWith('Request timed out')
-  if (status === 504 || timedOut) {
-    return 'This session has too many records to load in time'
-  }
-  return 'Failed to load session transcript'
+function isTooLarge(err: unknown): boolean {
+  return isTimeoutError(err) || (err as { status?: number } | null)?.status === 504
 }
 
 export function SessionTranscriptPage() {
-  const { sessionId } = useParams<{ sessionId: string }>()
-  const navigate = useNavigate()
-  const [transcript, setTranscript] = useState<TranscriptResponse | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [loadingMore, setLoadingMore] = useState(false)
-  // The session shown, so a page of another session that arrives late is dropped
-  const shownSessionRef = useRef(sessionId)
+  const { sessionId = '' } = useParams<{ sessionId: string }>()
+  const back = useBackLink('/sessions')
   const [viewMode, setViewMode] = useState<'chat' | 'timeline'>('chat')
-  const [filters, setFilters] = useLocalStorage<TranscriptFilters>(TRANSCRIPT_FILTERS_STORAGE_KEY, DEFAULT_FILTERS)
 
-  // Important: keep hook order stable across loading/error states
-  const messages = useMemo(() => transcript?.messages ?? [], [transcript])
-  const effectiveLoading = Boolean(sessionId) && loading
-  const effectiveError = sessionId ? error : 'Session ID is required'
+  const backButton = (
+    <Button variant="ghost" size="sm" className="-ml-2 gap-2" asChild>
+      <Link to={back.to}>
+        <ArrowLeft className="h-4 w-4" />
+        {back.label}
+      </Link>
+    </Button>
+  )
+
+  if (!sessionId) {
+    return (
+      <div className="space-y-6">
+        {backButton}
+        <EmptyState title="Session ID is required" />
+      </div>
+    )
+  }
+
+  // Keyed by the session: search, the current match and expanded messages
+  // belong to one session
+  return (
+    <SessionTranscript
+      key={sessionId}
+      sessionId={sessionId}
+      backButton={backButton}
+      viewMode={viewMode}
+      onViewModeChange={setViewMode}
+    />
+  )
+}
+
+interface SessionTranscriptProps {
+  sessionId: string
+  backButton: ReactNode
+  viewMode: 'chat' | 'timeline'
+  onViewModeChange: (mode: 'chat' | 'timeline') => void
+}
+
+function SessionTranscript({ sessionId, backButton, viewMode, onViewModeChange }: SessionTranscriptProps) {
+  const queryClient = useQueryClient()
+  const { displayName } = useServiceNames()
+  const [filters, setFilters] = useLocalStorage<TranscriptFilters>(TRANSCRIPT_FILTERS_STORAGE_KEY, DEFAULT_TRANSCRIPT_FILTERS)
+
+  // The transcript a page (500 messages) at a time. The key holds the
+  // session, so a page of another session that arrives late is dropped.
+  const query = useSessionTranscript(sessionId)
+  const { fetchNextPage, hasNextPage, isFetchingNextPage, isFetchNextPageError } = query
+  const messages = useMemo(() => transcriptMessages(query.data), [query.data])
+  const pages = query.data?.pages
+  const first = pages?.[0]
+  const last = pages?.[pages.length - 1]
+  // The latest page has the latest totals (new messages may have come)
+  const totals = last?.totals ?? first?.totals
+  const title = first?.title || last?.title
+  const totalMessages = last?.total ?? messages.length
+  const loaded = messages.length
+  const allLoaded = !hasNextPage
+
+  useDocumentTitle(
+    title ? (title.length > DOCUMENT_TITLE_CHARS ? `${title.slice(0, DOCUMENT_TITLE_CHARS - 1)}…` : title) : 'Session',
+  )
+
+  // ---- Search over the whole session (server-side) ----
+  const [searchInput, setSearchInput] = useState('')
+  const search = useDebounce(searchInput.trim(), SEARCH_DEBOUNCE_MS)
+  const searchQuery = useTranscriptSearch(sessionId, search)
+  const searchResult = search ? searchQuery.data : undefined
+  const matches = searchResult?.matches ?? NO_MATCHES
+  const terms = searchResult?.terms ?? NO_TERMS
+  // The current match of the search: index into matches; a new search
+  // starts at its first. count changes with each navigation, which scrolls
+  // to the match again.
+  const [nav, setNav] = useState({ search: '', index: 0, count: 0 })
+  const navigated = nav.search === search
+  const matchIndex = matches.length > 0 ? Math.min(navigated ? nav.index : 0, matches.length - 1) : -1
+  const activePosition = matchIndex >= 0 ? matches[matchIndex] : undefined
+  const revealKey = activePosition === undefined ? undefined : `${search}#${navigated ? nav.count : 0}`
+
+  const goToMatch = (delta: number) => {
+    if (matches.length === 0) return
+    setNav((prev) => {
+      const current = prev.search === search ? Math.min(prev.index, matches.length - 1) : 0
+      return { search, index: (current + delta + matches.length) % matches.length, count: prev.count + 1 }
+    })
+  }
+
+  // A match on a page not loaded yet: load the pages up to it, in order
+  const matchNotLoaded = activePosition !== undefined && activePosition >= loaded
+  useEffect(() => {
+    if (matchNotLoaded && hasNextPage && !isFetchingNextPage && !isFetchNextPageError) {
+      void fetchNextPage()
+    }
+  }, [matchNotLoaded, hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage])
+
+  // ---- Live: new messages of the open session ----
+  // Its events arrive as logs, or as spans for tools whose conversations are
+  // traced. Notifications do not say which session they belong to and each
+  // request assembles the transcript again, so the page waits longer than
+  // list pages before it asks.
+  const logsUpdateCount = useTelemetryStore((state) => state.logsUpdateCount)
+  const spansUpdateCount = useTelemetryStore((state) => state.spansUpdateCount)
+  const refreshKey = useLiveRefresh({
+    enabled: true,
+    intervalMs: 15_000,
+    updateCount: logsUpdateCount + spansUpdateCount,
+    debounceMs: 2000,
+    maxWaitMs: 10_000,
+  })
+  const liveRef = useRef({ data: query.data, hasNextPage, isFetching: query.isFetching, search })
+  useEffect(() => {
+    liveRef.current = { data: query.data, hasNextPage, isFetching: query.isFetching, search }
+  })
 
   useEffect(() => {
-    if (!sessionId) {
+    const { data, hasNextPage: more, isFetching, search: currentSearch } = liveRef.current
+    // With further pages to load, new messages come with the last of them;
+    // a request in flight brings them too
+    if (refreshKey === 0 || !data || more || isFetching) {
       return
     }
-
-    shownSessionRef.current = sessionId
-    const abortController = new AbortController()
-
-    const fetchTranscript = async () => {
-      setLoading(true)
-      setError(null)
-      setTranscript(null)
-      try {
-        const data = await api.getSessionTranscript(sessionId, { signal: abortController.signal })
-        if (abortController.signal.aborted) {
-          return // another session was opened
+    // Ask for the messages after the loaded ones and append them as a page,
+    // instead of refetching every page of a long session
+    const cursor = String(loadedMessageCount(data))
+    const controller = new AbortController()
+    api.getSessionTranscript(sessionId, { signal: controller.signal }, cursor)
+      .then((page) => {
+        if (controller.signal.aborted || page.messages.length === 0) {
+          return
         }
-        setTranscript(data)
-      } catch (err) {
-        if (isAbortError(err)) {
-          return // another session was opened
+        queryClient.setQueryData<TranscriptData>(queryKeys.sessions.transcript(sessionId), (old) =>
+          appendTranscriptPage(old, page, cursor),
+        )
+        if (currentSearch) {
+          // The new messages may match
+          void queryClient.invalidateQueries({ queryKey: queryKeys.sessions.transcriptSearch(sessionId, currentSearch) })
         }
-        console.error('Failed to fetch transcript:', err)
-        const message = loadErrorMessage(err)
-        setError(message)
-        toast.error(message)
-      } finally {
-        if (!abortController.signal.aborted) {
-          setLoading(false)
-        }
-      }
-    }
-
-    fetchTranscript()
-    return () => abortController.abort()
-  }, [sessionId])
-
-  const loadMore = async () => {
-    if (!sessionId || !transcript?.nextCursor || loadingMore) return
-    setLoadingMore(true)
-    try {
-      const page = await api.getSessionTranscript(sessionId, undefined, transcript.nextCursor)
-      if (shownSessionRef.current !== sessionId) return
-      setTranscript((prev) => prev && {
-        ...prev,
-        messages: [...prev.messages, ...page.messages],
-        total: page.total,
-        hasMore: page.hasMore,
-        nextCursor: page.nextCursor,
       })
-    } catch (err) {
-      console.error('Failed to fetch more of the transcript:', err)
-      toast.error('Failed to load more messages')
-    } finally {
-      setLoadingMore(false)
-    }
-  }
+      .catch((err) => {
+        if (!isAbortError(err)) {
+          console.error('Failed to refresh transcript:', err) // the next refresh tries again
+        }
+      })
+    return () => controller.abort()
+  }, [refreshKey, sessionId, queryClient])
 
-  const counts = useMemo(() => {
-    const result: Record<TranscriptMessageRole, number> = {
-      user: 0,
-      assistant: 0,
-      tool_use: 0,
-      tool_result: 0,
-    }
-    let metadataOnlyAssistant = 0
+  // ---- Filters ----
+  const loadedCounts = useMemo(() => countRoles(messages), [messages])
+  // The current match is shown even when the filters hide its role
+  const filtered = useMemo(() => filterTranscript(messages, filters, activePosition), [messages, filters, activePosition])
+  const matchHiddenByFilters =
+    activePosition !== undefined && activePosition < loaded && !passesFilters(messages[activePosition], filters)
 
-    for (const m of messages) {
-      const role = m.role as TranscriptMessageRole
-      if (role in result) {
-        result[role]++
-      }
-      if (isMetadataOnlyAssistant(m)) {
-        metadataOnlyAssistant++
-      }
-    }
+  const toggleRole = (key: RoleFilterKey) => setFilters((prev) => ({ ...prev, [key]: !prev[key] }))
+  const resetFilters = () => setFilters(DEFAULT_TRANSCRIPT_FILTERS)
+  const filtersChanged = JSON.stringify(filters) !== JSON.stringify(DEFAULT_TRANSCRIPT_FILTERS)
 
-    return { ...result, metadataOnlyAssistant }
-  }, [messages])
+  // Counts of the whole session where the totals have them; the others are
+  // of the loaded messages until all are loaded
+  const loadedSuffix = allLoaded ? '' : ' loaded'
+  const roleFilters: Array<{ key: RoleFilterKey; label: string; count: number; suffix: string }> = [
+    { key: 'showUser', label: 'User', count: totals?.userMessages ?? loadedCounts.user, suffix: totals ? '' : loadedSuffix },
+    { key: 'showAssistant', label: 'Assistant', count: totals?.assistantMessages ?? loadedCounts.assistant, suffix: totals ? '' : loadedSuffix },
+    { key: 'showToolUse', label: 'Tool calls', count: totals?.toolCalls ?? loadedCounts.tool_use, suffix: totals ? '' : loadedSuffix },
+    { key: 'showToolResult', label: 'Tool results', count: loadedCounts.tool_result, suffix: loadedSuffix },
+  ]
 
-  const filteredMessages = useMemo(() => {
-    return messages.filter((m) => {
-      const role = m.role as TranscriptMessageRole
-      if (role === 'user' && !filters.showUser) return false
-      if (role === 'assistant' && !filters.showAssistant) return false
-      if (role === 'tool_use' && !filters.showToolUse) return false
-      if (role === 'tool_result' && !filters.showToolResult) return false
-
-      if (filters.hideMetadataOnlyAssistant && isMetadataOnlyAssistant(m)) return false
-      return true
-    })
-  }, [messages, filters])
-
-  const formatDuration = (startTime: string, lastTime: string) => {
-    const start = new Date(startTime)
-    const end = new Date(lastTime)
-    const durationMs = end.getTime() - start.getTime()
-
-    if (durationMs < 60000) {
-      return `${Math.round(durationMs / 1000)} seconds`
-    } else if (durationMs < 3600000) {
-      const mins = Math.round(durationMs / 60000)
-      return `${mins} minute${mins !== 1 ? 's' : ''}`
-    } else {
-      const hours = Math.floor(durationMs / 3600000)
-      const mins = Math.round((durationMs % 3600000) / 60000)
-      return `${hours}h ${mins}m`
-    }
-  }
-
-  if (effectiveLoading) {
+  if (query.isPending) {
     return (
       <div className="space-y-6">
-        <Button
-          variant="ghost"
-          onClick={() => navigate('/sessions')}
-          className="gap-2"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back to Sessions
-        </Button>
-        <div className="py-8 text-center text-muted-foreground">
-          Loading transcript...
-        </div>
-      </div>
-    )
-  }
-
-  if (effectiveError || !transcript) {
-    return (
-      <div className="space-y-6">
-        <Button
-          variant="ghost"
-          onClick={() => navigate('/sessions')}
-          className="gap-2"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back to Sessions
-        </Button>
+        {backButton}
         <Card>
-          <CardContent className="py-8">
-            <div className="text-center text-muted-foreground">
-              {effectiveError || 'Session not found'}
-            </div>
-          </CardContent>
+          <CardHeader className="space-y-3">
+            <Skeleton className="h-7 w-2/3" />
+            <Skeleton className="h-4 w-1/3" />
+          </CardHeader>
         </Card>
+        <ListSkeleton rows={6} rowClassName="h-20" label="Loading transcript" />
       </div>
     )
   }
 
-  const serviceIcon = getServiceIcon(transcript.serviceName)
-  const totalMessages = transcript.total ?? transcript.messages.length
-  const hasMore = Boolean(transcript.hasMore && transcript.nextCursor)
-
-  const setRoleFilter = (key: keyof Pick<TranscriptFilters, 'showUser' | 'showAssistant' | 'showToolUse' | 'showToolResult'>) => {
-    setFilters((prev) => ({ ...prev, [key]: !prev[key] }))
+  if (query.isError && !query.data) {
+    const tooLarge = isTooLarge(query.error)
+    return (
+      <div className="space-y-6">
+        {backButton}
+        <QueryError
+          error={tooLarge ? null : query.error}
+          title="Couldn't load the session transcript"
+          fallback={tooLarge ? 'This session has too many records to load in time' : 'Failed to load session transcript'}
+          onRetry={() => query.refetch()}
+          retrying={query.isFetching}
+        />
+      </div>
+    )
   }
 
-  const resetFilters = () => setFilters(DEFAULT_FILTERS)
+  if (!first) {
+    return null
+  }
+
+  const serviceIcon = getServiceIcon(first.serviceName)
+
+  let searchStatus: string | null = null
+  if (search) {
+    if (searchQuery.isError) {
+      searchStatus = errorText(searchQuery.error, 'The search failed')
+    } else if (!searchResult) {
+      searchStatus = 'Searching…'
+    } else if (matches.length === 0) {
+      searchStatus = 'No matches'
+    } else {
+      searchStatus = `Match ${formatCount(matchIndex + 1)} of ${formatCount(matches.length)}`
+      if (matchNotLoaded) searchStatus += ' · loading its page…'
+      else if (matchHiddenByFilters) searchStatus += ' · shown although the filters hide it'
+    }
+  }
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <Button
-          variant="ghost"
-          onClick={() => navigate('/sessions')}
-          className="gap-2"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back to Sessions
-        </Button>
-      </div>
+      {backButton}
 
-      {/* Session Info */}
+      {/* Session info */}
       <Card>
         <CardHeader>
-          <div className="flex items-center gap-4">
-            {createElement(serviceIcon, { className: 'h-10 w-10 text-muted-foreground' })}
-            <div className="flex-1">
-              <CardTitle className="flex items-center gap-2">
-                <span className="font-mono text-base truncate max-w-[400px]">
-                  {transcript.sessionId}
-                </span>
-                <Badge variant="outline">
-                  {getServiceDisplayName(transcript.serviceName)}
-                </Badge>
-              </CardTitle>
-              <div className="flex items-center gap-4 mt-2 text-sm text-muted-foreground">
+          <div className="flex items-start gap-4">
+            {createElement(serviceIcon, { className: 'h-10 w-10 shrink-0 text-muted-foreground', 'aria-hidden': true })}
+            <div className="min-w-0 flex-1 space-y-2">
+              <h1 className="line-clamp-3 break-words text-xl font-semibold leading-snug" title={title}>
+                {title || 'Session'}
+              </h1>
+              <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                <span className="break-all font-mono">{first.sessionId}</span>
+                <CopyButton value={first.sessionId} label="Copy session ID" className="-my-1 size-7" />
+                <Badge variant="outline">{displayName(first.serviceName)}</Badge>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
                 <span className="flex items-center gap-1">
-                  <Clock className="h-4 w-4" />
-                  {formatTimestamp(transcript.startTime)}
+                  <Clock className="h-4 w-4" aria-hidden="true" />
+                  {formatTimestamp(first.startTime)}
                 </span>
-                <span>
-                  Duration: {formatDuration(transcript.startTime, transcript.lastTime)}
-                </span>
+                <span>Duration: {formatTimeSpan(first.startTime, last?.lastTime ?? first.lastTime, 'long')}</span>
                 <span className="flex items-center gap-1">
-                  <MessageSquare className="h-4 w-4" />
-                  {totalMessages.toLocaleString('en-US')} messages
+                  <MessageSquare className="h-4 w-4" aria-hidden="true" />
+                  <span>{formatCount(totalMessages)} messages</span>
                 </span>
               </div>
+              {totals && <SessionTotals totals={totals} />}
             </div>
           </div>
         </CardHeader>
@@ -296,76 +323,102 @@ export function SessionTranscriptPage() {
       {/* Transcript */}
       <Card className="overflow-hidden">
         <CardHeader>
-          <div className="flex items-center justify-between gap-4 flex-wrap">
+          <div className="flex flex-wrap items-center justify-between gap-4">
             <CardTitle>Transcript</CardTitle>
-            <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as 'chat' | 'timeline')}>
+            <Tabs value={viewMode} onValueChange={(v) => onViewModeChange(v as 'chat' | 'timeline')}>
               <TabsList>
                 <TabsTrigger value="chat">Chat</TabsTrigger>
                 <TabsTrigger value="timeline">Timeline</TabsTrigger>
               </TabsList>
             </Tabs>
           </div>
-          {transcript.messages.length > 0 && (
+          {messages.length > 0 && (
             <>
               <Separator className="my-3" />
-              <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-3">
+                {/* Search */}
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-sm text-muted-foreground mr-1">Show:</span>
+                  <div className="relative min-w-48 flex-1">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+                    <Input
+                      type="search"
+                      value={searchInput}
+                      onChange={(e) => setSearchInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          goToMatch(e.shiftKey ? -1 : 1)
+                        }
+                      }}
+                      placeholder='Search this session: words or "a phrase"'
+                      aria-label="Search this session"
+                      className="pl-9"
+                    />
+                  </div>
+                  {searchStatus && (
+                    <span className={cn('text-sm tabular-nums', searchQuery.isError ? 'text-error' : 'text-muted-foreground')} role="status">
+                      {searchStatus}
+                    </span>
+                  )}
                   <Button
                     type="button"
-                    size="sm"
-                    variant={filters.showUser ? 'secondary' : 'outline'}
-                    onClick={() => setRoleFilter('showUser')}
-                    disabled={counts.user === 0}
+                    variant="outline"
+                    size="icon-sm"
+                    aria-label="Previous match"
+                    disabled={matches.length === 0}
+                    onClick={() => goToMatch(-1)}
                   >
-                    User ({counts.user})
+                    <ChevronUp className="h-4 w-4" />
                   </Button>
                   <Button
                     type="button"
-                    size="sm"
-                    variant={filters.showAssistant ? 'secondary' : 'outline'}
-                    onClick={() => setRoleFilter('showAssistant')}
-                    disabled={counts.assistant === 0}
+                    variant="outline"
+                    size="icon-sm"
+                    aria-label="Next match"
+                    disabled={matches.length === 0}
+                    onClick={() => goToMatch(1)}
                   >
-                    Assistant ({counts.assistant})
+                    <ChevronDown className="h-4 w-4" />
                   </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={filters.showToolUse ? 'secondary' : 'outline'}
-                    onClick={() => setRoleFilter('showToolUse')}
-                    disabled={counts.tool_use === 0}
-                  >
-                    Tool calls ({counts.tool_use})
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={filters.showToolResult ? 'secondary' : 'outline'}
-                    onClick={() => setRoleFilter('showToolResult')}
-                    disabled={counts.tool_result === 0}
-                  >
-                    Tool results ({counts.tool_result})
-                  </Button>
+                </div>
+
+                {/* Filters */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="mr-1 text-sm text-muted-foreground">Show:</span>
+                  {roleFilters.map(({ key, label, count, suffix }) => (
+                    <Button
+                      key={key}
+                      type="button"
+                      size="sm"
+                      variant={filters[key] ? 'secondary' : 'outline'}
+                      aria-pressed={filters[key]}
+                      onClick={() => toggleRole(key)}
+                      disabled={count === 0}
+                    >
+                      {label} ({formatCount(count)}{suffix})
+                    </Button>
+                  ))}
 
                   <Separator orientation="vertical" className="mx-1 h-6" />
 
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={filters.hideMetadataOnlyAssistant ? 'secondary' : 'outline'}
-                    onClick={() => setFilters((prev) => ({ ...prev, hideMetadataOnlyAssistant: !prev.hideMetadataOnlyAssistant }))}
-                    disabled={counts.metadataOnlyAssistant === 0}
-                  >
-                    Hide metadata-only ({counts.metadataOnlyAssistant})
-                  </Button>
+                  <div className="flex items-center gap-2" title="Assistant responses of OTLP events, which carry tokens and cost but no content">
+                    <Switch
+                      id="transcript-show-metadata-only"
+                      checked={!filters.hideMetadataOnlyAssistant}
+                      onCheckedChange={(checked) => setFilters((prev) => ({ ...prev, hideMetadataOnlyAssistant: !checked }))}
+                      disabled={loadedCounts.metadataOnlyAssistant === 0}
+                    />
+                    <Label htmlFor="transcript-show-metadata-only" className="font-normal">
+                      Show responses without content ({formatCount(loadedCounts.metadataOnlyAssistant)}{loadedSuffix})
+                    </Label>
+                  </div>
 
                   <Button
                     type="button"
                     size="sm"
                     variant="ghost"
                     onClick={resetFilters}
-                    disabled={JSON.stringify(filters) === JSON.stringify(DEFAULT_FILTERS)}
+                    disabled={!filtersChanged}
                     className="ml-auto"
                   >
                     Reset
@@ -373,44 +426,102 @@ export function SessionTranscriptPage() {
                 </div>
 
                 <div className="text-xs text-muted-foreground">
-                  Showing {filteredMessages.length.toLocaleString('en-US')} of {transcript.messages.length.toLocaleString('en-US')}
-                  {hasMore ? ` loaded messages (${totalMessages.toLocaleString('en-US')} in the session)` : ' messages'}
+                  Showing {formatCount(filtered.messages.length)} of {formatCount(loaded)}
+                  {allLoaded ? ' messages' : ` loaded messages (${formatCount(totalMessages)} in the session)`}
                 </div>
               </div>
             </>
           )}
         </CardHeader>
         <CardContent>
-          {transcript.messages.length === 0 ? (
-            <div className="py-8 text-center text-muted-foreground">
-              No messages in this session
-            </div>
-          ) : filteredMessages.length === 0 ? (
-            <div className="py-8 text-center text-muted-foreground space-y-3">
-              <div>No messages match your current filters.</div>
-              <div>
+          {messages.length === 0 ? (
+            <EmptyState title="No messages in this session" icon={MessageSquare} />
+          ) : filtered.messages.length === 0 ? (
+            <EmptyState
+              title="No messages match your current filters."
+              action={
                 <Button type="button" variant="outline" size="sm" onClick={resetFilters}>
                   Reset filters
                 </Button>
-              </div>
-            </div>
+              }
+            />
           ) : viewMode === 'chat' ? (
-            <ChatBubbleView messages={filteredMessages} />
+            <ChatBubbleView
+              messages={filtered.messages}
+              positions={filtered.positions}
+              highlight={terms}
+              activePosition={activePosition}
+              revealKey={revealKey}
+            />
           ) : (
-            <TimelineView messages={filteredMessages} />
+            <TimelineView
+              messages={filtered.messages}
+              positions={filtered.positions}
+              highlight={terms}
+              activePosition={activePosition}
+              revealKey={revealKey}
+            />
           )}
-          {hasMore && (
+          {!allLoaded && (
             <div className="mt-6 flex flex-col items-center gap-2 text-sm text-muted-foreground">
               <span>
-                Loaded the first {transcript.messages.length.toLocaleString('en-US')} of {totalMessages.toLocaleString('en-US')} messages
+                Loaded the first {formatCount(loaded)} of {formatCount(totalMessages)} messages
               </span>
-              <Button type="button" variant="outline" size="sm" onClick={loadMore} disabled={loadingMore}>
-                {loadingMore ? 'Loading...' : 'Load more messages'}
+              {isFetchNextPageError && (
+                <span className="text-error" role="alert">
+                  {isTooLarge(query.error)
+                    ? 'This session has too many records to load in time'
+                    : errorText(query.error, 'Failed to load more messages')}
+                </span>
+              )}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                onClick={() => fetchNextPage()}
+                disabled={isFetchingNextPage}
+              >
+                {isFetchNextPageError && <RefreshCw className="h-3 w-3" />}
+                {isFetchingNextPage ? 'Loading...' : isFetchNextPageError ? 'Try again' : 'Load more messages'}
               </Button>
             </div>
           )}
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+// Usage and activity of the whole session (not only the loaded pages)
+function SessionTotals({ totals }: { totals: TranscriptTotals }) {
+  const hasUsage = totals.costUsd > 0 || totals.inputTokens > 0 || totals.outputTokens > 0
+  const items: Array<[string, ReactNode]> = [
+    ...(hasUsage
+      ? ([
+          ['Cost', formatCost(totals.costUsd)],
+          ['Input', formatTokens(totals.inputTokens)],
+          ['Output', formatTokens(totals.outputTokens)],
+          ['Cache read', formatTokens(totals.cacheRead)],
+          ['Cache write', formatTokens(totals.cacheWrite)],
+        ] as Array<[string, ReactNode]>)
+      : []),
+    ['Prompts', formatCount(totals.userMessages)],
+    ['Responses', formatCount(totals.assistantMessages)],
+    ['Tool calls', formatCount(totals.toolCalls)],
+    [
+      'Tool errors',
+      <span className={cn(totals.toolErrors > 0 && 'text-error')}>{formatCount(totals.toolErrors)}</span>,
+    ],
+  ]
+  return (
+    <dl className="grid grid-cols-2 gap-x-6 gap-y-2 pt-2 text-sm sm:grid-cols-3 lg:grid-cols-5" aria-label="Session totals">
+      {items.map(([label, value]) => (
+        <div key={label} className="min-w-0">
+          <dt className="text-xs text-muted-foreground">{label}</dt>
+          <dd className="font-medium tabular-nums">{value}</dd>
+        </div>
+      ))}
+    </dl>
   )
 }

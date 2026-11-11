@@ -2,24 +2,25 @@ import { useMemo, useCallback } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { BarChart as BarChartIcon } from 'lucide-react'
 import type { WidgetConfig, TimeSelection } from '@/types/dashboard'
-import { isAbsoluteTimeSelection } from '@/types/dashboard'
 import { MetricBarChart, buildChartData, formatTickLabel } from '@/components/charts'
-import { useMetricData } from '@/contexts/metricData'
+import { useMetricData, useRefreshMetricData } from '@/contexts/metricData'
 import {
   getMetricMetadata,
   getSeriesLabel,
   formatMetricValue,
   getSourceDisplayName,
-  getServiceDisplayName,
+  isAdditiveStat,
+  statUnit,
 } from '@/lib/metricMetadata'
+import { timeSelectionDurationSeconds, timeSelectionIntervalSeconds } from '@/lib/timeUtils'
+import { useServiceNames } from '@/hooks/useServiceNames'
+import { WidgetError, WidgetLoading } from './WidgetStatus'
 
 interface MetricChartWidgetProps {
   widgetId: string
   title: string
   config: WidgetConfig
   timeSelection: TimeSelection
-  fromTime: Date
-  toTime: Date
 }
 
 export function MetricChartWidget({
@@ -27,24 +28,13 @@ export function MetricChartWidget({
   title,
   config,
   timeSelection,
-  fromTime,
-  toTime,
 }: MetricChartWidgetProps) {
-  // Calculate duration and interval seconds from time selection
-  const { durationSeconds, intervalSeconds } = useMemo(() => {
-    if (isAbsoluteTimeSelection(timeSelection)) {
-      return {
-        durationSeconds: (toTime.getTime() - fromTime.getTime()) / 1000,
-        intervalSeconds: timeSelection.range.intervalSeconds,
-      }
-    }
-    return {
-      durationSeconds: timeSelection.timeframe.durationSeconds,
-      intervalSeconds: timeSelection.timeframe.intervalSeconds,
-    }
-  }, [timeSelection, fromTime, toTime])
+  const durationSeconds = timeSelectionDurationSeconds(timeSelection)
+  const intervalSeconds = timeSelectionIntervalSeconds(timeSelection)
   // Get data from context (batched fetch)
-  const { series, loading, error } = useMetricData(widgetId)
+  const { series, loading, refreshing, error, stat } = useMetricData(widgetId)
+  const refreshAll = useRefreshMetricData()
+  const { displayName } = useServiceNames()
 
   // Get metadata for the configured metric
   const metadata = useMemo(
@@ -79,13 +69,14 @@ export function MetricChartWidget({
     [metadata, config.breakdownAttribute]
   )
 
-  // Format Y-axis values using metadata
+  // Format Y-axis values using metadata; a histogram's count is a number
+  const unit = useMemo(() => (metadata ? statUnit(metadata.unit, stat) : null), [metadata, stat])
   const formatYAxis = useCallback(
     (value: number) => {
-      if (!metadata) return value.toString()
-      return formatMetricValue(value, metadata.unit)
+      if (!unit) return value.toString()
+      return formatMetricValue(value, unit)
     },
-    [metadata]
+    [unit]
   )
 
   const { data: chartData, series: chartSeries, colorMap } = useMemo(
@@ -105,19 +96,17 @@ export function MetricChartWidget({
     (value: number | undefined, name: string | undefined): [string, string] => {
       if (value === undefined) return ['—', name || 'value']
       const displayLabel = name ? keyToLabelMap.get(name) || name : 'value'
-      const formattedValue = metadata
-        ? formatMetricValue(value, metadata.unit)
-        : value.toString()
+      const formattedValue = unit ? formatMetricValue(value, unit) : value.toString()
       return [formattedValue, displayLabel]
     },
-    [metadata, keyToLabelMap]
+    [unit, keyToLabelMap]
   )
 
   // Get service name from config, series labels, or fall back to source display name
   const serviceName = (() => {
-    if (config.service) return getServiceDisplayName(config.service)
+    if (config.service) return displayName(config.service)
     for (const s of series) {
-      if (s.labels?.service) return getServiceDisplayName(s.labels.service)
+      if (s.labels?.service) return displayName(s.labels.service)
     }
     // Fall back to source display name from metric metadata
     if (metadata?.source && metadata.source !== 'unknown') {
@@ -135,23 +124,22 @@ export function MetricChartWidget({
           </span>
           <CardTitle className="text-base font-medium truncate">
             {title}
+            {stat && <span className="ml-1 text-xs font-normal text-muted-foreground">({stat})</span>}
           </CardTitle>
         </div>
-        <BarChartIcon className="h-4 w-4 text-muted-foreground shrink-0" />
+        <BarChartIcon className="h-4 w-4 text-muted-foreground shrink-0" aria-hidden="true" />
       </CardHeader>
       <CardContent className="flex-1 p-3 pt-2">
-        {loading ? (
-          <div className="h-32 flex items-center justify-center text-muted-foreground text-sm">
-            Loading...
-          </div>
+        {!config.metricName ? (
+          <div className="h-32 flex items-center justify-center text-muted-foreground text-sm">Not configured</div>
+        ) : loading ? (
+          <WidgetLoading className="h-32" />
         ) : error ? (
-          <div className="h-32 flex items-center justify-center text-destructive text-sm text-center px-2">
-            {error}
+          <div className="h-32 flex items-center justify-center px-2">
+            <WidgetError message={error} onRetry={refreshAll} retrying={refreshing} />
           </div>
-        ) : chartData.length === 0 || !config.metricName ? (
-          <div className="h-32 flex items-center justify-center text-muted-foreground text-sm">
-            {config.metricName ? 'No data' : 'Not configured'}
-          </div>
+        ) : chartData.length === 0 ? (
+          <div className="h-32 flex items-center justify-center text-muted-foreground text-sm">No data in the selected range</div>
         ) : (
           <div className="h-32">
             <MetricBarChart
@@ -161,7 +149,8 @@ export function MetricChartWidget({
               formatYAxis={formatYAxis}
               tooltipFormatter={tooltipFormatter}
               compact={true}
-              stacked={config.chartStacked ?? true}
+              // Averages and percentiles do not add up
+              stacked={isAdditiveStat(stat) && (config.chartStacked ?? true)}
             />
           </div>
         )}

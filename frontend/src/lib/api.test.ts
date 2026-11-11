@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { api } from './api'
+import { api, REQUEST_TIMEOUT_MS } from './api'
+import { HTTPError, TimeoutError } from './errors'
 
 describe('api', () => {
   beforeEach(() => {
@@ -14,12 +15,18 @@ describe('api', () => {
     } as Response)
   }
 
-  // Mock error response for all retry attempts (1 initial + 5 retries = 6 total)
-  const mockFetchErrorWithRetries = (status: number) => {
-    for (let i = 0; i < 6; i++) {
-      mockFetchResponse({}, false, status)
-    }
+  // fetch that never answers, but rejects like fetch when its signal aborts
+  const mockHangingFetch = () => {
+    vi.mocked(global.fetch).mockImplementationOnce((_url, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => {
+        const error = new Error('The operation was aborted')
+        error.name = 'AbortError'
+        reject(error)
+      })
+    }))
   }
+
+  const withSignal = expect.objectContaining({ signal: expect.any(AbortSignal) })
 
   describe('getStats', () => {
     it('fetches stats from /api/stats', async () => {
@@ -51,31 +58,36 @@ describe('api', () => {
       )
     })
 
-    it('throws on error response', async () => {
-      // 500 errors are retryable, so mock all 6 retry attempts
-      mockFetchErrorWithRetries(500)
+    it('throws on error response without retrying (TanStack Query retries)', async () => {
+      mockFetchResponse({}, false, 500)
 
       await expect(api.getStats()).rejects.toThrow('HTTP error! status: 500')
+      expect(global.fetch).toHaveBeenCalledTimes(1)
     })
 
-    it('reports a request that times out as an error, not an abort', async () => {
+    it('reports a request that times out as a TimeoutError, not an abort', async () => {
       vi.useFakeTimers()
       try {
-        vi.mocked(global.fetch).mockImplementationOnce((_url, init) => new Promise((_resolve, reject) => {
-          init?.signal?.addEventListener('abort', () => {
-            const error = new Error('The operation was aborted')
-            error.name = 'AbortError'
-            reject(error)
-          })
-        }))
+        mockHangingFetch()
 
         const result = api.getStats({}, { signal: new AbortController().signal })
-        const assertion = expect(result).rejects.toThrow('Request timed out')
-        await vi.advanceTimersByTimeAsync(30000)
+        const assertion = expect(result).rejects.toThrow(TimeoutError)
+        await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS)
         await assertion
+        await expect(result).rejects.toThrow('Request timed out after 30 seconds')
       } finally {
         vi.useRealTimers()
       }
+    })
+
+    it("passes on the caller's abort", async () => {
+      mockHangingFetch()
+      const controller = new AbortController()
+
+      const result = api.getStats({}, { signal: controller.signal })
+      controller.abort()
+
+      await expect(result).rejects.toMatchObject({ name: 'AbortError' })
     })
 
     it('does not retry a query that timed out on the server', async () => {
@@ -105,7 +117,7 @@ describe('api', () => {
 
       const result = await api.getTraces()
 
-      expect(global.fetch).toHaveBeenCalledWith('/api/traces?limit=10&offset=0', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+      expect(global.fetch).toHaveBeenCalledWith('/api/traces?limit=10', expect.objectContaining({ signal: expect.any(AbortSignal) }))
       expect(result).toEqual(mockTraces)
     })
 
@@ -133,7 +145,7 @@ describe('api', () => {
       await api.getTraces({ service: 'my-service' })
 
       expect(global.fetch).toHaveBeenCalledWith(
-        '/api/traces?service=my-service&limit=10&offset=0',
+        '/api/traces?service=my-service&limit=10',
         expect.objectContaining({ signal: expect.any(AbortSignal) })
       )
     })
@@ -170,7 +182,7 @@ describe('api', () => {
 
       await api.getMetrics()
 
-      expect(global.fetch).toHaveBeenCalledWith('/api/metrics?limit=10&offset=0', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+      expect(global.fetch).toHaveBeenCalledWith('/api/metrics?limit=10', expect.objectContaining({ signal: expect.any(AbortSignal) }))
     })
 
     it('fetches metrics with name and type filters', async () => {
@@ -183,7 +195,7 @@ describe('api', () => {
       })
 
       expect(global.fetch).toHaveBeenCalledWith(
-        '/api/metrics?service=my-service&name=http_requests_total&type=counter&limit=10&offset=0',
+        '/api/metrics?service=my-service&name=http_requests_total&type=counter&limit=10',
         expect.objectContaining({ signal: expect.any(AbortSignal) })
       )
     })
@@ -274,7 +286,7 @@ describe('api', () => {
 
       await api.getLogs()
 
-      expect(global.fetch).toHaveBeenCalledWith('/api/logs?limit=10&offset=0', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+      expect(global.fetch).toHaveBeenCalledWith('/api/logs?limit=10', expect.objectContaining({ signal: expect.any(AbortSignal) }))
     })
 
     it('fetches logs with all filters', async () => {
@@ -295,6 +307,24 @@ describe('api', () => {
         '/api/logs?service=my-service&severity=ERROR&traceId=trace-123&search=error+message&from=2024-01-01T00%3A00%3A00Z&to=2024-01-02T00%3A00%3A00Z&limit=50&offset=25',
         expect.objectContaining({ signal: expect.any(AbortSignal) })
       )
+    })
+  })
+
+  describe('list pagination', () => {
+    it('sends the cursor without an offset', async () => {
+      mockFetchResponse({ sessions: [], total: 0, hasMore: false })
+
+      await api.getSessions({ limit: 20, cursor: 'abc' })
+
+      expect(global.fetch).toHaveBeenCalledWith('/api/sessions?limit=20&cursor=abc', withSignal)
+    })
+
+    it('sends an offset only when given', async () => {
+      mockFetchResponse({ logs: [], total: 0, hasMore: false })
+
+      await api.getLogs({ offset: 0 })
+
+      expect(global.fetch).toHaveBeenCalledWith('/api/logs?limit=10&offset=0', withSignal)
     })
   })
 
@@ -379,7 +409,7 @@ describe('api', () => {
             { id: 'q2', name: 'metric_b', service: 'my-service' },
           ],
         }),
-        signal: undefined,
+        signal: expect.any(AbortSignal),
       })
       expect(result).toEqual(mockResponse)
     })
@@ -394,6 +424,30 @@ describe('api', () => {
           queries: [],
         })
       ).rejects.toThrow('HTTP error! status: 500')
+    })
+
+    it('times out like other reads', async () => {
+      vi.useFakeTimers()
+      try {
+        mockHangingFetch()
+
+        const result = api.getBatchMetricSeries({ from: 'a', to: 'b', queries: [] })
+        const assertion = expect(result).rejects.toThrow(TimeoutError)
+        await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS)
+        await assertion
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('passes the caller signal on', async () => {
+      mockHangingFetch()
+      const controller = new AbortController()
+
+      const result = api.getBatchMetricSeries({ from: 'a', to: 'b', queries: [] }, { signal: controller.signal })
+      controller.abort()
+
+      await expect(result).rejects.toMatchObject({ name: 'AbortError' })
     })
   })
 
@@ -418,6 +472,7 @@ describe('api', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: 'New Dashboard' }),
+        signal: expect.any(AbortSignal),
       })
       expect(result).toEqual(mockDashboard)
     })
@@ -442,7 +497,7 @@ describe('api', () => {
 
       const result = await api.getDefaultDashboard()
 
-      expect(global.fetch).toHaveBeenCalledWith('/api/dashboards/default')
+      expect(global.fetch).toHaveBeenCalledWith('/api/dashboards/default', withSignal)
       expect(result).toEqual(mockDashboard)
     })
 
@@ -472,6 +527,7 @@ describe('api', () => {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: 'Updated Name' }),
+        signal: expect.any(AbortSignal),
       })
       expect(result).toEqual(mockDashboard)
     })
@@ -491,6 +547,7 @@ describe('api', () => {
 
       expect(global.fetch).toHaveBeenCalledWith('/api/dashboards/d1', {
         method: 'DELETE',
+        signal: expect.any(AbortSignal),
       })
     })
 
@@ -507,6 +564,7 @@ describe('api', () => {
 
       expect(global.fetch).toHaveBeenCalledWith('/api/dashboards/d1/default', {
         method: 'PUT',
+        signal: expect.any(AbortSignal),
       })
     })
 
@@ -527,6 +585,8 @@ describe('api', () => {
         widgetType: 'stats',
         gridColumn: 0,
         gridRow: 0,
+        colSpan: 1,
+        rowSpan: 1,
       })
 
       expect(global.fetch).toHaveBeenCalledWith('/api/dashboards/d1/widgets', {
@@ -537,7 +597,10 @@ describe('api', () => {
           widgetType: 'stats',
           gridColumn: 0,
           gridRow: 0,
+          colSpan: 1,
+          rowSpan: 1,
         }),
+        signal: expect.any(AbortSignal),
       })
       expect(result).toEqual(mockWidget)
     })
@@ -546,7 +609,7 @@ describe('api', () => {
       mockFetchResponse({}, false, 400)
 
       await expect(
-        api.createWidget('d1', { title: '', widgetType: 'stats', gridColumn: 0, gridRow: 0 })
+        api.createWidget('d1', { title: '', widgetType: 'stats', gridColumn: 0, gridRow: 0, colSpan: 1, rowSpan: 1 })
       ).rejects.toThrow('HTTP error! status: 400')
     })
 
@@ -560,6 +623,7 @@ describe('api', () => {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: 'Updated Widget' }),
+        signal: expect.any(AbortSignal),
       })
       expect(result).toEqual(mockWidget)
     })
@@ -586,6 +650,7 @@ describe('api', () => {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ positions }),
+        signal: expect.any(AbortSignal),
       })
     })
 
@@ -602,6 +667,7 @@ describe('api', () => {
 
       expect(global.fetch).toHaveBeenCalledWith('/api/dashboards/d1/widgets/w1', {
         method: 'DELETE',
+        signal: expect.any(AbortSignal),
       })
     })
 
@@ -612,55 +678,13 @@ describe('api', () => {
     })
   })
 
-  describe('request deduplication', () => {
-    const series = { series: [] }
-
-    it('keeps a shared request running when the first caller aborts', async () => {
-      let resolveFetch: (value: Response) => void = () => {}
-      vi.mocked(global.fetch).mockImplementationOnce(
-        () => new Promise<Response>((resolve) => { resolveFetch = resolve })
-      )
-      const first = new AbortController()
-      const params = { name: 'dedup.abort', from: 'a', to: 'b' }
-
-      const firstRequest = api.getMetricSeries(params, { signal: first.signal })
-      const secondRequest = api.getMetricSeries(params)
-      first.abort()
-
-      await expect(firstRequest).rejects.toMatchObject({ name: 'AbortError' })
-      resolveFetch({ ok: true, status: 200, json: async () => series } as Response)
-      await expect(secondRequest).resolves.toEqual(series)
-      expect(global.fetch).toHaveBeenCalledTimes(1)
-    })
-
-    it('aborts the shared request when every caller aborted', async () => {
-      let fetchSignal: AbortSignal | undefined
-      vi.mocked(global.fetch).mockImplementationOnce((_url, init) => {
-        fetchSignal = init?.signal ?? undefined
-        return new Promise<Response>(() => {})
-      })
-      const a = new AbortController()
-      const b = new AbortController()
-      const params = { name: 'dedup.all', from: 'a', to: 'b' }
-
-      const requests = [
-        api.getMetricSeries(params, { signal: a.signal }),
-        api.getMetricSeries(params, { signal: b.signal }),
-      ]
-      a.abort()
-      expect(fetchSignal?.aborted).toBe(false)
-      b.abort()
-
-      await Promise.allSettled(requests)
-      expect(fetchSignal?.aborted).toBe(true)
-    })
-  })
-
   describe('error handling', () => {
     it('explains how to sign in on 401', async () => {
       mockFetchResponse({}, false, 401)
 
-      await expect(api.getStats()).rejects.toThrow('?token=')
+      const error = await api.getStats().catch((err: unknown) => err)
+      expect(error).toBeInstanceOf(HTTPError)
+      expect(error).toMatchObject({ status: 401, message: expect.stringContaining('?token=') })
       expect(global.fetch).toHaveBeenCalledTimes(1)
     })
 
@@ -683,16 +707,27 @@ describe('api', () => {
       expect(global.fetch).toHaveBeenCalledTimes(1)
     })
 
-    it('includes the server message once retries are used up', async () => {
-      for (let i = 0; i < 6; i++) {
-        mockFetchResponse({ error: 'Internal Server Error', message: 'database is locked' }, false, 500)
-      }
-      vi.useFakeTimers()
-      const request = api.getStats().catch((err: Error) => err)
-      await vi.runAllTimersAsync()
-      vi.useRealTimers()
+    it('keeps the server message of a server error', async () => {
+      mockFetchResponse({ error: 'Internal Server Error', message: 'database is locked' }, false, 500)
 
-      expect(await request).toHaveProperty('message', 'HTTP error! status: 500: database is locked')
+      const error = await api.getStats().catch((err: unknown) => err)
+
+      expect(error).toHaveProperty('message', 'HTTP error! status: 500: database is locked')
+      expect(error).toHaveProperty('serverMessage', 'database is locked')
+    })
+
+    it('times out a change', async () => {
+      vi.useFakeTimers()
+      try {
+        mockHangingFetch()
+
+        const result = api.deleteWidget('d1', 'w1')
+        const assertion = expect(result).rejects.toThrow(TimeoutError)
+        await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS)
+        await assertion
+      } finally {
+        vi.useRealTimers()
+      }
     })
 
     it('throws on 404', async () => {
@@ -712,9 +747,10 @@ describe('api', () => {
     })
 
     it('propagates network errors', async () => {
-      vi.mocked(global.fetch).mockRejectedValueOnce(new Error('Network error'))
+      vi.mocked(global.fetch).mockRejectedValueOnce(new TypeError('Failed to fetch'))
 
-      await expect(api.getStats()).rejects.toThrow('Network error')
+      await expect(api.getStats()).rejects.toThrow(TypeError)
+      expect(global.fetch).toHaveBeenCalledTimes(1)
     })
   })
 })

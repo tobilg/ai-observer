@@ -27,14 +27,17 @@ type codexIncrementalParser struct{}
 func (p *codexIncrementalParser) ParseIncremental(ctx context.Context, filePath string, state *storage.ImportState) (*IncrementalResult, error) {
 	workingState := *state
 
-	file, err := os.Open(filePath)
+	// The file, or its compressed form (backfill or startup scan of a file
+	// Codex compressed), which is read as a stream from the start
+	content, _, err := importer.OpenSessionFile(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("opening file: %w", err)
 	}
-	defer file.Close()
+	defer content.Close()
+	file, seekable := content.(*os.File)
 
 	// Seek to last known position
-	if workingState.ByteOffset > 0 {
+	if seekable && workingState.ByteOffset > 0 {
 		if _, err := file.Seek(workingState.ByteOffset, 0); err != nil {
 			return nil, fmt.Errorf("seeking to offset %d: %w", workingState.ByteOffset, err)
 		}
@@ -51,17 +54,31 @@ func (p *codexIncrementalParser) ParseIncremental(ctx context.Context, filePath 
 		parserState.MessageIndex = workingState.MessageCount
 	}
 
-	if parserState.Repository == nil {
-		parserState.Repository = &importer.RepositoryMetadata{}
-		recoverTokens := parserState.LastTokenCount == nil
-		recoverModel := parserState.CurrentModel == ""
-		recoverSession := parserState.SessionID == ""
-		if err := replayRepositoryPrefix(ctx, file, workingState.ByteOffset, func(line []byte) {
+	// Rebuild from the part of the file read before what this state lacks:
+	// the repository context and the session's context when an import read
+	// it, and the open tool calls when an earlier version kept the state
+	replayRepository := parserState.Repository == nil
+	replayCalls := !parserState.ToolCallsTracked && workingState.ByteOffset > 0
+	if replayRepository || replayCalls {
+		if replayRepository {
+			parserState.Repository = &importer.RepositoryMetadata{}
+		}
+		recoverTokens := replayRepository && parserState.LastTokenCount == nil
+		recoverModel := replayRepository && parserState.CurrentModel == ""
+		recoverSession := replayRepository && parserState.SessionID == ""
+		observe := func(line []byte) {
 			var entry importer.CodexJSONLEntry
 			if json.Unmarshal(line, &entry) != nil {
 				return
 			}
-			if _, err := time.Parse(time.RFC3339Nano, entry.Timestamp); err != nil {
+			ts, err := time.Parse(time.RFC3339Nano, entry.Timestamp)
+			if err != nil {
+				return
+			}
+			if replayCalls {
+				importer.ObserveCodexToolCalls(entry, ts, &parserState.CodexState)
+			}
+			if !replayRepository {
 				return
 			}
 			parserState.Repository.ObserveCodex(entry)
@@ -87,10 +104,22 @@ func (p *codexIncrementalParser) ParseIncremental(ctx context.Context, filePath 
 					parserState.LastTokenCount = event.Info.TotalTokenUsage
 				}
 			}
-		}); err != nil {
+		}
+		if seekable {
+			err = replayRepositoryPrefix(ctx, file, workingState.ByteOffset, observe)
+		} else {
+			err = replayLines(ctx, io.LimitReader(content, workingState.ByteOffset), observe)
+		}
+		if err != nil {
 			return nil, err
 		}
+	} else if !seekable && workingState.ByteOffset > 0 {
+		// Skip what was read before
+		if _, err := io.CopyN(io.Discard, content, workingState.ByteOffset); err != nil && err != io.EOF {
+			return nil, fmt.Errorf("skipping to offset %d: %w", workingState.ByteOffset, err)
+		}
 	}
+	parserState.ToolCallsTracked = true
 
 	// Use filename as fallback session ID
 	if parserState.SessionID == "" {
@@ -98,7 +127,7 @@ func (p *codexIncrementalParser) ParseIncremental(ctx context.Context, filePath 
 	}
 
 	result := &IncrementalResult{}
-	reader := bufio.NewReaderSize(file, 1024*1024)
+	reader := bufio.NewReaderSize(content, 1024*1024)
 	committedBytes := int64(0)
 
 readLoop:

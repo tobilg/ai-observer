@@ -1,338 +1,230 @@
-import { useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { useId, useMemo } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Select } from '@/components/ui/select'
-import { DateRangePicker } from '@/components/common/date-range-picker'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { DataPagination } from '@/components/common/data-pagination'
-import { api } from '@/lib/api'
-import { isAbortError } from '@/lib/errors'
-import { formatTimestamp, getSeverityColor, cn } from '@/lib/utils'
-import { getServiceDisplayName, serviceFilterOptions } from '@/lib/metricMetadata'
-import type { LogRecord } from '@/types/logs'
-import { ChevronDown, ChevronUp, RefreshCw } from 'lucide-react'
-import { useTelemetryStore } from '@/stores/telemetryStore'
+import { EmptyState } from '@/components/common/empty-state'
+import { ListSkeleton, Refreshing } from '@/components/common/list-skeleton'
+import { FilterBar, NewItemsButton, SearchFilter, ServiceFilter, TimeRangeFilter } from '@/components/common/list-filters'
+import { PageHeader } from '@/components/common/page-header'
+import { QueryError } from '@/components/common/query-error'
+import { LogRow } from '@/components/logs/LogRow'
 import { useDebounce } from '@/hooks/useDebounce'
+import { useExpandedRow } from '@/hooks/useExpandedRow'
+import { useListLinkState } from '@/hooks/useListLinkState'
+import { useLiveInvalidate } from '@/hooks/useLiveInvalidate'
+import { useNewItems } from '@/hooks/useNewItems'
 import { usePagination } from '@/hooks/usePagination'
-import { useTimeSelection } from '@/hooks/useTimeSelection'
-import { isAbsoluteTimeSelection, type TimeSelection } from '@/types/dashboard'
-import { toast } from 'sonner'
-
-const SEVERITY_OPTIONS = ['', 'TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL']
+import { useServiceNames } from '@/hooks/useServiceNames'
+import { useUrlState } from '@/hooks/useUrlState'
+import { formatCount } from '@/lib/format'
+import { countLogs, queryKeys, useLogLevels, useLogs, useServices } from '@/lib/queries'
+import { logRowKey, uniqueRowKeys } from '@/lib/rowKeys'
+import { useTelemetryStore } from '@/stores/telemetryStore'
+import { ScrollText, X } from 'lucide-react'
 
 // localStorage keys
 const TIME_SELECTION_STORAGE_KEY = 'ai-observer-logs-timeselection'
 const PAGE_SIZE_STORAGE_KEY = 'ai-observer-logs-pageSize'
 
+// URL parameters and their defaults
+const FILTER_DEFAULTS = { service: '', severity: '', search: '', traceId: '' }
+
+const SEARCH_DEBOUNCE_MS = 200
+
+// The first page of a relative range is fetched again this often, so the
+// window keeps moving (older logs drop out of the total) while nobody looks
+// at new ones; new logs are only shown on request ("N new logs"), so rows
+// don't move under the reader
+const WINDOW_REFRESH_MS = 60_000
+
+// Severity levels in their order; the options are the levels of the logs in
+// the selected range (GET /api/logs/levels), these while those load
+const SEVERITY_ORDER = ['TRACE', 'DEBUG', 'INFO', 'WARN', 'WARNING', 'ERROR', 'FATAL']
+const FALLBACK_LEVELS = ['TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL']
+
+function severityRank(level: string): number {
+  const index = SEVERITY_ORDER.indexOf(level.toUpperCase())
+  return index === -1 ? SEVERITY_ORDER.length : index
+}
+
 export function LogsPage() {
-  const [searchParams, setSearchParams] = useSearchParams()
-  const [logs, setLogs] = useState<LogRecord[]>([])
-  const [total, setTotal] = useState(0)
-  const [services, setServices] = useState<string[]>([])
-  const [loading, setLoading] = useState(true)
-  const [service, setService] = useState(searchParams.get('service') || '')
-  const [severity, setSeverity] = useState(searchParams.get('severity') || '')
-  const [search, setSearch] = useState(searchParams.get('search') || '')
-  const debouncedSearch = useDebounce(search, 200)
-  const [expandedLog, setExpandedLog] = useState<number | null>(null)
+  const timeRangeId = useId()
+  const rowIdPrefix = useId()
+  const linkState = useListLinkState()
+  const { displayName } = useServiceNames()
 
-  // Time selection with localStorage persistence
-  const { timeSelection, setTimeSelection, fromTime, toTime } = useTimeSelection({
-    storageKey: TIME_SELECTION_STORAGE_KEY,
-    searchParams,
+  const { filters, setFilters, time } = useUrlState({
+    filters: FILTER_DEFAULTS,
+    time: { storageKey: TIME_SELECTION_STORAGE_KEY },
+  })
+  const search = useDebounce(filters.search, SEARCH_DEBOUNCE_MS)
+  const queryFilters = useMemo(
+    () => ({ service: filters.service, severity: filters.severity, search, traceId: filters.traceId || undefined }),
+    [filters.service, filters.severity, search, filters.traceId],
+  )
+
+  // Cursors belong to one filtered list: any change (also from the URL,
+  // e.g. browser Back) starts at the first page
+  const listKey = JSON.stringify([queryFilters, time.timeKey])
+  const pagination = usePagination({ defaultPageSize: 10, storageKey: PAGE_SIZE_STORAGE_KEY, resetOn: listKey })
+  const page = useMemo(() => ({ limit: pagination.pageSize, cursor: pagination.cursor }), [pagination.pageSize, pagination.cursor])
+
+  const logs = useLogs(queryFilters, time.range, page)
+  const services = useServices()
+  const levels = useLogLevels(time.range)
+
+  const firstPageKey = queryKeys.logs.list(queryFilters, time.range, { limit: pagination.pageSize })
+  const countNew = useMemo(() => countLogs(queryFilters), [queryFilters])
+  const newLogs = useNewItems({
+    name: 'logs',
+    filters: queryFilters,
+    count: countNew,
+    anchor: logs.dataUpdatedAt,
+    recentTimes: useTelemetryStore((s) => s.recentLogTimes),
+    enabled: !time.isAbsoluteRange,
+    refetch: firstPageKey,
+    onSeen: pagination.resetToFirstPage,
+  })
+  useLiveInvalidate({
+    queryKey: firstPageKey,
+    enabled: pagination.page === 1 && !time.isAbsoluteRange && newLogs.count === 0,
+    intervalMs: WINDOW_REFRESH_MS,
+    updateCount: 0,
   })
 
-  // Pagination state with localStorage persistence
-  const {
-    page,
-    pageSize,
-    cursor,
-    hasNext,
-    setNextCursor,
-    nextPage,
-    previousPage,
-    setPageSize,
-    resetToFirstPage,
-  } = usePagination({
-    defaultPageSize: 10,
-    storageKey: PAGE_SIZE_STORAGE_KEY,
-  })
+  const [expanded, toggleExpanded] = useExpandedRow(`${listKey}|${pagination.pageSize}|${pagination.cursor ?? ''}`)
 
-  // Anchor time for tracking new logs (used by refresh button)
-  const [anchorTime, setAnchorTime] = useState<Date>(() => new Date())
-
-  // Real-time logs from WebSocket (kept separate, not merged)
-  const recentLogTimes = useTelemetryStore((state) => state.recentLogTimes)
-  const clearRecentLogs = useTelemetryStore((state) => state.clearRecentLogs)
-
-  // Count new logs since anchor time
-  const newLogsCount = recentLogTimes.filter((time) => time > anchorTime.getTime()).length
-
-  useEffect(() => {
-    const fetchServices = async () => {
-      try {
-        const data = await api.getServices()
-        setServices(data.services ?? [])
-      } catch (err) {
-        console.error('Failed to fetch services:', err)
-        toast.error('Failed to fetch services')
-      }
+  const severityOptions = useMemo(() => {
+    const counts = levels.data
+    const names = counts ? Object.keys(counts).filter(Boolean) : [...FALLBACK_LEVELS]
+    // A level from the URL stays selectable even without logs in the range
+    if (filters.severity && !names.includes(filters.severity)) {
+      names.push(filters.severity)
     }
-    fetchServices()
-  }, [])
+    names.sort((a, b) => severityRank(a) - severityRank(b) || a.localeCompare(b))
+    return names.map((name) => ({
+      value: name,
+      label: counts?.[name] !== undefined ? `${name} (${formatCount(counts[name])})` : name,
+    }))
+  }, [levels.data, filters.severity])
 
-  useEffect(() => {
-    const abortController = new AbortController()
+  const loaded = logs.data?.logs
+  const rows = useMemo(() => loaded ?? [], [loaded])
+  const rowKeys = useMemo(() => uniqueRowKeys(rows, logRowKey), [rows])
+  const filtered = Boolean(filters.service || filters.severity || search || filters.traceId)
 
-    const fetchLogs = async () => {
-      setLoading(true)
-      try {
-        const data = await api.getLogs({
-          service: service || undefined,
-          severity: severity || undefined,
-          search: debouncedSearch || undefined,
-          from: fromTime?.toISOString(),
-          to: toTime.toISOString(),
-          limit: pageSize,
-          cursor,
-        }, { signal: abortController.signal })
-        setLogs(data.logs ?? [])
-        setTotal(data.total ?? 0)
-        setNextCursor(data.nextCursor)
-      } catch (err) {
-        if (isAbortError(err)) {
-          return // Ignore abort errors
+  let content
+  if (logs.isPending) {
+    content = <ListSkeleton rows={8} rowClassName="h-9" label="Loading logs" />
+  } else if (logs.isError && !logs.data) {
+    content = <QueryError error={logs.error} title="Couldn't load logs" onRetry={() => void logs.refetch()} retrying={logs.isFetching} />
+  } else if (rows.length === 0) {
+    content = (
+      <EmptyState
+        icon={ScrollText}
+        title={filtered ? 'No logs match these filters' : 'No logs in this time range'}
+        description={
+          filtered
+            ? 'Try another service, level or search, or a longer time range.'
+            : 'Choose a longer time range, or configure your AI coding tool to send log telemetry.'
         }
-        console.error('Failed to fetch logs:', err)
-        toast.error('Failed to fetch logs')
-      } finally {
-        if (!abortController.signal.aborted) {
-          setLoading(false)
-        }
-      }
-    }
-    fetchLogs()
-
-    return () => abortController.abort()
-  }, [service, severity, debouncedSearch, fromTime, toTime, pageSize, cursor, setNextCursor])
-
-  const handleTimeSelectionChange = (selection: TimeSelection) => {
-    resetToFirstPage()
-    setTimeSelection(selection) // Also persists to localStorage
-
-    // Update URL params
-    const params: Record<string, string> = {}
-    if (service) params.service = service
-    if (severity) params.severity = severity
-    if (search) params.search = search
-    if (isAbsoluteTimeSelection(selection)) {
-      params.from = selection.range.from.toISOString()
-      params.to = selection.range.to.toISOString()
-    } else {
-      params.timeframe = selection.timeframe.value
-    }
-    setSearchParams(params)
-  }
-
-  const handleRefresh = () => {
-    setAnchorTime(new Date())
-    resetToFirstPage()
-    clearRecentLogs()
+      />
+    )
+  } else {
+    content = (
+      <>
+        {logs.isError && (
+          <QueryError error={logs.error} title="Couldn't refresh logs" onRetry={() => void logs.refetch()} retrying={logs.isFetching} />
+        )}
+        <Refreshing active={logs.isPlaceholderData}>
+          <ul className="space-y-1 font-mono text-sm" aria-label="Logs">
+            {rows.map((log, index) => {
+              const key = rowKeys[index]
+              return (
+                <LogRow
+                  key={key}
+                  log={log}
+                  detailsId={`${rowIdPrefix}-log-${index}`}
+                  expanded={expanded === key}
+                  onToggle={() => toggleExpanded(key)}
+                  serviceName={displayName(log.serviceName)}
+                  linkState={linkState}
+                />
+              )
+            })}
+          </ul>
+        </Refreshing>
+        <DataPagination
+          page={pagination.page}
+          pageSize={pagination.pageSize}
+          itemCount={rows.length}
+          total={logs.data?.total ?? 0}
+          // A placeholder's nextCursor belongs to the page shown before
+          hasNext={!logs.isPlaceholderData && Boolean(logs.data?.nextCursor)}
+          onFirst={pagination.resetToFirstPage}
+          onPrevious={pagination.previousPage}
+          onNext={() => pagination.nextPage(logs.isPlaceholderData ? undefined : logs.data?.nextCursor)}
+          onPageSizeChange={pagination.setPageSize}
+        />
+      </>
+    )
   }
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Logs</h1>
-        <p className="text-muted-foreground">
-          View and search log records from your AI coding tools
-        </p>
-      </div>
+      <PageHeader title="Logs" description="View and search logs from your AI coding tools" />
 
-      {/* Filters */}
       <Card>
         <CardContent className="pt-6">
-          <div className="flex gap-4">
-            <div className="flex items-center gap-2">
-              <label className="text-sm text-muted-foreground whitespace-nowrap">Timeframe</label>
-              <DateRangePicker
-                value={timeSelection}
-                onChange={handleTimeSelectionChange}
-              />
-            </div>
-            <div className="w-48">
-              <Select value={service} onChange={(e) => {
-                resetToFirstPage()
-                setService(e.target.value)
-              }}>
-                <option value="">All Services</option>
-                {serviceFilterOptions(services).map((o) => (
-                  <option key={o.value} value={o.value}>
+          <FilterBar>
+            <TimeRangeFilter id={timeRangeId} value={time.timeSelection} onChange={time.setTimeSelection} />
+            <ServiceFilter value={filters.service} onChange={(service) => setFilters({ service })} services={services.data ?? []} />
+            <div className="w-full md:w-40 *:w-full">
+              <NativeSelect
+                aria-label="Level"
+                className="h-10"
+                value={filters.severity}
+                onChange={(e) => setFilters({ severity: e.target.value })}
+              >
+                <NativeSelectOption value="">All Levels</NativeSelectOption>
+                {severityOptions.map((o) => (
+                  <NativeSelectOption key={o.value} value={o.value}>
                     {o.label}
-                  </option>
+                  </NativeSelectOption>
                 ))}
-              </Select>
+              </NativeSelect>
             </div>
-            <div className="w-32">
-              <Select value={severity} onChange={(e) => {
-                resetToFirstPage()
-                setSeverity(e.target.value)
-              }}>
-                <option value="">All Levels</option>
-                {SEVERITY_OPTIONS.filter(Boolean).map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </Select>
+            <SearchFilter
+              label="Search logs"
+              placeholder="Search log messages..."
+              value={filters.search}
+              onChange={(value) => setFilters({ search: value })}
+            />
+          </FilterBar>
+          {filters.traceId && (
+            // Set by the trace detail page's "View logs" link
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+              <span className="text-muted-foreground">Logs of trace</span>
+              <Badge variant="secondary" className="max-w-full break-all font-mono">
+                {filters.traceId}
+              </Badge>
+              <Button variant="ghost" size="sm" className="h-7 gap-1 px-2" onClick={() => setFilters({ traceId: '' })}>
+                <X className="h-3 w-3" />
+                Clear trace filter
+              </Button>
             </div>
-            <div className="flex-1">
-              <Input
-                placeholder="Search log messages..."
-                value={search}
-                onChange={(e) => {
-                  resetToFirstPage()
-                  setSearch(e.target.value)
-                }}
-              />
-            </div>
-          </div>
+          )}
         </CardContent>
       </Card>
 
-      {/* Logs List */}
       <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <CardTitle>Logs</CardTitle>
-            {newLogsCount > 0 && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleRefresh}
-                className="gap-2"
-              >
-                <RefreshCw className="h-3 w-3" />
-                {newLogsCount} new {newLogsCount === 1 ? 'log' : 'logs'}
-              </Button>
-            )}
-          </div>
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 space-y-0">
+          <CardTitle>Logs</CardTitle>
+          {newLogs.count > 0 && <NewItemsButton count={newLogs.count} noun={['log', 'logs']} onClick={newLogs.markSeen} />}
         </CardHeader>
-        <CardContent>
-          {loading ? (
-            <div className="py-8 text-center text-muted-foreground">
-              Loading...
-            </div>
-          ) : logs.length === 0 ? (
-            <div className="py-8 text-center text-muted-foreground">
-              No logs found. Try adjusting your filters or configure your AI coding tool to send log telemetry.
-            </div>
-          ) : (
-            <>
-              <div className="space-y-1 font-mono text-sm">
-                {logs.map((log, i) => {
-                  // Create a unique key from timestamp, service, and trace context
-                  const logKey = `${log.timestamp}-${log.serviceName}-${log.traceId || ''}-${log.spanId || ''}-${i}`
-                  return (
-                  <div key={logKey} className="border-b last:border-0">
-                    <div
-                      className={cn(
-                        'flex items-start gap-3 py-2 cursor-pointer hover:bg-accent/50 rounded px-2 -mx-2',
-                        expandedLog === i && 'bg-accent/50'
-                      )}
-                      onClick={() => setExpandedLog(expandedLog === i ? null : i)}
-                      role="button"
-                      tabIndex={0}
-                      aria-expanded={expandedLog === i}
-                      aria-controls={`log-details-${i}`}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault()
-                          setExpandedLog(expandedLog === i ? null : i)
-                        }
-                      }}
-                    >
-                      <div className="w-40 shrink-0 text-muted-foreground text-xs">
-                        {formatTimestamp(log.timestamp)}
-                      </div>
-                      <Badge
-                        className={cn('shrink-0', getSeverityColor(log.severityText || ''))}
-                      >
-                        {log.severityText || 'UNKNOWN'}
-                      </Badge>
-                      <div className="w-28 shrink-0 text-muted-foreground truncate">
-                        {getServiceDisplayName(log.serviceName)}
-                      </div>
-                      <div className="flex-1 truncate">{log.body}</div>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-5 w-5 shrink-0"
-                        aria-hidden="true"
-                        tabIndex={-1}
-                      >
-                        {expandedLog === i ? (
-                          <ChevronUp className="h-3 w-3" />
-                        ) : (
-                          <ChevronDown className="h-3 w-3" />
-                        )}
-                      </Button>
-                    </div>
-
-                    {expandedLog === i && (
-                      <div id={`log-details-${i}`} className="pl-44 pb-4 space-y-2">
-                        <div className="bg-muted rounded p-3">
-                          <p className="whitespace-pre-wrap break-all">{log.body}</p>
-                        </div>
-
-                        {log.traceId && (
-                          <div className="text-xs">
-                            <span className="text-muted-foreground">Trace ID: </span>
-                            <span className="font-mono">{log.traceId}</span>
-                          </div>
-                        )}
-
-                        {log.spanId && (
-                          <div className="text-xs">
-                            <span className="text-muted-foreground">Span ID: </span>
-                            <span className="font-mono">{log.spanId}</span>
-                          </div>
-                        )}
-
-                        {log.logAttributes && Object.keys(log.logAttributes).length > 0 && (
-                          <div className="text-xs">
-                            <p className="text-muted-foreground mb-1">Attributes:</p>
-                            <div className="bg-muted rounded p-2 space-y-1">
-                              {Object.entries(log.logAttributes).map(([key, value]) => (
-                                <div key={key}>
-                                  <span className="text-muted-foreground">{key}: </span>
-                                  <span>{value}</span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )})}
-              </div>
-              <DataPagination
-                page={page}
-                pageSize={pageSize}
-                itemCount={logs.length}
-                total={total}
-                hasNext={hasNext}
-                onFirst={resetToFirstPage}
-                onPrevious={previousPage}
-                onNext={nextPage}
-                onPageSizeChange={setPageSize}
-              />
-            </>
-          )}
-        </CardContent>
+        <CardContent>{content}</CardContent>
       </Card>
     </div>
   )

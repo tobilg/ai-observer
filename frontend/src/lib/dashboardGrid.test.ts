@@ -1,5 +1,16 @@
 import { describe, it, expect } from 'vitest'
-import { availableColumns, getEmptyCells, nextFreePosition, reorderWidgets, widgetFitError } from './dashboardGrid'
+import {
+  applyPositions,
+  availableColumns,
+  compactRowPositions,
+  dropOnWidgetPositions,
+  getEmptyCells,
+  insertRowPositions,
+  nextFreePosition,
+  reorderWidgets,
+  widgetFitError,
+  wouldOverlap,
+} from './dashboardGrid'
 import type { DashboardWidget } from '@/types/dashboard'
 
 function widget(id: string, gridColumn: number, gridRow: number, colSpan = 1, rowSpan = 1): DashboardWidget {
@@ -75,5 +86,54 @@ describe('dashboardGrid', () => {
     expect(pos(across, 'c')).toEqual([1, 1])
 
     expect(reorderWidgets([a], 'a', 'missing')).toEqual([a])
+  })
+})
+
+describe('dashboardGrid layout changes', () => {
+  it('checks every row a tall widget spans', () => {
+    // A widget below the first row leaves one column at column 3 in row 2
+    const others = [widget('below', 4, 2)]
+    expect(widgetFitError(others, { gridRow: 1, gridColumn: 3 }, 2, 1)).toBeNull()
+    expect(widgetFitError(others, { gridRow: 1, gridColumn: 3 }, 2, 2)).toBe(
+      'This widget requires 2 columns in each of 2 rows, but only 1 column is available at this position.'
+    )
+  })
+
+  it('closes empty rows in order', () => {
+    expect(compactRowPositions([widget('a', 1, 1), widget('b', 1, 3), widget('c', 2, 3), widget('d', 1, 6)])).toEqual([
+      { id: 'b', gridRow: 2, gridColumn: 1 },
+      { id: 'c', gridRow: 2, gridColumn: 2 },
+      { id: 'd', gridRow: 3, gridColumn: 1 },
+    ])
+    expect(compactRowPositions([widget('a', 1, 1), widget('b', 1, 2)])).toEqual([])
+  })
+
+  it('moves the widgets at and below an inserted row down', () => {
+    expect(insertRowPositions([widget('a', 1, 1), widget('b', 2, 2), widget('c', 1, 3)], 2)).toEqual([
+      { id: 'b', gridRow: 3, gridColumn: 2 },
+      { id: 'c', gridRow: 4, gridColumn: 1 },
+    ])
+  })
+
+  it('applies positions', () => {
+    const moved = applyPositions([widget('a', 1, 1), widget('b', 2, 1)], [{ id: 'b', gridRow: 4, gridColumn: 3 }])
+    expect(moved.map((w) => [w.id, w.gridColumn, w.gridRow])).toEqual([['a', 1, 1], ['b', 3, 4]])
+  })
+
+  it('refuses drops that overlap or leave the grid', () => {
+    const widgets = [widget('a', 1, 1), widget('b', 2, 1, 3), widget('c', 1, 2, 4)]
+    expect(wouldOverlap({ colSpan: 2, rowSpan: 1 }, { gridRow: 3, gridColumn: 3 }, widgets, [])).toBe(false)
+    expect(wouldOverlap({ colSpan: 2, rowSpan: 1 }, { gridRow: 3, gridColumn: 4 }, widgets, [])).toBe(true)
+    expect(wouldOverlap({ colSpan: 1, rowSpan: 1 }, { gridRow: 2, gridColumn: 2 }, widgets, [])).toBe(true)
+    expect(wouldOverlap({ colSpan: 1, rowSpan: 1 }, { gridRow: 2, gridColumn: 2 }, widgets, ['c'])).toBe(false)
+
+    // Swapping across rows
+    expect(dropOnWidgetPositions([widget('x', 1, 1), widget('y', 1, 2)], 'x', 'y')).toEqual([
+      { id: 'x', gridRow: 2, gridColumn: 1 },
+      { id: 'y', gridRow: 1, gridColumn: 1 },
+    ])
+    // Moving x right onto y would put it onto z
+    expect(dropOnWidgetPositions([widget('x', 1, 1), widget('z', 2, 1, 2), widget('y', 4, 1)], 'x', 'y')).toBeNull()
+    expect(dropOnWidgetPositions(widgets, 'a', 'a')).toBeNull()
   })
 })

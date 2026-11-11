@@ -1,373 +1,383 @@
-import { useEffect, useState, useMemo, useCallback } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useMemo, useCallback } from 'react'
+import { BarChart3, Layers, LineChart } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
-import { Select } from '@/components/ui/select'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Label } from '@/components/ui/label'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { DateRangePicker } from '@/components/common/date-range-picker'
-import { Layers, BarChart3 } from 'lucide-react'
-import { api } from '@/lib/api'
-import { isAbortError } from '@/lib/errors'
-import type { TimeSeries } from '@/types/metrics'
-import { MetricBarChart, buildChartData, formatTickLabel } from '@/components/charts'
+import { EmptyState } from '@/components/common/empty-state'
+import { Refreshing } from '@/components/common/list-skeleton'
 import { MetricOptions } from '@/components/common/metric-options'
+import { PageHeader } from '@/components/common/page-header'
+import { QueryError } from '@/components/common/query-error'
+import { MetricBarChart, buildChartData, formatTickLabel } from '@/components/charts'
+import { LiveIndicator } from '@/components/metrics/LiveIndicator'
+import { MetricPointsTable } from '@/components/metrics/MetricPointsTable'
+import { useLiveInvalidate } from '@/hooks/useLiveInvalidate'
+import { useServiceNames } from '@/hooks/useServiceNames'
+import { useUrlState } from '@/hooks/useUrlState'
+import { browserTimeZone } from '@/lib/timeZone'
 import { groupMetricsBySource, isMetricForService } from '@/lib/metricGroups'
-import { useTelemetryStore } from '@/stores/telemetryStore'
-import { useLiveRefresh } from '@/hooks/useLiveRefresh'
 import {
+  HISTOGRAM_STATS,
+  breakdownOptions,
+  defaultHistogramStat,
+  formatMetricValue,
   getMetricMetadata,
   getSeriesLabel,
-  formatMetricValue,
-  serviceFilterOptions,
+  isAdditiveStat,
+  isHistogramMetric,
+  statParam,
+  statUnit,
 } from '@/lib/metricMetadata'
-import { toast } from 'sonner'
-import {
-  isAbsoluteTimeSelection,
-  getTimeSelectionLabel,
-  type TimeSelection,
-} from '@/types/dashboard'
+import { queryKeys, useMetricAttributeKeys, useMetricNames, useMetricSeries, useServices } from '@/lib/queries'
 import { formatIntervalSeconds } from '@/lib/utils'
-import { useTimeSelection } from '@/hooks/useTimeSelection'
+import { useTelemetryStore } from '@/stores/telemetryStore'
+import { getTimeSelectionLabel } from '@/types/dashboard'
 
 const TIME_SELECTION_STORAGE_KEY = 'ai-observer-metrics-timeselection'
 
+// Kept in the URL, so a reload or a shared link shows the same chart.
+// groupBy: the attribute series are broken down by ('' = type); stat: the
+// statistic of a histogram metric ('' = the metric's default).
+const FILTER_DEFAULTS = { service: '', metric: '', groupBy: '', stat: '', stacked: true, view: 'chart' }
+
 export function MetricsPage() {
-  const [searchParams, setSearchParams] = useSearchParams()
-  const [metricNames, setMetricNames] = useState<string[]>([])
-  const [selectedMetric, setSelectedMetric] = useState<string>('')
-  const [series, setSeries] = useState<TimeSeries[]>([])
-  const [services, setServices] = useState<string[]>([])
-  const [selectedService, setSelectedService] = useState<string>('')
-  const [loading, setLoading] = useState(false)
-  const [stacked, setStacked] = useState(true)
-
-  // Time selection with localStorage persistence
-  const { timeSelection, setTimeSelection, fromTime, toTime, isAbsoluteRange, intervalSeconds, tickInterval } = useTimeSelection({
-    storageKey: TIME_SELECTION_STORAGE_KEY,
-    searchParams,
-    defaultTimeframe: '15m',
+  const { filters, setFilters, time } = useUrlState({
+    filters: FILTER_DEFAULTS,
+    time: { storageKey: TIME_SELECTION_STORAGE_KEY, defaultTimeframe: '15m' },
   })
+  const { service, metric, groupBy, stacked } = filters
+  const view = filters.view === 'points' && metric ? 'points' : 'chart'
+  const { timeSelection, intervalSeconds, tickInterval, durationSeconds, isAbsoluteRange } = time
 
-  const handleTimeSelectionChange = (selection: TimeSelection) => {
-    setTimeSelection(selection) // Also persists to localStorage
+  const services = useServices()
+  const metricNames = useMetricNames(service || undefined)
+  const { filterOptions } = useServiceNames()
 
-    // Update URL params
-    const newParams = new URLSearchParams(searchParams)
-    if (isAbsoluteTimeSelection(selection)) {
-      newParams.set('from', selection.range.from.toISOString())
-      newParams.set('to', selection.range.to.toISOString())
-      newParams.delete('timeframe')
-    } else {
-      newParams.delete('from')
-      newParams.delete('to')
-      if (selection.timeframe.value !== '15m') {
-        newParams.set('timeframe', selection.timeframe.value)
-      } else {
-        newParams.delete('timeframe')
-      }
-    }
-    setSearchParams(newParams)
-  }
+  const metadata = useMemo(() => (metric ? getMetricMetadata(metric) : null), [metric])
+  const histogram = isHistogramMetric(metadata)
+  const attributeKeys = useMetricAttributeKeys({ name: metric, service: service || undefined })
+  const breakdowns = useMemo(() => breakdownOptions(metadata, attributeKeys.data), [metadata, attributeKeys.data])
 
-  // Real-time metrics from WebSocket
-  const metricsUpdateCount = useTelemetryStore((state) => state.metricsUpdateCount)
-  const metricsReceivedCount = useTelemetryStore((state) => state.metricsReceivedCount)
+  const seriesParams = useMemo(
+    () => ({
+      name: metric,
+      service: service || undefined,
+      intervalSeconds,
+      groupBy: groupBy ? [groupBy] : undefined,
+      stat: statParam(metadata, filters.stat),
+      // Buckets follow the browser's clock: a day bar is a local day
+      timeZone: browserTimeZone(),
+    }),
+    [metric, service, intervalSeconds, groupBy, metadata, filters.stat]
+  )
+  const series = useMetricSeries(seriesParams, time.range)
+  // The statistic the server computed (avg unless another was asked for)
+  const stat = series.data?.stat
+  const canStack = isAdditiveStat(stat)
+
   // Refresh at the X-axis tick interval and on new metrics (not for absolute
   // ranges, which show fixed historical data)
-  const refreshKey = useLiveRefresh({
-    enabled: !isAbsoluteRange,
+  const metricsUpdateCount = useTelemetryStore((state) => state.metricsUpdateCount)
+  useLiveInvalidate({
+    queryKey: queryKeys.metrics.series(seriesParams, time.range),
+    enabled: !isAbsoluteRange && Boolean(metric),
     intervalMs: intervalSeconds * 1000 * (tickInterval + 1),
     updateCount: metricsUpdateCount,
   })
 
-  // Fetch services on mount
-  useEffect(() => {
-    const fetchServices = async () => {
-      try {
-        const servicesData = await api.getServices()
-        setServices(servicesData.services ?? [])
-      } catch (err) {
-        console.error('Failed to fetch services:', err)
-        toast.error('Failed to fetch services')
-      }
-    }
-    fetchServices()
-  }, [])
-
-  // Fetch metric names when service selection changes
-  useEffect(() => {
-    const abortController = new AbortController()
-
-    const fetchMetricNames = async () => {
-      try {
-        const namesData = await api.getMetricNames(selectedService || undefined, { signal: abortController.signal })
-        const names = namesData.names ?? []
-        setMetricNames(names)
-      } catch (err) {
-        if (isAbortError(err)) {
-          return // Ignore abort errors
-        }
-        console.error('Failed to fetch metric names:', err)
-        toast.error('Failed to fetch metric names')
-      }
-    }
-    fetchMetricNames()
-
-    return () => abortController.abort()
-  }, [selectedService])
-
-  useEffect(() => {
-    if (!selectedMetric) {
-      return
-    }
-
-    const abortController = new AbortController()
-
-    const fetchSeries = async () => {
-      // Only show loading on initial load, not on refreshes
-      const isInitialLoad = series.length === 0
-      if (isInitialLoad) {
-        setLoading(true)
-      }
-      try {
-        // Use computed time range (fromTime/toTime for absolute, fresh calculation for relative)
-        let fetchFrom: Date
-        let fetchTo: Date
-
-        if (isAbsoluteRange) {
-          fetchFrom = fromTime
-          fetchTo = toTime
-        } else {
-          // Compute fresh time range for relative ranges
-          const now = new Date()
-          const durationSeconds = isAbsoluteTimeSelection(timeSelection)
-            ? (toTime.getTime() - fromTime.getTime()) / 1000
-            : timeSelection.timeframe.durationSeconds
-          fetchFrom = new Date(now.getTime() - durationSeconds * 1000)
-          fetchTo = now
-        }
-
-        const data = await api.getMetricSeries({
-          name: selectedMetric,
-          service: selectedService || undefined,
-          from: fetchFrom.toISOString(),
-          to: fetchTo.toISOString(),
-          intervalSeconds,
-        }, { signal: abortController.signal })
-        setSeries(data.series ?? [])
-      } catch (err) {
-        if (isAbortError(err)) {
-          return // Ignore abort errors
-        }
-        console.error('Failed to fetch metric series:', err)
-        toast.error('Failed to fetch metric series')
-      } finally {
-        if (!abortController.signal.aborted && isInitialLoad) {
-          setLoading(false)
-        }
-      }
-    }
-    fetchSeries()
-
-    return () => abortController.abort()
-  }, [selectedMetric, selectedService, refreshKey, timeSelection, fromTime, toTime, intervalSeconds, isAbsoluteRange, series.length])
-
   const handleServiceChange = (value: string) => {
-    setSelectedService(value)
-    if (!isMetricForService(selectedMetric, value)) {
-      setSelectedMetric('')
-      setSeries([])
-    }
+    // Keep the metric when the service can send it
+    setFilters(isMetricForService(metric, value) ? { service: value } : { service: value, metric: '', groupBy: '', stat: '' })
   }
-
-  const handleMetricChange = (value: string) => {
-    setSelectedMetric(value)
-    if (!value) {
-      setSeries([])
-    }
-  }
-
-  // Get metadata for selected metric
-  const metadata = useMemo(
-    () => (selectedMetric ? getMetricMetadata(selectedMetric) : null),
-    [selectedMetric]
-  )
 
   // Group metric names by source - filter by service if selected
   const groupedMetrics = useMemo(
-    () => groupMetricsBySource(metricNames, selectedService),
-    [metricNames, selectedService]
+    () => groupMetricsBySource(metricNames.data ?? [], service),
+    [metricNames.data, service]
   )
 
-  // Helper to get series key from labels (prefer type if available, else service)
+  // Series key from labels: the breakdown attribute's value (the type by
+  // default) per service, else the service
   const getSeriesKey = useCallback((labels?: Record<string, string>) => {
-    if (labels?.type) {
-      return labels.service ? `${labels.service}:${labels.type}` : labels.type
+    const part = labels?.[groupBy || 'type']
+    if (part) {
+      return labels?.service ? `${labels.service}:${part}` : part
     }
     return labels?.service || 'value'
-  }, [])
+  }, [groupBy])
 
   // Helper to get human-readable series label
   const getDisplayLabel = useCallback((labels?: Record<string, string>) => {
     if (!metadata || !labels) return labels?.service || 'value'
-    return getSeriesLabel(labels, metadata)
-  }, [metadata])
+    return getSeriesLabel(labels, metadata, groupBy || undefined)
+  }, [metadata, groupBy])
 
-  // Format Y-axis values
+  // Format Y-axis values; a histogram's count is a number
+  const unit = useMemo(() => (metadata ? statUnit(metadata.unit, stat) : null), [metadata, stat])
   const formatYAxis = useCallback((value: number) => {
-    if (!metadata) return value.toString()
-    return formatMetricValue(value, metadata.unit)
-  }, [metadata])
+    if (!unit) return value.toString()
+    return formatMetricValue(value, unit)
+  }, [unit])
 
-  const durationSeconds = (toTime.getTime() - fromTime.getTime()) / 1000
+  const seriesData = series.data?.series
   const { data: sortedData, series: chartSeries, colorMap } = useMemo(
     () =>
-      buildChartData(series, getSeriesKey, getDisplayLabel, (timestamp) =>
+      buildChartData(seriesData ?? [], getSeriesKey, getDisplayLabel, (timestamp) =>
         formatTickLabel(timestamp, durationSeconds, intervalSeconds)
       ),
-    [series, getSeriesKey, getDisplayLabel, durationSeconds, intervalSeconds]
+    [seriesData, getSeriesKey, getDisplayLabel, durationSeconds, intervalSeconds]
   )
 
   // Custom tooltip formatter
   const tooltipFormatter = useCallback((value: number | undefined, name: string | undefined): [string, string] => {
     if (value === undefined) return ['—', name || 'value']
     const displayLabel = chartSeries.find((s) => s.key === name)?.label ?? (name || 'value')
-    const formattedValue = metadata ? formatMetricValue(value, metadata.unit) : value.toString()
+    const formattedValue = unit ? formatMetricValue(value, unit) : value.toString()
     return [formattedValue, displayLabel]
-  }, [metadata, chartSeries])
+  }, [unit, chartSeries])
 
-  // Use time selection-specific tick interval for X-axis labels
-  const xAxisTickInterval = tickInterval
+  const rangeLabel = `${getTimeSelectionLabel(timeSelection)}, ${formatIntervalSeconds(intervalSeconds)} intervals`
+  const noMetrics = metricNames.data !== undefined && metricNames.data.length === 0
+
+  const chart = (() => {
+    if (!metric) {
+      return (
+        <EmptyState
+          icon={LineChart}
+          className="h-80"
+          title="Select a metric to view data"
+          description="Choose a metric above; the chart shows its values in the selected time range."
+        />
+      )
+    }
+    if (series.isPending) {
+      return (
+        <div role="status" aria-busy="true" aria-label="Loading chart" className="h-80">
+          <Skeleton className="h-full w-full" />
+        </div>
+      )
+    }
+    if (series.isError && !series.data) {
+      return (
+        <QueryError
+          error={series.error}
+          title="Couldn't load the metric"
+          onRetry={() => series.refetch()}
+          retrying={series.isFetching}
+        />
+      )
+    }
+    if (sortedData.length === 0) {
+      return (
+        <EmptyState
+          className="h-80"
+          title="No data available for this metric"
+          description="Nothing was recorded in this time range. Choose a longer range or another service."
+        />
+      )
+    }
+    return (
+      <Refreshing active={series.isPlaceholderData} className="h-80">
+        <MetricBarChart
+          data={sortedData}
+          series={chartSeries}
+          colorMap={colorMap}
+          formatYAxis={formatYAxis}
+          tooltipFormatter={tooltipFormatter}
+          xAxisInterval={tickInterval}
+          showLegend={true}
+          // Averages and percentiles do not add up
+          stacked={stacked && canStack}
+        />
+      </Refreshing>
+    )
+  })()
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Metrics</h1>
-        <p className="text-muted-foreground">
-          View and analyze metric time series data
-        </p>
-      </div>
+      <PageHeader
+        title="Metrics"
+        description="View and analyze metric time series data"
+        actions={<LiveIndicator live={!isAbsoluteRange} />}
+      />
 
       {/* Filters */}
       <Card>
         <CardContent className="pt-6">
-          <div className="flex gap-4">
-            <div className="flex-1">
-              <label className="text-sm font-medium mb-2 block">Service</label>
-              <Select
-                value={selectedService}
+          <div className="flex flex-col gap-4 md:flex-row">
+            <div className="min-w-0 space-y-2 md:flex-1 *:w-full">
+              <Label htmlFor="metrics-service">Service</Label>
+              <NativeSelect
+                id="metrics-service"
+                className="h-10"
+                value={service}
                 onChange={(e) => handleServiceChange(e.target.value)}
               >
-                <option value="">All Services</option>
-                {serviceFilterOptions(services).map((o) => (
-                  <option key={o.value} value={o.value}>
+                <NativeSelectOption value="">All Services</NativeSelectOption>
+                {filterOptions(services.data ?? []).map((o) => (
+                  <NativeSelectOption key={o.value} value={o.value}>
                     {o.label}
-                  </option>
+                  </NativeSelectOption>
                 ))}
-              </Select>
+              </NativeSelect>
             </div>
-            <div className="flex-1">
-              <label className="text-sm font-medium mb-2 block">Metric</label>
-              <Select
-                value={selectedMetric}
-                onChange={(e) => handleMetricChange(e.target.value)}
+            <div className="min-w-0 space-y-2 md:flex-1 *:w-full">
+              <Label htmlFor="metrics-metric">Metric</Label>
+              <NativeSelect
+                id="metrics-metric"
+                className="h-10"
+                value={metric}
+                onChange={(e) => setFilters({ metric: e.target.value, groupBy: '', stat: '' })}
               >
-                <option value="">Select a metric</option>
+                <NativeSelectOption value="">Select a metric</NativeSelectOption>
                 <MetricOptions groups={groupedMetrics} />
-              </Select>
+              </NativeSelect>
             </div>
-            <div className="flex-1">
-              <label className="text-sm font-medium mb-2 block">Timeframe</label>
+            <div className="min-w-0 space-y-2 md:flex-1">
+              <Label htmlFor="metrics-timeframe">Timeframe</Label>
               <DateRangePicker
+                id="metrics-timeframe"
+                label="Timeframe"
+                className="w-full"
                 value={timeSelection}
-                onChange={handleTimeSelectionChange}
+                onChange={time.setTimeSelection}
               />
             </div>
           </div>
-        </CardContent>
-      </Card>
-
-      {/* Chart */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="flex items-center gap-2">
-                <CardTitle>{metadata?.displayName || selectedMetric || 'Select a metric'}</CardTitle>
-                {metadata && (
-                  <Badge variant="outline" className="text-xs">
-                    {metadata.unit.displayUnit}
-                  </Badge>
-                )}
-              </div>
-              <CardDescription>
-                {metadata?.description || `${getTimeSelectionLabel(timeSelection)}, ${formatIntervalSeconds(intervalSeconds)} intervals`}
-              </CardDescription>
-              {metadata && (
-                <p className="text-xs text-muted-foreground mt-1">
-                  {getTimeSelectionLabel(timeSelection)}, {formatIntervalSeconds(intervalSeconds)} intervals
-                </p>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              {metricsReceivedCount > 0 && (
-                <Badge variant="secondary" className="text-xs">
-                  {metricsReceivedCount} real-time updates
-                </Badge>
-              )}
-              <div className="flex border rounded-md">
-                <Button
-                  variant={stacked ? "secondary" : "ghost"}
-                  size="sm"
-                  className="h-8 px-2 rounded-r-none"
-                  onClick={() => setStacked(true)}
-                  title="Stacked bars"
+          {metric && (
+            <div className="mt-4 flex flex-col gap-4 md:flex-row">
+              <div className="min-w-0 space-y-2 md:flex-1 *:w-full">
+                <Label htmlFor="metrics-breakdown">Breakdown</Label>
+                <NativeSelect
+                  id="metrics-breakdown"
+                  className="h-10"
+                  value={groupBy}
+                  onChange={(e) => setFilters({ groupBy: e.target.value })}
                 >
-                  <Layers className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant={!stacked ? "secondary" : "ghost"}
-                  size="sm"
-                  className="h-8 px-2 rounded-l-none"
-                  onClick={() => setStacked(false)}
-                  title="Grouped bars"
-                >
-                  <BarChart3 className="h-4 w-4" />
-                </Button>
+                  <NativeSelectOption value="">Type (default)</NativeSelectOption>
+                  {/* A breakdown from the URL stays selectable before the keys load */}
+                  {groupBy && !breakdowns.some((b) => b.value === groupBy) && (
+                    <NativeSelectOption value={groupBy}>{groupBy}</NativeSelectOption>
+                  )}
+                  {breakdowns.map((b) => (
+                    <NativeSelectOption key={b.value} value={b.value}>
+                      {b.label}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
               </div>
+              {metadata && histogram && (
+                <div className="min-w-0 space-y-2 md:flex-1 *:w-full">
+                  <Label htmlFor="metrics-stat">Statistic</Label>
+                  <NativeSelect
+                    id="metrics-stat"
+                    className="h-10"
+                    value={filters.stat}
+                    onChange={(e) => setFilters({ stat: e.target.value })}
+                  >
+                    <NativeSelectOption value="">
+                      Default ({HISTOGRAM_STATS.find((s) => s.value === defaultHistogramStat(metadata))?.label})
+                    </NativeSelectOption>
+                    {HISTOGRAM_STATS.map((s) => (
+                      <NativeSelectOption key={s.value} value={s.value}>
+                        {s.label}
+                      </NativeSelectOption>
+                    ))}
+                  </NativeSelect>
+                </div>
+              )}
+              {/* Keeps the selects as wide as those of the row above */}
+              <div className="hidden md:block md:flex-1" />
+              {!(metadata && histogram) && <div className="hidden md:block md:flex-1" />}
             </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {loading ? (
-            <div className="h-80 flex items-center justify-center text-muted-foreground">
-              Loading...
-            </div>
-          ) : sortedData.length === 0 ? (
-            <div className="h-80 flex items-center justify-center text-muted-foreground">
-              {selectedMetric
-                ? 'No data available for this metric'
-                : 'Select a metric to view data'}
-            </div>
-          ) : (
-            <div className="h-80">
-              <MetricBarChart
-                data={sortedData}
-                series={chartSeries}
-                colorMap={colorMap}
-                formatYAxis={formatYAxis}
-                tooltipFormatter={tooltipFormatter}
-                xAxisInterval={xAxisTickInterval}
-                showLegend={true}
-                stacked={stacked}
-              />
-            </div>
+          )}
+          {metricNames.isError && (
+            <QueryError
+              className="mb-0"
+              error={metricNames.error}
+              title="Couldn't load the metric names"
+              onRetry={() => metricNames.refetch()}
+              retrying={metricNames.isFetching}
+            />
           )}
         </CardContent>
       </Card>
 
-      {/* Metric Info */}
-      {metricNames.length === 0 && (
+      {/* Chart and data points */}
+      <Card>
+        <Tabs value={view} onValueChange={(value) => setFilters({ view: value })}>
+          <CardHeader>
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <CardTitle>{metadata?.displayName || metric || 'Select a metric'}</CardTitle>
+                  {unit?.displayUnit && (
+                    <Badge variant="outline" className="text-xs">
+                      {unit.displayUnit}
+                    </Badge>
+                  )}
+                  {stat && (
+                    <Badge variant="secondary" className="text-xs">
+                      {HISTOGRAM_STATS.find((s) => s.value === stat)?.label ?? stat}
+                    </Badge>
+                  )}
+                </div>
+                <CardDescription>{metadata?.description || rangeLabel}</CardDescription>
+                {metadata && <p className="text-xs text-muted-foreground mt-1">{rangeLabel}</p>}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <TabsList>
+                  <TabsTrigger value="chart">Chart</TabsTrigger>
+                  <TabsTrigger value="points" disabled={!metric}>
+                    Data points
+                  </TabsTrigger>
+                </TabsList>
+                {view === 'chart' && canStack && (
+                  <div role="group" aria-label="Chart mode" className="flex border rounded-md">
+                    <Button
+                      variant={stacked ? 'secondary' : 'ghost'}
+                      size="sm"
+                      className="h-8 px-2 rounded-r-none"
+                      onClick={() => setFilters({ stacked: true })}
+                      aria-label="Stacked bars"
+                      aria-pressed={stacked}
+                      title="Stacked bars"
+                    >
+                      <Layers className="h-4 w-4" aria-hidden="true" />
+                    </Button>
+                    <Button
+                      variant={!stacked ? 'secondary' : 'ghost'}
+                      size="sm"
+                      className="h-8 px-2 rounded-l-none"
+                      onClick={() => setFilters({ stacked: false })}
+                      aria-label="Grouped bars"
+                      aria-pressed={!stacked}
+                      title="Grouped bars"
+                    >
+                      <BarChart3 className="h-4 w-4" aria-hidden="true" />
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <TabsContent value="chart" className="mt-0">
+              {chart}
+            </TabsContent>
+            <TabsContent value="points" className="mt-0">
+              {metric && <MetricPointsTable name={metric} service={service} range={time.range} />}
+            </TabsContent>
+          </CardContent>
+        </Tabs>
+      </Card>
+
+      {noMetrics && (
         <Card>
           <CardContent className="pt-6">
             <p className="text-muted-foreground text-center">

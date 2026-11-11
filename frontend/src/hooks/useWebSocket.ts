@@ -1,11 +1,6 @@
 import { useEffect, useState, useSyncExternalStore, useCallback } from 'react'
-import { useTelemetryStore, type StoredNotification } from '@/stores/telemetryStore'
-
-interface WebSocketMessage {
-  type: 'traces' | 'metrics' | 'logs'
-  timestamp: string
-  payload: StoredNotification
-}
+import { useTelemetryStore } from '@/stores/telemetryStore'
+import type { WebSocketMessage } from '@/types/api.gen'
 
 // Reconnect delays grow from 1 s to 30 s while the server cannot be reached
 // (or rejects the connection, e.g. without the auth cookie)

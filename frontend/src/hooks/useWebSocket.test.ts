@@ -8,12 +8,9 @@ interface MockSocket extends WebSocket {
   simulateError(): void
 }
 
-type WebSocketManagerWithMock = typeof webSocketManager & {
-  ws: MockSocket | null
-}
-
+// The manager's socket is private; tests read the mock it created
 function getMockWebSocket(): MockSocket {
-  const ws = (webSocketManager as WebSocketManagerWithMock).ws
+  const ws = (webSocketManager as unknown as { ws: MockSocket | null }).ws
   if (!ws) {
     throw new Error('Expected mock WebSocket instance')
   }

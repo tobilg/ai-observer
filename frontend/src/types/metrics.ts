@@ -1,51 +1,24 @@
-export interface MetricDataPoint {
-  timestamp: string
-  serviceName: string
-  metricName: string
-  metricDescription?: string
-  metricUnit?: string
-  resourceAttributes?: Record<string, string>
-  scopeName?: string
-  scopeVersion?: string
-  attributes?: Record<string, string>
-  metricType: 'gauge' | 'sum' | 'histogram' | 'exponential_histogram' | 'summary'
-  value?: number
-  aggregationTemporality?: number
-  isMonotonic?: boolean
-  count?: number
-  sum?: number
-  bucketCounts?: number[]
-  explicitBounds?: number[]
-  scale?: number
-  zeroCount?: number
-  positiveOffset?: number
-  positiveBucketCounts?: number[]
-  negativeOffset?: number
-  negativeBucketCounts?: number[]
-  quantileValues?: number[]
-  quantileQuantiles?: number[]
-  min?: number
-  max?: number
-}
+// The metric types of the API, generated from the Go types (api.gen.ts)
+import type { TimeSeries } from './api.gen'
 
-export interface MetricsResponse {
-  metrics: MetricDataPoint[]
-  total: number
-  hasMore: boolean
-  // Requests the next page (cursor parameter) when hasMore
-  nextCursor?: string
-}
+export type {
+  MetricType,
+  HistogramStat,
+  MetricDataPoint,
+  MetricsResponse,
+  TimeSeries,
+  TimeSeriesResponse,
+  MetricAttributeKeysResponse,
+  MetricNamesResponse,
+  BreakdownValuesResponse,
+  MetricQuery,
+  MetricQueryErrorCode,
+  MetricQueryResult,
+  BatchMetricSeriesRequest,
+  BatchMetricSeriesResponse,
+} from './api.gen'
 
-export interface TimeSeries {
-  name: string
-  labels?: Record<string, string>
-  datapoints: [number, number][]
-}
-
-export interface TimeSeriesResponse {
-  series: TimeSeries[]
-}
-
-export interface MetricNamesResponse {
-  names: string[]
-}
+// A point of a series: [timestamp (Unix ms), value]. A value is null where a
+// bucket has none: averages, extremes and percentiles of histograms, and
+// gauges, in buckets without points.
+export type SeriesPoint = TimeSeries['datapoints'][number]

@@ -169,8 +169,11 @@ func WriteInternalError(w http.ResponseWriter, message string, err error) {
 	WriteError(w, http.StatusInternalServerError, message)
 }
 
+// ErrorResponse is the body of error responses (status 4xx and 5xx)
 type ErrorResponse struct {
-	Error   string `json:"error"`
+	// Error is the HTTP status text, such as "Bad Request"
+	Error string `json:"error"`
+	// Message says what went wrong (for server errors without internals)
 	Message string `json:"message,omitempty"`
 }
 

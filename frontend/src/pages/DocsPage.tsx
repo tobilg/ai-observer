@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { DOCUMENTATION_SECTIONS } from '@/data/documentation'
 import { TableOfContents } from '@/components/docs/TableOfContents'
 import { DocSection } from '@/components/docs/DocSection'
+import { PageHeader } from '@/components/common/page-header'
 
 export function DocsPage() {
   const [activeSection, setActiveSection] = useState<string>(
@@ -75,18 +76,15 @@ export function DocsPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Documentation</h1>
-        <p className="text-muted-foreground mt-2">
-          Learn how to use AI Observer to monitor your AI coding tools
-        </p>
-      </div>
+      <PageHeader
+        title="Documentation"
+        description="Learn how to use AI Observer to monitor your AI coding tools"
+      />
 
       {/* Content with TOC */}
       <div className="flex gap-8">
         {/* Main content */}
-        <div className="flex-1 max-w-3xl">
+        <div className="min-w-0 flex-1 max-w-3xl">
           {DOCUMENTATION_SECTIONS.map((section) => (
             <DocSection
               key={section.id}

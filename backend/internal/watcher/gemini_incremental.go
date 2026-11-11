@@ -10,9 +10,8 @@ import (
 	"github.com/tobilg/ai-observer/internal/storage"
 )
 
-type geminiParserState struct {
-	MessageCount int `json:"messageCount"`
-}
+// geminiParserState is the state of a watched file (imports record it too)
+type geminiParserState = importer.GeminiWatchState
 
 type geminiIncrementalParser struct{}
 
@@ -48,21 +47,49 @@ func (p *geminiIncrementalParser) ParseIncremental(ctx context.Context, filePath
 			parserState = geminiParserState{}
 		}
 	}
-	// A full import or the start of watching records only the message count
+	// The start of watching, and imports of earlier versions, record only
+	// the message count
 	if state.ParserState == "" && state.MessageCount > 0 {
 		parserState.MessageCount = state.MessageCount
 	}
+	read := parserState.MessageCount
+	if read > len(session.Messages) {
+		read = len(session.Messages)
+	}
 
-	// Skip already-processed messages
-	if parserState.MessageCount >= len(session.Messages) {
+	result := &IncrementalResult{}
+	// What Gemini CLI added to the last message read
+	if read > 0 && parserState.Last != nil {
+		last, err := geminiMessageRecords(ctx, &session, read-1)
+		if err != nil {
+			return nil, err
+		}
+		if len(last.Logs) > parserState.Last.Logs {
+			result.Logs = append(result.Logs, last.Logs[parserState.Last.Logs:]...)
+		}
+		if !parserState.Last.Tokens {
+			result.Metrics = append(result.Metrics, last.Metrics...)
+		}
+	}
+
+	// Messages added since
+	if read < len(session.Messages) {
+		records, err := importer.ConvertGeminiMessages(ctx, &session, read, "file_watcher")
+		if err != nil {
+			return nil, err
+		}
+		result.Logs = append(result.Logs, records.Logs...)
+		result.Metrics = append(result.Metrics, records.Metrics...)
+	}
+	if len(result.Logs) == 0 && len(result.Metrics) == 0 && read >= len(session.Messages) {
 		return &IncrementalResult{}, nil
 	}
-	records, err := importer.ConvertGeminiMessages(ctx, &session, parserState.MessageCount, "file_watcher")
+	last, err := geminiMessageRecords(ctx, &session, len(session.Messages)-1)
 	if err != nil {
 		return nil, err
 	}
-	result := &IncrementalResult{Logs: records.Logs, Metrics: records.Metrics}
-	state.RecordCount += len(records.Logs)
+	parserState.Last = &importer.GeminiLastMessage{Logs: len(last.Logs), Tokens: len(last.Metrics) > 0}
+	state.RecordCount += len(result.Logs)
 
 	// Update state
 	parserState.MessageCount = len(session.Messages)
@@ -72,4 +99,10 @@ func (p *geminiIncrementalParser) ParseIncremental(ctx context.Context, filePath
 	state.ParserState = string(stateJSON)
 
 	return result, nil
+}
+
+// geminiMessageRecords returns the records of message i of session, as
+// watch stores them
+func geminiMessageRecords(ctx context.Context, session *importer.GeminiSession, i int) (*importer.GeminiRecords, error) {
+	return importer.GeminiMessageRecords(ctx, session, i, "file_watcher")
 }

@@ -2,6 +2,12 @@
 // This ensures consistent service names across import, export, and query operations.
 package tools
 
+import (
+	"sort"
+	"strings"
+	"time"
+)
+
 // Tool represents a supported AI coding tool by its CLI name
 type Tool string
 
@@ -73,8 +79,12 @@ var copilotTranscriptRoles = map[string]string{
 var providers = []Provider{
 	{Tool: Claude, ServiceName: "claude-code", DisplayName: "Claude Code", SessionFiles: true,
 		TranscriptRoles: map[string]string{
-			"user_prompt":   RoleUser,
+			"user_prompt": RoleUser,
+			// api_request carries a response's usage, assistant_response
+			// its text (Claude Code 2.1 and later, with content logging);
+			// a transcript shows a response once (internal/transcript)
 			"api_request":   RoleAssistant,
+			ReplyEvent:      RoleAssistant,
 			"api_response":  RoleAssistant,
 			"tool_result":   RoleToolResult,
 			"tool_decision": RoleToolUse,
@@ -157,11 +167,109 @@ var (
 		"copilot_chat.session_id",
 		"copilot_chat.chat_session_id",
 	}
-	ModelKeys      = []string{"model", "gen_ai.response.model", "gen_ai.request.model", "llm.model_name"}
-	ToolNameKeys   = []string{"tool.name", "gen_ai.tool.name", "tool_name", "function_name", "openinference.tool.name"}
-	ToolInputKeys  = []string{"tool.input", "gen_ai.tool.call.arguments", "tool_parameters", "tool.parameters", "arguments"} // Codex CLI uses "arguments"
-	ToolOutputKeys = []string{"tool.output", "gen_ai.tool.call.result", "tool_result", "tool.result", "output"}              // Codex CLI OTLP uses "output"
+	ModelKeys     = []string{"model", "gen_ai.response.model", "gen_ai.request.model", "llm.model_name"}
+	ToolNameKeys  = []string{"tool.name", "gen_ai.tool.name", "tool_name", "function_name", "openinference.tool.name"}
+	ToolInputKeys = []string{"tool.input", "gen_ai.tool.call.arguments", "tool_parameters", "tool.parameters", "arguments"} // Codex CLI uses "arguments"
+	// ToolCallIDKeys identify one tool call across the spans, log events
+	// and imported messages that describe it: Claude Code's spans and OTLP
+	// events send the first two, its session files' messages tool.use_id;
+	// Codex's OTLP events send call_id, its session files' messages
+	// tool.call_id
+	ToolCallIDKeys = []string{"gen_ai.tool.call.id", "tool_use_id", "tool.use_id", "call_id", "tool.call_id"}
+	ToolOutputKeys = []string{"tool.output", "gen_ai.tool.call.result", "tool_result", "tool.result", "output"} // Codex CLI OTLP uses "output"
+
+	// Usage of a conversation event: tokens and cost of a model request.
+	// Claude Code's api_request sends cost_usd, input_tokens,
+	// output_tokens, cache_read_tokens and cache_creation_tokens; Gemini
+	// CLI's api_response *_token_count (its input includes the cached
+	// tokens); imported Gemini messages input_tokens, output_tokens and
+	// cache_read_input_tokens.
+	InputTokenKeys      = []string{"input_tokens", "inputTokens", "gen_ai.usage.input_tokens", "llm.token_count.prompt", "input_token_count"}
+	OutputTokenKeys     = []string{"output_tokens", "outputTokens", "gen_ai.usage.output_tokens", "llm.token_count.completion", "output_token_count"}
+	CacheReadTokenKeys  = []string{"cache_read_input_tokens", "cacheRead", "gen_ai.usage.cache_read.input_tokens", "cache_read_tokens", "cached_content_token_count"}
+	CacheWriteTokenKeys = []string{"cache_creation_input_tokens", "cacheWrite", "gen_ai.usage.cache_creation.input_tokens", "cache_creation_tokens"}
+	CostKeys            = []string{"cost_usd", "costUsd", "llm.cost"}
+
+	// PromptEvents are the user prompt events whose text is in the
+	// PromptKey attribute (the body otherwise)
+	PromptEvents = []string{"user_prompt", "codex.user_prompt", "gemini_cli.user_prompt"}
 )
+
+// PromptKey is the attribute with the text of a PromptEvents event
+const PromptKey = "prompt"
+
+// Identities a message of a session file shares with the OTLP events that
+// describe it (Claude Code): the file entry's UUID, which user_prompt and
+// assistant_response events carry, and the API request ID, which
+// api_request, assistant_response and the tool events carry
+const (
+	MessageUUIDKey = "message.uuid"
+	RequestIDKey   = "request_id"
+)
+
+// ResponseKey is the attribute with the text of Claude Code's
+// assistant_response event
+const ResponseKey = "response"
+
+// UsageEvent is Claude Code's event of a response's usage (tokens, cost,
+// duration), ReplyEvent its event of a response's text (Claude Code 2.1 and
+// later, with content logging, in ResponseKey). A transcript shows both in
+// one message of the API request; a session that arrived over OTLP only has
+// both events for every response with text.
+const (
+	UsageEvent = "api_request"
+	ReplyEvent = "assistant_response"
+)
+
+// Matching the messages of a session file to the OTLP events of the same
+// messages where they share no ID (internal/transcript; session lists count
+// messages by the same rules): a prompt matches the file's user message
+// within PromptMatchWindow whose text, trimmed of MatchTrim, starts with the
+// same PromptMatchPrefix characters; a Claude Code reply the file's reply of
+// equal text within ReplyMatchWindow. Both sides record a prompt within
+// 14 ms (measured on Claude Code and Codex sessions).
+const (
+	PromptMatchWindow = 2 * time.Second
+	PromptMatchPrefix = 32
+	ReplyMatchWindow  = time.Minute
+	MatchTrim         = " \t\n\r"
+)
+
+// MatchText returns text as messages are compared by: trimmed of MatchTrim
+func MatchText(text string) string {
+	return strings.Trim(text, MatchTrim)
+}
+
+// MatchPrefix returns the start of text that prompts are compared by: the
+// first PromptMatchPrefix characters of MatchText
+func MatchPrefix(text string) string {
+	text = MatchText(text)
+	n := PromptMatchPrefix
+	for i := range text {
+		if n == 0 {
+			return text[:i]
+		}
+		n--
+	}
+	return text
+}
+
+// MatchesPromptsByTime reports whether the OTLP prompts of tool are matched
+// to its session files' user messages by time and text (verified on
+// recorded sessions; Gemini CLI's are recorded at other times)
+func MatchesPromptsByTime(tool string) bool {
+	return tool == string(Claude) || tool == string(Codex)
+}
+
+// Repository attribution of imported and watched records (importer/repos.go)
+const (
+	RepositoryKey = "repository"
+	BranchKey     = "git_branch"
+)
+
+// RedactedPrompt is what Claude Code sends as the prompt of a user_prompt
+// event unless prompt logging is enabled (OTEL_LOG_USER_PROMPTS)
+const RedactedPrompt = "<REDACTED>"
 
 // transcriptRoles merges the providers' TranscriptRoles. Event names are
 // unique across tools, so the role does not depend on the sending service.
@@ -184,6 +292,35 @@ func mergeTranscriptRoles(providers []Provider) map[string]string {
 // for events that are not part of a transcript
 func TranscriptRole(eventName string) string {
 	return transcriptRoles[eventName]
+}
+
+// TranscriptMessageEvent is the event of an imported transcript message,
+// which carries its role in the message.role attribute
+const TranscriptMessageEvent = "transcript.message"
+
+// TranscriptEvents returns the names of the log events that become transcript
+// messages: the tools' conversation events and imported messages, sorted
+func TranscriptEvents() []string {
+	events := []string{TranscriptMessageEvent}
+	for event := range transcriptRoles {
+		events = append(events, event)
+	}
+	sort.Strings(events)
+	return events
+}
+
+// EventsWithRole returns the names of the conversation events that become
+// transcript messages of role, sorted (imported transcript messages carry
+// their role in message.role and are not among them)
+func EventsWithRole(role string) []string {
+	var events []string
+	for event, r := range transcriptRoles {
+		if r == role {
+			events = append(events, event)
+		}
+	}
+	sort.Strings(events)
+	return events
 }
 
 // Providers returns all supported tools
@@ -225,6 +362,12 @@ func (p Provider) ServiceNames() []string {
 		names = append(names, s.Name)
 	}
 	return names
+}
+
+// HasService reports whether service is one of the tool's service names
+func (t Tool) HasService(service string) bool {
+	tool, ok := ToolForService(service)
+	return ok && tool == t
 }
 
 // ToolForService returns the tool that sends a service name

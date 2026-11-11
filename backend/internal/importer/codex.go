@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -56,13 +57,15 @@ func (p *CodexParser) Source() SourceType {
 	return SourceCodex
 }
 
-// FindSessionFiles returns all JSONL session files
+// FindSessionFiles returns all JSONL session files, compressed ones
+// (.jsonl.zst) by their plain path (codex_rollout.go), each once
 func (p *CodexParser) FindSessionFiles(ctx context.Context) ([]string, error) {
 	if p.sessionsPath == "" {
 		return nil, nil
 	}
 
 	var files []string
+	seen := make(map[string]bool)
 
 	err := filepath.Walk(p.sessionsPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -71,7 +74,16 @@ func (p *CodexParser) FindSessionFiles(ctx context.Context) ([]string, error) {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if !info.IsDir() && strings.HasSuffix(path, ".jsonl") {
+		if info.IsDir() {
+			return nil
+		}
+		if plain, ok := CompressedSessionFile(path); ok {
+			path = plain
+		} else if !strings.HasSuffix(path, ".jsonl") {
+			return nil
+		}
+		if !seen[path] {
+			seen[path] = true
 			files = append(files, path)
 		}
 		return nil
@@ -81,6 +93,7 @@ func (p *CodexParser) FindSessionFiles(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("walking sessions directory: %w", err)
 	}
 
+	sort.Strings(files)
 	return files, nil
 }
 
@@ -166,12 +179,28 @@ type CodexTokenCount struct {
 
 // ParseFile parses a Codex CLI JSONL file
 func (p *CodexParser) ParseFile(ctx context.Context, path string) (*ImportResult, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("opening file: %w", err)
-	}
-	defer file.Close()
+	return p.parse(ctx, path, nil, 0, nil)
+}
 
+// ParseFileInBatches parses a Codex CLI JSONL file like ParseFile, but hands
+// its records to emit in batches of about batchSize records instead of
+// returning them, so a session of several hundred MB is never held in memory
+// as a whole. The batches carry the repository of the whole file, which a
+// first pass over the file reads. The returned result has no records.
+func (p *CodexParser) ParseFileInBatches(ctx context.Context, path string, batchSize int, emit func(*ImportResult) error) (*ImportResult, error) {
+	var attribution RepositoryMetadata
+	if err := readCodexEntries(ctx, path, nil, nil, func(entry CodexJSONLEntry, _ time.Time) error {
+		attribution.ObserveCodex(entry)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return p.parse(ctx, path, &attribution, batchSize, emit)
+}
+
+// parse parses the file at path; with emit, in batches (ParseFileInBatches)
+// enriched with the given attribution
+func (p *CodexParser) parse(ctx context.Context, path string, fileAttribution *RepositoryMetadata, batchSize int, emit func(*ImportResult) error) (*ImportResult, error) {
 	result := &ImportResult{
 		FilePath: path,
 	}
@@ -182,19 +211,92 @@ func (p *CodexParser) ParseFile(ctx context.Context, path string) (*ImportResult
 
 	codexState := CodexState{SessionID: result.SessionID}
 	var attribution RepositoryMetadata
+	batch := &ImportResult{FilePath: path}
+	flush := func() error {
+		if len(batch.Logs) == 0 && len(batch.Metrics) == 0 {
+			return nil
+		}
+		fileAttribution.Enrich(batch.Metrics, batch.Logs)
+		if err := emit(batch); err != nil {
+			return err
+		}
+		batch = &ImportResult{FilePath: path}
+		return nil
+	}
 
 	// Hash exactly the content that is parsed
 	hasher := sha256.New()
-	for line, err := range jsonlLinesCounted(io.TeeReader(file, hasher), &result.ParsedBytes) {
+	err := readCodexEntries(ctx, path, hasher, &result.ParsedBytes, func(entry CodexJSONLEntry, ts time.Time) error {
+		if emit == nil {
+			attribution.ObserveCodex(entry)
+		}
+
+		// Update time range
+		if result.FirstTime.IsZero() || ts.Before(result.FirstTime) {
+			result.FirstTime = ts
+		}
+		if ts.After(result.LastTime) {
+			result.LastTime = ts
+		}
+
+		logs, metrics, records := ConvertCodexEntry(entry, ts, &codexState, "local_jsonl")
+		result.RecordCount += records
+		if emit == nil {
+			result.Logs = append(result.Logs, logs...)
+			result.Metrics = append(result.Metrics, metrics...)
+			return nil
+		}
+		batch.Logs = append(batch.Logs, logs...)
+		batch.Metrics = append(batch.Metrics, metrics...)
+		if len(batch.Logs)+len(batch.Metrics) >= batchSize {
+			return flush()
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if emit != nil {
+		if err := flush(); err != nil {
+			return nil, err
+		}
+	}
+
+	result.FileHash = hex.EncodeToString(hasher.Sum(nil))
+	result.SessionID = codexState.SessionID
+	result.MessageCount = codexState.MessageIndex
+
+	if emit == nil {
+		attribution.Enrich(result.Metrics, result.Logs)
+	}
+	return result, nil
+}
+
+// readCodexEntries passes the entries of the session file at path that have
+// a valid timestamp to fn, in order. The content read is written to hash and
+// the length of its complete lines counted in parsed, when they are not nil.
+func readCodexEntries(ctx context.Context, path string, hash io.Writer, parsed *int64, fn func(CodexJSONLEntry, time.Time) error) error {
+	// The file or its compressed form, read as a stream
+	file, _, err := OpenSessionFile(path)
+	if err != nil {
+		return fmt.Errorf("opening file: %w", err)
+	}
+	defer file.Close()
+	var content io.Reader = file
+	if hash != nil {
+		content = io.TeeReader(file, hash)
+	}
+
+	for line, err := range jsonlLinesCounted(content, parsed) {
 		if err != nil {
-			return nil, fmt.Errorf("reading file: %w", err)
+			return fmt.Errorf("reading file: %w", err)
 		}
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			return ctx.Err()
 		}
 
 		var entry CodexJSONLEntry
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+		if err := json.Unmarshal(line, &entry); err != nil {
 			continue
 		}
 
@@ -206,29 +308,11 @@ func (p *CodexParser) ParseFile(ctx context.Context, path string) (*ImportResult
 				continue
 			}
 		}
-
-		attribution.ObserveCodex(entry)
-
-		// Update time range
-		if result.FirstTime.IsZero() || ts.Before(result.FirstTime) {
-			result.FirstTime = ts
+		if err := fn(entry, ts); err != nil {
+			return err
 		}
-		if ts.After(result.LastTime) {
-			result.LastTime = ts
-		}
-
-		logs, metrics, records := ConvertCodexEntry(entry, ts, &codexState, "local_jsonl")
-		result.Logs = append(result.Logs, logs...)
-		result.Metrics = append(result.Metrics, metrics...)
-		result.RecordCount += records
 	}
-
-	result.FileHash = hex.EncodeToString(hasher.Sum(nil))
-	result.SessionID = codexState.SessionID
-	result.MessageCount = codexState.MessageIndex
-
-	attribution.Enrich(result.Metrics, result.Logs)
-	return result, nil
+	return nil
 }
 
 // CodexState is the context a Codex session carries from entry to entry. The
@@ -238,6 +322,17 @@ type CodexState struct {
 	CurrentModel   string           `json:"currentModel"`
 	MessageIndex   int              `json:"messageIndex"`
 	LastTokenCount *CodexTokenCount `json:"lastTokenCount"`
+	// ToolCalls are the model's tool calls whose output was not read yet,
+	// AnsweredCalls the IDs of recent calls whose output was, whose
+	// execution may still follow (codex_tools.go); ToolCallsTracked is set
+	// once the conversion has kept them, which parser states of earlier
+	// versions lack
+	ToolCalls        []CodexToolCall `json:"toolCalls,omitempty"`
+	AnsweredCalls    []string        `json:"answeredCalls,omitempty"`
+	ToolCallsTracked bool            `json:"toolCallsTracked,omitempty"`
+	// Lookups of ToolCalls (positions) and AnsweredCalls
+	pending  map[string]int
+	answered map[string]struct{}
 }
 
 // ConvertCodexEntry converts one entry of a Codex session file into records,
@@ -245,30 +340,80 @@ type CodexState struct {
 // records; importSource marks them ("local_jsonl" for imports,
 // "file_watcher" for watch). records counts the entries that were recorded.
 func ConvertCodexEntry(entry CodexJSONLEntry, ts time.Time, state *CodexState, importSource string) (logs []api.LogRecord, metrics []api.MetricDataPoint, records int) {
-	codexLog := func(body string, attrs map[string]string) api.LogRecord {
-		attrs["import_source"] = importSource
-		return api.LogRecord{
-			Timestamp:      ts,
-			ServiceName:    SourceCodex.ServiceName(),
-			SeverityText:   "INFO",
-			SeverityNumber: 9,
-			Body:           body,
-			LogAttributes:  attrs,
-		}
-	}
-	// transcript adds a transcript message with the next message index
-	transcript := func(body, role string, attrs map[string]string) {
-		attrs["event.name"] = "transcript.message"
-		attrs["session.id"] = state.SessionID
-		attrs["message.index"] = fmt.Sprintf("%d", state.MessageIndex)
-		attrs["message.role"] = role
-		logs = append(logs, codexLog(body, attrs))
-		records++
-		state.MessageIndex++
-	}
+	c := codexConverter{ts: ts, state: state, importSource: importSource, emit: true}
+	c.convert(entry)
+	return c.logs, c.metrics, c.records
+}
 
+// ObserveCodexToolCalls updates the tool calls state keeps (ToolCalls) as
+// ConvertCodexEntry would, without converting the entry. The file watcher
+// uses it to rebuild them from the part of a file an import read.
+func ObserveCodexToolCalls(entry CodexJSONLEntry, ts time.Time, state *CodexState) {
+	switch entry.Type {
+	case "response_item", "event_msg":
+		c := codexConverter{ts: ts, state: state}
+		c.convert(entry)
+	}
+	state.ToolCallsTracked = true
+}
+
+// codexConverter converts the entries of a Codex session file
+type codexConverter struct {
+	ts           time.Time
+	state        *CodexState
+	importSource string
+	// emit is false when only the state is updated (ObserveCodexToolCalls)
+	emit    bool
+	logs    []api.LogRecord
+	metrics []api.MetricDataPoint
+	records int
+}
+
+func (c *codexConverter) log(at time.Time, body string, attrs map[string]string) api.LogRecord {
+	attrs["import_source"] = c.importSource
+	return api.LogRecord{
+		Timestamp:      at,
+		ServiceName:    SourceCodex.ServiceName(),
+		SeverityText:   "INFO",
+		SeverityNumber: 9,
+		Body:           body,
+		LogAttributes:  attrs,
+	}
+}
+
+// transcript adds a transcript message with the next message index
+func (c *codexConverter) transcript(body, role string, attrs map[string]string) {
+	c.transcriptAt(c.ts, body, role, attrs)
+}
+
+// transcriptAt adds a transcript message recorded at at, which is never
+// after the entry's time
+func (c *codexConverter) transcriptAt(at time.Time, body, role string, attrs map[string]string) {
+	if !c.emit {
+		return
+	}
+	if at.IsZero() || at.After(c.ts) {
+		at = c.ts
+	}
+	attrs["event.name"] = "transcript.message"
+	attrs["session.id"] = c.state.SessionID
+	attrs["message.index"] = fmt.Sprintf("%d", c.state.MessageIndex)
+	attrs["message.role"] = role
+	c.logs = append(c.logs, c.log(at, body, attrs))
+	c.records++
+	c.state.MessageIndex++
+}
+
+func (c *codexConverter) convert(entry CodexJSONLEntry) {
+	state := c.state
+	if c.emit {
+		state.ToolCallsTracked = true
+	}
 	switch entry.Type {
 	case "session_meta":
+		if !c.emit {
+			return
+		}
 		var meta CodexSessionMeta
 		if err := json.Unmarshal(entry.Payload, &meta); err != nil {
 			return
@@ -289,8 +434,8 @@ func ConvertCodexEntry(entry CodexJSONLEntry, ts time.Time, state *CodexState, i
 		if meta.Cwd != "" {
 			attrs["cwd"] = meta.Cwd
 		}
-		logs = append(logs, codexLog("conversation_starts", attrs))
-		records++
+		c.logs = append(c.logs, c.log(c.ts, "conversation_starts", attrs))
+		c.records++
 
 	case "event_msg":
 		var eventMsg CodexEventMsg
@@ -298,23 +443,36 @@ func ConvertCodexEntry(entry CodexJSONLEntry, ts time.Time, state *CodexState, i
 			return
 		}
 		switch eventMsg.Type {
+		case "item_completed":
+			c.convertItemCompleted(entry.Payload)
 		case "token_count":
+			if !c.emit {
+				return
+			}
 			// Info is at the same level as type in the event_msg payload
 			if eventMsg.Info != nil && eventMsg.Info.TotalTokenUsage != nil {
-				metrics = codexTokenMetrics(ts, state.CurrentModel, eventMsg.Info.TotalTokenUsage, state.LastTokenCount)
+				c.metrics = codexTokenMetrics(c.ts, state.CurrentModel, state.SessionID, eventMsg.Info.TotalTokenUsage, state.LastTokenCount)
 				state.LastTokenCount = eventMsg.Info.TotalTokenUsage
-				records++
+				c.records++
 			}
 		case "user_message", "agent_message":
+			if !c.emit {
+				return
+			}
 			attrs := map[string]string{"event.name": "codex." + eventMsg.Type}
 			if state.SessionID != "" {
 				attrs["session.id"] = state.SessionID
 			}
-			logs = append(logs, codexLog(eventMsg.Type, attrs))
-			records++
+			c.logs = append(c.logs, c.log(c.ts, eventMsg.Type, attrs))
+			c.records++
+		default:
+			c.convertLegacyEvent(eventMsg.Type, entry.Payload)
 		}
 
 	case "turn_context":
+		if !c.emit {
+			return
+		}
 		// Extract model from turn context if available
 		var turnCtx struct {
 			Model string `json:"model"`
@@ -325,8 +483,11 @@ func ConvertCodexEntry(entry CodexJSONLEntry, ts time.Time, state *CodexState, i
 
 	case "response_item":
 		// ResponseItem entries hold the transcript content
-		var respItem CodexResponseItem
+		var respItem codexResponsePayload
 		if err := json.Unmarshal(entry.Payload, &respItem); err != nil {
+			return
+		}
+		if c.convertToolCall(respItem) || !c.emit {
 			return
 		}
 		modelAttrs := func() map[string]string {
@@ -355,37 +516,7 @@ func ConvertCodexEntry(entry CodexJSONLEntry, ts time.Time, state *CodexState, i
 			if role == "" {
 				role = "assistant"
 			}
-			transcript(textContent, role, modelAttrs())
-
-		case "function_call":
-			attrs := map[string]string{"tool.name": respItem.Name}
-			if respItem.Arguments != "" {
-				attrs["tool.input"] = respItem.Arguments
-			}
-			if respItem.CallID != "" {
-				attrs["tool.call_id"] = respItem.CallID
-			}
-			transcript(fmt.Sprintf("Tool call: %s", respItem.Name), "tool_use", attrs)
-
-		case "function_call_output":
-			// The output is a string or a JSON object
-			var outputContent string
-			if len(respItem.Output) > 0 {
-				var strOutput string
-				if err := json.Unmarshal(respItem.Output, &strOutput); err == nil {
-					outputContent = strOutput
-				} else {
-					outputContent = string(respItem.Output)
-				}
-			}
-			attrs := map[string]string{}
-			if outputContent != "" {
-				attrs["tool.output"] = outputContent
-			}
-			if respItem.CallID != "" {
-				attrs["tool.call_id"] = respItem.CallID
-			}
-			transcript(outputContent, "tool_result", attrs)
+			c.transcript(textContent, role, modelAttrs())
 
 		case "reasoning":
 			var reasoningText string
@@ -400,16 +531,17 @@ func ConvertCodexEntry(entry CodexJSONLEntry, ts time.Time, state *CodexState, i
 			if reasoningText == "" {
 				return
 			}
-			transcript(reasoningText, "assistant", modelAttrs()) // Reasoning is from the assistant
+			c.transcript(reasoningText, "assistant", modelAttrs()) // Reasoning is from the assistant
 		}
 	}
-	return
 }
 
 // codexTokenMetrics returns the token and cost metrics of a token_count
 // event. Codex reports running totals, so the metrics hold the increase over
-// the previous event's totals (last, nil for the first event).
-func codexTokenMetrics(ts time.Time, model string, total, last *CodexTokenCount) []api.MetricDataPoint {
+// the previous event's totals (last, nil for the first event). They carry
+// the session's ID, as the usage Codex sends over OTLP does, so storage can
+// recognize a response recorded both ways (storage/usage_overlap.go).
+func codexTokenMetrics(ts time.Time, model, sessionID string, total, last *CodexTokenCount) []api.MetricDataPoint {
 	// Handle alternative field names
 	cached := func(c *CodexTokenCount) int {
 		if c.CacheReadInputTokens != 0 {
@@ -450,6 +582,11 @@ func codexTokenMetrics(ts time.Time, model string, total, last *CodexTokenCount)
 	cost := pricing.CalculateCodexCost(model, int64(deltaInput), int64(deltaCacheRead), int64(deltaCacheWrite), int64(deltaOutput))
 	if cost != nil && *cost > 0 {
 		metrics = append(metrics, CreateCodexCostMetric(ts, model, *cost))
+	}
+	if sessionID != "" {
+		for i := range metrics {
+			metrics[i].Attributes["session.id"] = sessionID
+		}
 	}
 	return metrics
 }

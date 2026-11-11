@@ -6,10 +6,7 @@ import {
   formatRelativeTime,
   getStatusColor,
   getSeverityColor,
-  truncate,
   getSpanKindIcon,
-  getSpanKindLabel,
-  getServiceColor,
   formatEventTime,
   formatIntervalSeconds,
 } from './utils'
@@ -170,29 +167,6 @@ describe('getSeverityColor', () => {
   })
 })
 
-describe('truncate', () => {
-  it('returns string unchanged if shorter than length', () => {
-    expect(truncate('hello', 10)).toBe('hello')
-  })
-
-  it('returns string unchanged if equal to length', () => {
-    expect(truncate('hello', 5)).toBe('hello')
-  })
-
-  it('truncates and adds ellipsis if longer than length', () => {
-    expect(truncate('hello world', 5)).toBe('hello...')
-    expect(truncate('hello world', 8)).toBe('hello wo...')
-  })
-
-  it('handles empty string', () => {
-    expect(truncate('', 5)).toBe('')
-  })
-
-  it('handles length of 0', () => {
-    expect(truncate('hello', 0)).toBe('...')
-  })
-})
-
 describe('getSpanKindIcon', () => {
   it('returns → for CLIENT', () => {
     expect(getSpanKindIcon('CLIENT')).toBe('→')
@@ -226,75 +200,6 @@ describe('getSpanKindIcon', () => {
   it('returns ○ for unknown kind', () => {
     expect(getSpanKindIcon('UNKNOWN')).toBe('○')
     expect(getSpanKindIcon('')).toBe('○')
-  })
-})
-
-describe('getSpanKindLabel', () => {
-  it('returns Client for CLIENT', () => {
-    expect(getSpanKindLabel('CLIENT')).toBe('Client')
-    expect(getSpanKindLabel('client')).toBe('Client')
-  })
-
-  it('returns Server for SERVER', () => {
-    expect(getSpanKindLabel('SERVER')).toBe('Server')
-    expect(getSpanKindLabel('server')).toBe('Server')
-  })
-
-  it('returns Producer for PRODUCER', () => {
-    expect(getSpanKindLabel('PRODUCER')).toBe('Producer')
-    expect(getSpanKindLabel('producer')).toBe('Producer')
-  })
-
-  it('returns Consumer for CONSUMER', () => {
-    expect(getSpanKindLabel('CONSUMER')).toBe('Consumer')
-    expect(getSpanKindLabel('consumer')).toBe('Consumer')
-  })
-
-  it('returns Internal for INTERNAL', () => {
-    expect(getSpanKindLabel('INTERNAL')).toBe('Internal')
-    expect(getSpanKindLabel('internal')).toBe('Internal')
-  })
-
-  it('returns Unknown for undefined', () => {
-    expect(getSpanKindLabel(undefined)).toBe('Unknown')
-  })
-
-  it('returns Unknown for unrecognized kind', () => {
-    expect(getSpanKindLabel('SOMETHING_ELSE')).toBe('Unknown')
-    expect(getSpanKindLabel('')).toBe('Unknown')
-  })
-})
-
-describe('getServiceColor', () => {
-  it('returns consistent color for same service name', () => {
-    const color1 = getServiceColor('my-service')
-    const color2 = getServiceColor('my-service')
-    expect(color1).toBe(color2)
-  })
-
-  it('returns different colors for different services', () => {
-    // Test with services that should hash differently
-    const colorA = getServiceColor('service-a')
-    const colorB = getServiceColor('service-b')
-    // Colors might be same due to hash collision, but let's verify they're valid
-    expect(colorA).toMatch(/^bg-\w+-500$/)
-    expect(colorB).toMatch(/^bg-\w+-500$/)
-  })
-
-  it('handles empty string', () => {
-    const color = getServiceColor('')
-    expect(color).toMatch(/^bg-\w+-500$/)
-  })
-
-  it('handles special characters', () => {
-    const color = getServiceColor('service-with-special-chars_123')
-    expect(color).toMatch(/^bg-\w+-500$/)
-  })
-
-  it('handles very long service names', () => {
-    const longName = 'a'.repeat(1000)
-    const color = getServiceColor(longName)
-    expect(color).toMatch(/^bg-\w+-500$/)
   })
 })
 

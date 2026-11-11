@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -193,7 +192,12 @@ type TraceFilter struct {
 }
 
 // QueryTraces returns a page of the traces with spans in [from, to],
-// newest first
+// newest first. Like sessions, traces are listed whole: the range selects
+// the traces (those with a span in it, matching the filter) and orders them
+// by their first span in it, and each listed trace is described by all of
+// its spans, also those outside the range (traceOverviews), as its detail
+// view shows it. A trace that began before from therefore shows its true
+// start, earlier than the time it is sorted by.
 func (s *DuckDBStore) QueryTraces(ctx context.Context, filter TraceFilter, from, to time.Time, page Page) (*api.TracesResponse, error) {
 	return s.queryRawTraceOverviews(ctx, filter, from, to, page, true)
 }
@@ -209,13 +213,12 @@ func (s *DuckDBStore) queryRawTraceOverviews(ctx context.Context, filter TraceFi
 	// Spans are unique per (ServiceName, TraceId, SpanId): inserts skip stored
 	// spans and migration 2 removed older duplicates. The attribute columns are
 	// only read when searching.
-	columns := "TraceId, SpanId, SpanName, ServiceName, Timestamp, Duration, StatusCode"
+	columns := "TraceId, Timestamp, SpanName, ServiceName, SessionId"
 	ctes := conditions{}
 	var joins []string
 	if background := tools.BackgroundTraceServices(); !filter.Background && len(background) > 0 {
 		// A trace is kept when one of its spans is not a background span:
 		// one of another service, or one that belongs to a session
-		columns += ", SessionId"
 		placeholders := func(n int) string { return "?" + strings.Repeat(", ?", n-1) }
 		args := stringArgs(background)
 		foreground := `ServiceName NOT IN (` + placeholders(len(background)) + `) OR COALESCE(SessionId, '') <> ''`
@@ -240,10 +243,8 @@ func (s *DuckDBStore) queryRawTraceOverviews(ctx context.Context, filter TraceFi
 	}
 	if search := filter.Search; search != "" {
 		columns += ", StatusMessage, SpanAttributes, ResourceAttributes"
-		cond, args := containsCondition([]string{
-			"SpanName", "ServiceName", "COALESCE(StatusMessage, '')",
-			"COALESCE(CAST(SpanAttributes AS VARCHAR), '')", "COALESCE(CAST(ResourceAttributes AS VARCHAR), '')",
-		}, search)
+		cond, args := searchCondition([]string{"SpanName", "ServiceName", "COALESCE(StatusMessage, '')"},
+			[]string{"SpanAttributes", "ResourceAttributes"}, search)
 		ctes.add(`matching_traces AS (
 			SELECT DISTINCT TraceId
 			FROM spans
@@ -272,24 +273,13 @@ func (s *DuckDBStore) queryRawTraceOverviews(ctx context.Context, filter TraceFi
 		having.add(cond, args...)
 	}
 
+	// The page: trace IDs and their first span in the range, the sort key
 	query := with + `
-		SELECT
-			spans.TraceId as ID,
-			'` + api.TraceKindOTelTrace + `' as Kind,
-			spans.TraceId,
-			FIRST(spans.SpanId ORDER BY spans.Timestamp ASC) as RootSpanId,
-			FIRST(spans.SpanName ORDER BY spans.Timestamp ASC) as RootSpan,
-			FIRST(spans.ServiceName ORDER BY spans.Timestamp ASC) as ServiceName,
-			MIN(spans.Timestamp) as StartTime,
-			CAST((MAX(epoch_ms(spans.Timestamp) + COALESCE(spans.Duration, 0)/1000000) - MIN(epoch_ms(spans.Timestamp))) * 1000000 AS BIGINT) as Duration,
-			COUNT(*) as SpanCount,
-			CASE WHEN SUM(CASE WHEN spans.StatusCode = 'ERROR' THEN 1 ELSE 0 END) > 0 THEN 'ERROR'
-			     WHEN SUM(CASE WHEN spans.StatusCode = 'OK' THEN 1 ELSE 0 END) > 0 THEN 'OK'
-			     ELSE 'UNSET' END as Status
+		SELECT spans.TraceId, MIN(spans.Timestamp) AS FirstInRange
 		FROM spans
 		` + joinMatching + `
 		GROUP BY spans.TraceId` + having.clause("HAVING") + `
-		ORDER BY StartTime DESC, spans.TraceId DESC
+		ORDER BY FirstInRange DESC, spans.TraceId DESC
 		LIMIT ? OFFSET ?`
 	queryArgs := concatArgs(withArgs, having.args, []any{limit + 1, offset})
 
@@ -297,26 +287,45 @@ func (s *DuckDBStore) queryRawTraceOverviews(ctx context.Context, filter TraceFi
 	if err != nil {
 		return nil, fmt.Errorf("querying traces: %w", err)
 	}
-	defer rows.Close()
-
-	var traces []api.TraceOverview
+	type pageRow struct {
+		traceID string
+		first   time.Time
+	}
+	var pageRows []pageRow
 	for rows.Next() {
-		var t api.TraceOverview
-		if err := rows.Scan(&t.ID, &t.Kind, &t.TraceID, &t.RootSpanID, &t.RootSpan, &t.ServiceName, &t.StartTime, &t.Duration, &t.SpanCount, &t.Status); err != nil {
+		var r pageRow
+		if err := rows.Scan(&r.traceID, &r.first); err != nil {
+			rows.Close()
 			return nil, fmt.Errorf("scanning trace: %w", err)
 		}
-		traces = append(traces, t)
+		pageRows = append(pageRows, r)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return nil, fmt.Errorf("iterating traces: %w", err)
 	}
+	rows.Close()
 
-	resp := &api.TracesResponse{Traces: traces}
-	if len(traces) > limit {
-		resp.Traces = traces[:limit]
+	resp := &api.TracesResponse{Traces: []api.TraceOverview{}}
+	if len(pageRows) > limit {
+		pageRows = pageRows[:limit]
 		resp.HasMore = true
-		last := traces[limit-1]
-		resp.NextCursor = encodeCursor(pageCursor{Time: formatTimeForDB(last.StartTime), Keys: []string{last.TraceID}})
+		last := pageRows[limit-1]
+		resp.NextCursor = encodeCursor(pageCursor{Time: formatTimeForDB(last.first), Keys: []string{last.traceID}})
+	}
+	ids := make([]string, len(pageRows))
+	for i, r := range pageRows {
+		ids[i] = r.traceID
+	}
+	overviews, err := s.traceOverviews(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range pageRows {
+		// A trace deleted meanwhile is left out
+		if o := overviews[r.traceID]; o != nil {
+			resp.Traces = append(resp.Traces, *o)
+		}
 	}
 	if !includeCount {
 		resp.Total = len(resp.Traces)
@@ -335,12 +344,20 @@ func (s *DuckDBStore) queryRawTraceOverviews(ctx context.Context, filter TraceFi
 	return resp, nil
 }
 
+// traceSessionExpr is the aggregate of a trace's spans' session column that
+// is the session of the trace: the session ID of those spans that have one
+// when they all have the same, else NULL. MIN and MAX are cheaper than
+// COUNT(DISTINCT ...) in the per-trace aggregation of trace lists.
+func traceSessionExpr(column string) string {
+	return "CASE WHEN MIN(" + column + ") = MAX(" + column + ") THEN MIN(" + column + ") END"
+}
+
 // spanSelectColumns are the columns scanSpans reads
 const spanSelectColumns = `
 	Timestamp, TraceId, SpanId, ParentSpanId, TraceState,
 	SpanName, SpanKind, ServiceName, ResourceAttributes,
 	ScopeName, ScopeVersion, SpanAttributes, Duration,
-	StatusCode, StatusMessage`
+	StatusCode, StatusMessage, SessionId`
 
 // TraceSpans returns the spans of a trace, oldest first. An ID that is no
 // trace ID is looked up as a span ID, and that span's trace is returned.
@@ -390,7 +407,8 @@ func (s *DuckDBStore) ServiceTraceSpans(ctx context.Context, service, traceID st
 	return s.scanSpans(ctx, query, service, traceID)
 }
 
-// scanSpans executes a query and scans the results into api.Span slice
+// scanSpans executes a query selecting spanSelectColumns and scans the
+// results into api.Span slice
 func (s *DuckDBStore) scanSpans(ctx context.Context, query string, args ...interface{}) ([]api.Span, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -398,17 +416,17 @@ func (s *DuckDBStore) scanSpans(ctx context.Context, query string, args ...inter
 	}
 	defer rows.Close()
 
-	var spans []api.Span
+	spans := []api.Span{} // clients read a list
 	for rows.Next() {
 		var span api.Span
-		var parentSpanID, traceState, spanKind, scopeName, scopeVersion, statusCode, statusMessage sql.NullString
+		var parentSpanID, traceState, spanKind, scopeName, scopeVersion, statusCode, statusMessage, sessionID sql.NullString
 		var resourceAttrs, spanAttrs interface{}
 
 		if err := rows.Scan(
 			&span.Timestamp, &span.TraceID, &span.SpanID, &parentSpanID, &traceState,
 			&span.SpanName, &spanKind, &span.ServiceName, &resourceAttrs,
 			&scopeName, &scopeVersion, &spanAttrs, &span.Duration,
-			&statusCode, &statusMessage,
+			&statusCode, &statusMessage, &sessionID,
 		); err != nil {
 			return nil, fmt.Errorf("scanning span: %w", err)
 		}
@@ -420,6 +438,7 @@ func (s *DuckDBStore) scanSpans(ctx context.Context, query string, args ...inter
 		span.ScopeVersion = scopeVersion.String
 		span.StatusCode = statusCode.String
 		span.StatusMessage = statusMessage.String
+		span.SessionID = sessionID.String
 		span.ResourceAttributes = scanJSONToMap(resourceAttrs)
 		span.SpanAttributes = scanJSONToMap(spanAttrs)
 
@@ -432,40 +451,6 @@ func (s *DuckDBStore) scanSpans(ctx context.Context, query string, args ...inter
 	return spans, nil
 }
 
-func (s *DuckDBStore) GetServices(ctx context.Context) ([]string, error) {
-	query := `
-		SELECT DISTINCT ServiceName
-		FROM (
-			SELECT ServiceName FROM otel_traces
-			UNION
-			SELECT ServiceName FROM otel_logs
-			UNION
-			SELECT ServiceName FROM otel_metrics
-		)
-		ORDER BY ServiceName
-	`
-
-	rows, err := s.db.QueryContext(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("querying services: %w", err)
-	}
-	defer rows.Close()
-
-	var services []string
-	for rows.Next() {
-		var service string
-		if err := rows.Scan(&service); err != nil {
-			return nil, fmt.Errorf("scanning service: %w", err)
-		}
-		services = append(services, service)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating services: %w", err)
-	}
-
-	return services, nil
-}
-
 // GetRecentTraces returns the newest traces in [from, to], without paging
 // and without background traces (TraceFilter.Background)
 func (s *DuckDBStore) GetRecentTraces(ctx context.Context, limit int, from, to time.Time) (*api.TracesResponse, error) {
@@ -475,140 +460,4 @@ func (s *DuckDBStore) GetRecentTraces(ctx context.Context, limit int, from, to t
 	}
 	resp.HasMore, resp.NextCursor = false, ""
 	return resp, nil
-}
-
-// GetStats returns record counts over all stored telemetry
-func (s *DuckDBStore) GetStats(ctx context.Context) (*api.StatsResponse, error) {
-	return s.GetStatsInRange(ctx, TimeRange{})
-}
-
-// GetStatsInRange returns the record counts of the records in r. Services
-// lists every service that sent telemetry, also outside r.
-func (s *DuckDBStore) GetStatsInRange(ctx context.Context, r TimeRange) (*api.StatsResponse, error) {
-	stats := &api.StatsResponse{}
-
-	filter, filterArgs := r.filter("Timestamp")
-	where := " WHERE true" + filter
-	statsQuery := `
-		SELECT
-			(SELECT COUNT(*) FROM otel_traces` + where + `) as span_count,
-			(SELECT COUNT(DISTINCT TraceId) FROM otel_traces` + where + `) as trace_count,
-			(SELECT COUNT(*) FROM otel_logs` + where + `) as log_count,
-			(SELECT COUNT(*) FROM otel_metrics` + where + `) as metric_count,
-			(SELECT COUNT(*) FROM otel_traces` + where + ` AND StatusCode = 'ERROR') as error_count
-	`
-	var args []any
-	for range 5 {
-		args = append(args, filterArgs...)
-	}
-
-	var errorCount int64
-	if err := s.db.QueryRowContext(ctx, statsQuery, args...).Scan(
-		&stats.SpanCount,
-		&stats.TraceCount,
-		&stats.LogCount,
-		&stats.MetricCount,
-		&errorCount,
-	); err != nil {
-		return nil, fmt.Errorf("getting stats: %w", err)
-	}
-
-	// Get services (still needs separate query due to multiple rows)
-	services, err := s.GetServices(ctx)
-	if err != nil {
-		return nil, err
-	}
-	stats.Services = services
-	stats.ServiceCount = len(services)
-
-	// Calculate error rate
-	if stats.SpanCount > 0 {
-		stats.ErrorRate = float64(errorCount) / float64(stats.SpanCount) * 100
-	}
-
-	return stats, nil
-}
-
-// Helper functions
-func mapToString(m map[string]string) string {
-	if len(m) == 0 {
-		return "{}"
-	}
-	b, err := json.Marshal(m)
-	if err != nil {
-		return "{}"
-	}
-	return string(b)
-}
-
-func stringArrayToString(arr []string) string {
-	if len(arr) == 0 {
-		return "[]"
-	}
-	b, err := json.Marshal(arr)
-	if err != nil {
-		return "[]"
-	}
-	return string(b)
-}
-
-func timestampArrayToString(arr []time.Time) string {
-	if len(arr) == 0 {
-		return "[]"
-	}
-	strs := make([]string, len(arr))
-	for i, t := range arr {
-		strs[i] = t.Format(time.RFC3339Nano)
-	}
-	b, err := json.Marshal(strs)
-	if err != nil {
-		return "[]"
-	}
-	return string(b)
-}
-
-func mapArrayToString(arr []map[string]string) string {
-	if len(arr) == 0 {
-		return "[]"
-	}
-	b, err := json.Marshal(arr)
-	if err != nil {
-		return "[]"
-	}
-	return string(b)
-}
-
-// scanJSONToMap scans a JSON column that DuckDB returns as map[string]interface{}
-// and converts it to map[string]string. Errors are logged but not returned since
-// partial results may still be useful for display purposes.
-func scanJSONToMap(v interface{}) map[string]string {
-	result := make(map[string]string)
-	if v == nil {
-		return result
-	}
-
-	switch val := v.(type) {
-	case map[string]interface{}:
-		for k, v := range val {
-			if s, ok := v.(string); ok {
-				result[k] = s
-			} else if v != nil {
-				// Convert non-string values to JSON
-				b, err := json.Marshal(v)
-				if err != nil {
-					// Log but continue - use empty string for this key
-					result[k] = fmt.Sprintf("<error: %v>", err)
-					continue
-				}
-				result[k] = string(b)
-			}
-		}
-	case string:
-		// If it's a string, try to parse it as JSON
-		if err := json.Unmarshal([]byte(val), &result); err != nil {
-			// Log error but return empty map - caller can handle missing data
-			return result
-		}
-	}
-	return result
 }

@@ -4,17 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
-	"errors"
 	"fmt"
-	"math"
-	"sort"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/tobilg/ai-observer/internal/api"
-	"github.com/tobilg/ai-observer/internal/logger"
 	"github.com/tobilg/ai-observer/internal/otlp"
 	"github.com/tobilg/ai-observer/internal/tools"
 )
@@ -31,7 +25,13 @@ func (s *DuckDBStore) InsertMetrics(ctx context.Context, metrics []api.MetricDat
 	}
 
 	return s.inWriteTx(ctx, func(w *writeTx) error {
-		return insertMetricsTx(ctx, w, metrics, "")
+		if err := insertMetricsTx(ctx, w, metrics, ""); err != nil {
+			return err
+		}
+		// A session's token metrics complete what OTLP recorded of its
+		// requests: count them only once (usage_overlap.go)
+		_, err := reconcileUsage(ctx, w, nil, metrics, false)
+		return err
 	})
 }
 
@@ -170,7 +170,7 @@ func (s *DuckDBStore) QueryMetrics(ctx context.Context, service, metricName, met
 	}
 	defer rows.Close()
 
-	var metrics []api.MetricDataPoint
+	metrics := []api.MetricDataPoint{} // clients read a list
 	var rowIDs []int64
 	for rows.Next() {
 		var m api.MetricDataPoint
@@ -262,7 +262,7 @@ func (s *DuckDBStore) GetMetricNames(ctx context.Context, service string) ([]str
 	}
 	defer rows.Close()
 
-	var names []string
+	names := []string{} // clients read a list
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
@@ -308,7 +308,7 @@ func (s *DuckDBStore) GetBreakdownValues(ctx context.Context, metricName, attrib
 	}
 	defer rows.Close()
 
-	var values []string
+	values := []string{} // clients read a list
 	for rows.Next() {
 		var value string
 		if err := rows.Scan(&value); err != nil {
@@ -323,29 +323,70 @@ func (s *DuckDBStore) GetBreakdownValues(ctx context.Context, metricName, attrib
 	return values, nil
 }
 
-// QueryMetricSeries returns the series of one metric
+// GetMetricAttributeKeys returns the attribute keys of a metric's points,
+// optionally of one service: the keys series can be grouped and filtered by
+// (keys of other characters are left out). Like GetBreakdownValues it is not
+// time-filtered and reads the distinct attribute sets, not every point.
+func (s *DuckDBStore) GetMetricAttributeKeys(ctx context.Context, metricName, service string) ([]string, error) {
+	var where conditions
+	where.add("MetricName = ?", seriesSourceMetric(metricName))
+	where.addService(service)
+	query := `
+		SELECT DISTINCT key FROM (
+			SELECT UNNEST(json_keys(attrs)) AS key
+			FROM (SELECT DISTINCT CAST(Attributes AS VARCHAR) AS attrs FROM otel_metrics` + where.clause("WHERE") + `)
+		)
+		ORDER BY key`
+	rows, err := s.db.QueryContext(ctx, query, where.args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying metric attribute keys: %w", err)
+	}
+	defer rows.Close()
+
+	keys := []string{}
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, fmt.Errorf("scanning metric attribute key: %w", err)
+		}
+		if jsonAttributeKeyPattern.MatchString(key) {
+			keys = append(keys, key)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating metric attribute keys: %w", err)
+	}
+	return keys, nil
+}
+
+// QueryMetricSeries returns the series of one metric with UTC buckets, by
+// type (bucketed) or by type and model (aggregate)
 func (s *DuckDBStore) QueryMetricSeries(ctx context.Context, metricName, service string, from, to time.Time, intervalSeconds int64, aggregate bool) (*api.TimeSeriesResponse, error) {
-	return s.queryOneMetric(ctx, api.MetricQuery{Name: metricName, Service: service, Aggregate: aggregate}, from, to, intervalSeconds, "")
+	return s.QuerySeries(ctx, api.MetricQuery{Name: metricName, Service: service, Aggregate: aggregate},
+		SeriesRange{From: from, To: to, Interval: intervalSeconds})
 }
 
 // QueryMetricTotals returns the totals of a metric in [from, to] by service,
 // type and the attribute groupBy (the model when ""), with cumulative
 // counters turned into increases like series
 func (s *DuckDBStore) QueryMetricTotals(ctx context.Context, metricName, service string, from, to time.Time, groupBy string) (*api.TimeSeriesResponse, error) {
-	return s.queryOneMetric(ctx, api.MetricQuery{Name: metricName, Service: service, Aggregate: true}, from, to, 0, groupBy)
-}
-
-// queryOneMetric reads the points' type and then the series of one metric
-func (s *DuckDBStore) queryOneMetric(ctx context.Context, query api.MetricQuery, from, to time.Time, intervalSeconds int64, groupBy string) (*api.TimeSeriesResponse, error) {
-	types, err := s.metricTypes(ctx, []api.MetricQuery{query}, from, to)
+	q := api.MetricQuery{Name: metricName, Service: service, Aggregate: true}
+	sq, err := resolveSeriesQuery(q)
 	if err != nil {
 		return nil, err
 	}
-	typeInfo, ok := types[metricTypeKey{seriesSourceMetric(query.Name), query.Service}]
-	if !ok {
-		return &api.TimeSeriesResponse{Series: []api.TimeSeries{}}, nil
+	if groupBy != "" {
+		group, err := attributeGroup(groupBy)
+		if err != nil {
+			return nil, err
+		}
+		sq.groups = []groupSpec{typeGroup, group}
 	}
-	return s.queryMetricSeriesInternal(ctx, query, from, to, intervalSeconds, typeInfo, groupBy)
+	types, err := s.metricTypes(ctx, []api.MetricQuery{q}, from, to)
+	if err != nil {
+		return nil, err
+	}
+	return s.runSeriesQuery(ctx, sq, SeriesRange{From: from, To: to}, types)
 }
 
 // metricTypeInfo describes the points of a metric in a query's time range
@@ -376,61 +417,10 @@ const cumulativeLookback = 24 * time.Hour
 // DuckDB already parallelizes each query, so more would only compete.
 const maxConcurrentSeriesQueries = 4
 
-// QueryBatchMetricSeries executes multiple metric series queries in parallel
+// QueryBatchMetricSeries runs several series queries with UTC buckets
+// (QuerySeriesBatch)
 func (s *DuckDBStore) QueryBatchMetricSeries(ctx context.Context, queries []api.MetricQuery, from, to time.Time, intervalSeconds int64) *api.BatchMetricSeriesResponse {
-	if len(queries) == 0 {
-		return &api.BatchMetricSeriesResponse{Results: []api.MetricQueryResult{}}
-	}
-
-	results := make([]api.MetricQueryResult, len(queries))
-	types, err := s.metricTypes(ctx, queries, from, to)
-	if err != nil {
-		logger.Error("Batch metric type lookup failed", "error", err)
-		for i, q := range queries {
-			results[i] = api.MetricQueryResult{ID: q.ID, Error: queryErrorMessage(err)}
-		}
-		return &api.BatchMetricSeriesResponse{Results: results}
-	}
-
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, maxConcurrentSeriesQueries)
-	for i, q := range queries {
-		typeInfo, ok := types[metricTypeKey{seriesSourceMetric(q.Name), q.Service}]
-		if !ok {
-			// No data in the range
-			results[i] = api.MetricQueryResult{ID: q.ID, Success: true, Series: []api.TimeSeries{}}
-			continue
-		}
-
-		wg.Add(1)
-		go func(idx int, q api.MetricQuery) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			result := api.MetricQueryResult{ID: q.ID}
-			resp, err := s.queryMetricSeriesInternal(ctx, q, from, to, intervalSeconds, typeInfo, "")
-			if err != nil {
-				logger.Error("Batch metric series query failed", "id", q.ID, "metric", q.Name, "error", err)
-				result.Error = queryErrorMessage(err)
-			} else {
-				result.Success = true
-				result.Series = resp.Series
-			}
-			results[idx] = result
-		}(i, q)
-	}
-	wg.Wait()
-
-	return &api.BatchMetricSeriesResponse{Results: results}
-}
-
-// queryErrorMessage is the error reported for a failed batch query
-func queryErrorMessage(err error) string {
-	if errors.Is(err, context.DeadlineExceeded) {
-		return "query timed out"
-	}
-	return "failed to query metric series"
+	return s.QuerySeriesBatch(ctx, queries, SeriesRange{From: from, To: to, Interval: intervalSeconds})
 }
 
 // metricTypes looks up the type and temporality of the points each query
@@ -515,243 +505,17 @@ func (s *DuckDBStore) metricTypes(ctx context.Context, queries []api.MetricQuery
 }
 
 // seriesBucketSeconds returns the bucket size for a time-bucketed series: the
-// requested interval, made coarser when the range would need too many buckets
+// requested interval (DefaultSeriesInterval when not positive, at most
+// MaxSeriesInterval), made coarser when the range would need too many
+// buckets
 func seriesBucketSeconds(from, to time.Time, intervalSeconds int64) int64 {
-	intervalSeconds = normalizeIntervalSeconds(intervalSeconds)
+	if intervalSeconds <= 0 {
+		intervalSeconds = DefaultSeriesInterval
+	}
+	intervalSeconds = min(intervalSeconds, MaxSeriesInterval)
 	rangeSeconds := int64(to.Sub(from).Seconds())
 	if minInterval := (rangeSeconds + maxSeriesBuckets - 1) / maxSeriesBuckets; minInterval > intervalSeconds {
 		return minInterval
 	}
 	return intervalSeconds
-}
-
-// queryMetricSeriesInternal is the core query logic, using pre-fetched type
-// info. A ".delta" alias reads its cumulative counter (deltaAliases); the
-// series keep the requested name. Aggregates are grouped by the attribute
-// groupBy, or by the model when it is "".
-func (s *DuckDBStore) queryMetricSeriesInternal(ctx context.Context, q api.MetricQuery, from, to time.Time, intervalSeconds int64, typeInfo metricTypeInfo, groupBy string) (*api.TimeSeriesResponse, error) {
-	fromStr := formatTimeForDB(from)
-	toStr := formatTimeForDB(to)
-
-	// The value of a point: histograms keep their sum in Sum
-	valueExpr := "COALESCE(Value, Sum)"
-	if typeInfo.metricType == "histogram" || typeInfo.metricType == "exponential_histogram" {
-		valueExpr = "Sum"
-	}
-
-	serviceFilter, serviceArgs := serviceCondition(q.Service)
-	if serviceFilter != "" {
-		serviceFilter = " AND " + serviceFilter
-	}
-	typeExpr := "COALESCE(NULLIF(Attributes->>'type', ''), NULLIF(Attributes->>'gen_ai.token.type', ''), 'default')"
-	modelExpr := "COALESCE(NULLIF(Attributes->>'model', ''), 'default')"
-	groupLabel := "model"
-	if groupBy != "" {
-		path, err := metricAttributeJSONPath(groupBy)
-		if err != nil {
-			return nil, err
-		}
-		modelExpr = "COALESCE(NULLIF(json_extract_string(Attributes, '" + path + "'), ''), 'default')"
-		groupLabel = groupBy
-	}
-
-	// points holds one row per data point in [from, to] with its value v.
-	// Cumulative points carry running totals, so v becomes the increase over
-	// the previous point of the same series (identified by its attributes),
-	// or the full value at a series start or reset. DELTA points are kept.
-	var pointsCTE string
-	var args []interface{}
-	if typeInfo.cumulative && typeInfo.metricType != "gauge" {
-		// Deleted points leave a baseline (metric_baselines), which serves as
-		// the previous point of the series but is no point itself
-		pointsCTE = `
-			raw AS (
-				SELECT Timestamp, ServiceName, attr_type, attr_model, v, cumulative, baseline,
-					LAG(v) OVER (PARTITION BY ServiceName, attrs, resource_attrs ORDER BY Timestamp) AS prev
-				FROM (
-					SELECT Timestamp, ServiceName, CAST(Attributes AS VARCHAR) AS attrs,
-						CAST(ResourceAttributes AS VARCHAR) AS resource_attrs,
-						` + typeExpr + ` AS attr_type, ` + modelExpr + ` AS attr_model,
-						` + valueExpr + ` AS v,
-						AggregationTemporality = 2 AS cumulative, false AS baseline
-					FROM otel_metrics
-					WHERE MetricName = ?
-						AND Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
-						AND ` + valueExpr + ` IS NOT NULL` + serviceFilter + `
-					UNION ALL
-					SELECT Timestamp, ServiceName, Attributes, ResourceAttributes, NULL, NULL, Value, true, true
-					FROM metric_baselines
-					WHERE MetricName = ?
-						AND Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP` + serviceFilter + `
-				)
-			),
-			points AS (
-				SELECT Timestamp, ServiceName, attr_type, attr_model,
-					CASE WHEN cumulative IS NOT TRUE THEN v
-					     WHEN prev IS NULL OR v < prev THEN v
-					     ELSE v - prev END AS v
-				FROM raw
-				WHERE Timestamp >= ?::TIMESTAMP AND NOT baseline
-			)`
-		source := []interface{}{seriesSourceMetric(q.Name), formatTimeForDB(from.Add(-cumulativeLookback)), toStr}
-		source = append(source, serviceArgs...)
-		// The points and the baselines are read with the same filter
-		points, baselines := source, source
-		args = concatArgs(points, baselines, []any{fromStr})
-	} else {
-		pointsCTE = `
-			points AS (
-				SELECT Timestamp, ServiceName, ` + typeExpr + ` AS attr_type, ` + modelExpr + ` AS attr_model,
-					` + valueExpr + ` AS v
-				FROM otel_metrics
-				WHERE MetricName = ?
-					AND Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP
-					AND ` + valueExpr + ` IS NOT NULL` + serviceFilter + `
-			)`
-		args = concatArgs([]any{seriesSourceMetric(q.Name), fromStr, toStr}, serviceArgs)
-	}
-
-	// Gauges are levels and are averaged; counters and histograms add up
-	aggFunction := "SUM(v)"
-	if typeInfo.metricType == "gauge" {
-		aggFunction = "AVG(v)"
-	}
-
-	var query string
-	if q.Aggregate {
-		// Scalar aggregation over the whole range
-		query = `WITH ` + pointsCTE + `
-			SELECT ServiceName, attr_type, attr_model, ` + aggFunction + ` AS agg_value
-			FROM points
-			GROUP BY ServiceName, attr_type, attr_model`
-	} else {
-		// Every bucket of the range is returned, with zeros for buckets without data
-		interval := fmt.Sprintf("INTERVAL '%d seconds'", seriesBucketSeconds(from, to, intervalSeconds))
-		query = `WITH ` + pointsCTE + `,
-			buckets AS (
-				SELECT UNNEST(generate_series(
-					time_bucket(` + interval + `, ?::TIMESTAMP),
-					time_bucket(` + interval + `, ?::TIMESTAMP),
-					` + interval + `
-				)) AS bucket
-			),
-			series_labels AS (
-				SELECT DISTINCT ServiceName, attr_type FROM points
-			),
-			data AS (
-				SELECT time_bucket(` + interval + `, Timestamp) AS bucket, ServiceName, attr_type, ` + aggFunction + ` AS agg_value
-				FROM points
-				GROUP BY bucket, ServiceName, attr_type
-			)
-			SELECT b.bucket, s.ServiceName, s.attr_type, COALESCE(d.agg_value, 0) AS agg_value
-			FROM buckets b
-			CROSS JOIN series_labels s
-			LEFT JOIN data d ON b.bucket = d.bucket
-				AND s.ServiceName = d.ServiceName
-				AND s.attr_type = d.attr_type
-			ORDER BY b.bucket, s.ServiceName, s.attr_type`
-		args = append(args, fromStr, toStr)
-	}
-
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("querying metric series: %w", err)
-	}
-	defer rows.Close()
-
-	seriesMap := make(map[string]*api.TimeSeries)
-	for rows.Next() {
-		var bucket time.Time
-		var serviceName, attrType string
-		attrModel := "default"
-		var value float64
-
-		dest := []any{&serviceName, &attrType, &attrModel, &value}
-		if !q.Aggregate {
-			dest = []any{&bucket, &serviceName, &attrType, &value}
-		}
-		if err := rows.Scan(dest...); err != nil {
-			return nil, fmt.Errorf("scanning metric series: %w", err)
-		}
-
-		key := serviceName + ":" + attrType + ":" + attrModel
-		series, ok := seriesMap[key]
-		if !ok {
-			labels := map[string]string{"service": serviceName}
-			if attrType != "default" {
-				labels["type"] = attrType
-			}
-			if attrModel != "default" {
-				labels[groupLabel] = attrModel
-			}
-			series = &api.TimeSeries{Name: q.Name, Labels: labels, DataPoints: make([][2]float64, 0)}
-			seriesMap[key] = series
-		}
-		if q.Aggregate {
-			series.DataPoints = append(series.DataPoints, [2]float64{0, value}) // timestamp 0 marks an aggregate
-		} else {
-			series.DataPoints = append(series.DataPoints, [2]float64{float64(bucket.UnixMilli()), value})
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating metric series: %w", err)
-	}
-
-	// Sort for a stable legend and color order across refreshes
-	keys := make([]string, 0, len(seriesMap))
-	for key := range seriesMap {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	series := make([]api.TimeSeries, 0, len(keys))
-	for _, key := range keys {
-		series = append(series, *seriesMap[key])
-	}
-
-	return &api.TimeSeriesResponse{Series: series}, nil
-}
-
-// uint64ArrayToString serializes counts as a JSON array
-func uint64ArrayToString(arr []uint64) string {
-	if len(arr) == 0 {
-		return "[]"
-	}
-	var b strings.Builder
-	b.WriteByte('[')
-	for i, v := range arr {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString(strconv.FormatUint(v, 10))
-	}
-	b.WriteByte(']')
-	return b.String()
-}
-
-// float64ArrayToString serializes values as a JSON array in their shortest
-// exact form. JSON has no NaN or infinity, so those become null instead of
-// failing the whole insert.
-func float64ArrayToString(arr []float64) string {
-	if len(arr) == 0 {
-		return "[]"
-	}
-	var b strings.Builder
-	b.WriteByte('[')
-	for i, v := range arr {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		if math.IsNaN(v) || math.IsInf(v, 0) {
-			b.WriteString("null")
-			continue
-		}
-		// Like encoding/json: plain notation except for very small or large values
-		format := byte('f')
-		if abs := math.Abs(v); abs != 0 && (abs < 1e-6 || abs >= 1e21) {
-			format = 'e'
-		}
-		b.WriteString(strconv.FormatFloat(v, format, -1, 64))
-	}
-	b.WriteByte(']')
-	return b.String()
 }

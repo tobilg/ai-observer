@@ -398,6 +398,88 @@ var migrations = []migration{
 		},
 		run: deriveCodexServerUsage,
 	},
+	{
+		// Claude Code requests that both a session file and OTLP recorded
+		// were counted twice: remove the file's usage points of each request
+		// whose api_request event OTLP stored (matched by request_id), when
+		// the session also sent token metrics over OTLP within an hour of
+		// it, as storage/usage_overlap.go does for new records. The points
+		// of a request are those at the time and file of its
+		// claude_code.api_request log; a time with a request OTLP did not
+		// record keeps all of its points. A literal copy of that rule, so
+		// this migration does not change with it.
+		version: 11,
+		name:    "count Claude Code usage recorded over OTLP and in session files once",
+		stmts: []string{
+			`DELETE FROM otel_metrics USING (
+				WITH file_requests AS (
+					SELECT SourceFile, Timestamp, SessionId, json_extract_string(LogAttributes, '$.request_id') AS request_id
+					FROM otel_logs
+					WHERE ServiceName = 'claude-code'
+						AND json_extract_string(LogAttributes, '$."event.name"') = 'claude_code.api_request'
+						AND json_extract_string(LogAttributes, '$.import_source') IS NOT NULL
+				), otlp_requests AS (
+					SELECT DISTINCT request_id FROM (
+						SELECT json_extract_string(LogAttributes, '$.request_id') AS request_id
+						FROM otel_logs
+						WHERE ServiceName = 'claude-code' AND SourceFile IS NULL
+							AND json_extract_string(LogAttributes, '$."event.name"') = 'api_request'
+							AND json_extract_string(LogAttributes, '$.import_source') IS NULL
+					) WHERE request_id IS NOT NULL
+				), metered AS (
+					SELECT DISTINCT session_id, date_trunc('minute', Timestamp) AS minute FROM (
+						SELECT json_extract_string(Attributes, '$."session.id"') AS session_id, Timestamp
+						FROM otel_metrics
+						WHERE ServiceName = 'claude-code' AND MetricName = 'claude_code.token.usage'
+							AND SourceFile IS NULL AND json_extract_string(Attributes, '$.import_source') IS NULL
+					) WHERE session_id IS NOT NULL
+				), recorded AS (
+					SELECT f.SourceFile, f.Timestamp,
+						f.request_id IN (SELECT request_id FROM otlp_requests)
+						AND EXISTS (SELECT 1 FROM metered m WHERE m.session_id = f.SessionId
+							AND m.minute BETWEEN f.Timestamp - INTERVAL 61 MINUTE AND f.Timestamp + INTERVAL 60 MINUTE) AS recorded
+					FROM file_requests f
+				)
+				SELECT SourceFile, Timestamp
+				FROM recorded
+				GROUP BY SourceFile, Timestamp
+				HAVING bool_and(COALESCE(recorded, false))
+			) AS covered
+			WHERE otel_metrics.ServiceName = 'claude-code'
+				AND otel_metrics.MetricName IN ('claude_code.token.usage', 'claude_code.token.usage_user_facing',
+					'claude_code.cost.usage', 'claude_code.cost.usage_user_facing')
+				AND otel_metrics.SourceFile IS NOT DISTINCT FROM covered.SourceFile
+				AND otel_metrics.Timestamp = covered.Timestamp
+				AND json_extract_string(otel_metrics.Attributes, '$.import_source') IS NOT NULL`,
+		},
+	},
+	{
+		// A cumulative histogram's next point after a deletion needs the
+		// count and bucket counts of the deleted point before it, not only
+		// its sum, to count its increase (metrics_histogram.go). Baselines
+		// stored before stay without them (NULL: unknown), and such a point
+		// counts for the sum only, as before.
+		version: 12,
+		name:    "histogram metric baselines",
+		stmts: []string{
+			`ALTER TABLE metric_baselines ADD COLUMN IF NOT EXISTS Count UBIGINT`,
+			`ALTER TABLE metric_baselines ADD COLUMN IF NOT EXISTS BucketCounts JSON`,
+			`ALTER TABLE metric_baselines ADD COLUMN IF NOT EXISTS ExplicitBounds JSON`,
+		},
+	},
+	{
+		// MessageKey stores what the transcript merge rules compare of a
+		// log (msgmerge.Key), so session lists count messages and usage as
+		// transcripts show them without reading the logs' attributes
+		// (message_keys.go). It is derived data computed by the running
+		// version's code, so the migration only adds the column: readers
+		// compute keys that are NULL or of another version from the
+		// attributes, and servers refill them in the background
+		// (DuckDBStore.StartMessageKeyRefill).
+		version: 13,
+		name:    "message keys",
+		stmts:   []string{`ALTER TABLE otel_logs ADD COLUMN IF NOT EXISTS MessageKey VARCHAR`},
+	},
 }
 
 // migration9SentID is the ID that was sent for an ID expr of size bytes,

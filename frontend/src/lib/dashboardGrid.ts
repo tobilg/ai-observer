@@ -1,7 +1,7 @@
 // Layout of dashboard widgets on the grid: rows of GRID_COLUMNS columns,
 // positions starting at 1. Pure functions used by the dashboard store, the
 // grid and the add-widget panel.
-import type { DashboardWidget, EmptyCell } from '@/types/dashboard'
+import type { DashboardWidget, EmptyCell, WidgetPosition } from '@/types/dashboard'
 
 export const GRID_COLUMNS = 4
 
@@ -95,13 +95,89 @@ export function nextFreePosition(widgets: DashboardWidget[]): GridPosition {
   return { gridColumn: 1, gridRow: lastRow + 1 }
 }
 
-// Why a widget of colSpan columns does not fit at position, or null if it does
-export function widgetFitError(widgets: DashboardWidget[], position: GridPosition, colSpan: number): string | null {
-  const available = availableColumns(widgets, position)
+// Why a widget of colSpan columns (and rowSpan rows) does not fit at
+// position, or null if it does. widgets are the other widgets: leave out the
+// one being resized or moved.
+export function widgetFitError(widgets: DashboardWidget[], position: GridPosition, colSpan: number, rowSpan = 1): string | null {
+  let available = GRID_COLUMNS
+  for (let row = position.gridRow; row < position.gridRow + Math.max(rowSpan, 1); row++) {
+    available = Math.min(available, availableColumns(widgets, { gridRow: row, gridColumn: position.gridColumn }))
+  }
   if (colSpan <= available) {
     return null
   }
-  return `This widget requires ${colSpan} column${colSpan > 1 ? 's' : ''}, but only ${available} column${available !== 1 ? 's are' : ' is'} available at this position.`
+  const rows = rowSpan > 1 ? ` in each of ${rowSpan} rows` : ''
+  return `This widget requires ${colSpan} column${colSpan > 1 ? 's' : ''}${rows}, but only ${available} column${available !== 1 ? 's are' : ' is'} available at this position.`
+}
+
+// The position changes that close empty rows (rows no widget starts in),
+// keeping the order of the rows; empty when there are none
+export function compactRowPositions(widgets: DashboardWidget[]): WidgetPosition[] {
+  const rows = Array.from(new Set(widgets.map((w) => w.gridRow))).sort((a, b) => a - b)
+  const newRow = new Map(rows.map((row, index) => [row, index + 1]))
+  const positions: WidgetPosition[] = []
+  for (const w of widgets) {
+    const row = newRow.get(w.gridRow)
+    if (row !== undefined && row !== w.gridRow) {
+      positions.push({ id: w.id, gridRow: row, gridColumn: w.gridColumn })
+    }
+  }
+  return positions
+}
+
+// The positions after inserting an empty row before beforeRow: the widgets
+// starting there or below move down one row
+export function insertRowPositions(widgets: DashboardWidget[], beforeRow: number): WidgetPosition[] {
+  return widgets
+    .filter((w) => w.gridRow >= beforeRow)
+    .map((w) => ({ id: w.id, gridRow: w.gridRow + 1, gridColumn: w.gridColumn }))
+}
+
+// widgets with positions applied
+export function applyPositions(widgets: DashboardWidget[], positions: WidgetPosition[]): DashboardWidget[] {
+  if (positions.length === 0) {
+    return widgets
+  }
+  const byId = new Map(positions.map((p) => [p.id, p]))
+  return widgets.map((w) => {
+    const p = byId.get(w.id)
+    return p ? { ...w, gridRow: p.gridRow, gridColumn: p.gridColumn } : w
+  })
+}
+
+// Whether a widget of the given size placed at position would leave the grid
+// or overlap one of widgets other than those in excludeIds
+export function wouldOverlap(
+  widget: { colSpan: number; rowSpan: number },
+  position: GridPosition,
+  widgets: DashboardWidget[],
+  excludeIds: string[],
+): boolean {
+  const endCol = position.gridColumn + widget.colSpan - 1
+  const endRow = position.gridRow + widget.rowSpan - 1
+  if (position.gridColumn < 1 || endCol > GRID_COLUMNS) return true
+  return widgets.some((w) => {
+    if (excludeIds.includes(w.id)) return false
+    const horizontal = position.gridColumn <= w.gridColumn + w.colSpan - 1 && endCol >= w.gridColumn
+    const vertical = position.gridRow <= w.gridRow + w.rowSpan - 1 && endRow >= w.gridRow
+    return horizontal && vertical
+  })
+}
+
+// The position changes of dropping activeId onto overId (reorderWidgets), or
+// null when the result would overlap other widgets or leave the grid
+export function dropOnWidgetPositions(widgets: DashboardWidget[], activeId: string, overId: string): WidgetPosition[] | null {
+  if (activeId === overId) return null
+  const reordered = reorderWidgets(widgets, activeId, overId)
+  const moved = reordered.filter((w) => w.id === activeId || w.id === overId)
+  if (moved.length !== 2) return null
+  for (const w of moved) {
+    if (wouldOverlap(w, w, widgets, [activeId, overId])) return null
+  }
+  // The two widgets must not overlap each other either
+  const [a, b] = moved
+  if (wouldOverlap(a, a, [b], [])) return null
+  return moved.map((w) => ({ id: w.id, gridRow: w.gridRow, gridColumn: w.gridColumn }))
 }
 
 // The widgets after dropping activeId onto overId. In the same row the two

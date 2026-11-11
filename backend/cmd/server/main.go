@@ -18,6 +18,7 @@ import (
 	"github.com/tobilg/ai-observer/internal/pricing"
 	"github.com/tobilg/ai-observer/internal/server"
 	"github.com/tobilg/ai-observer/internal/version"
+	"github.com/tobilg/ai-observer/internal/watcher"
 )
 
 func main() {
@@ -47,12 +48,20 @@ func main() {
 		cmdExport(os.Args[2:])
 	case "delete":
 		cmdDelete(os.Args[2:])
+	case "backup":
+		cmdBackup(os.Args[2:])
+	case "restore":
+		cmdRestore(os.Args[2:])
+	case "compact":
+		cmdCompact(os.Args[2:])
 	case "setup":
 		cmdSetup(os.Args[2:])
 	case "watch":
 		cmdWatch(os.Args[2:])
 	case "serve":
 		cmdServe(os.Args[2:])
+	case "healthcheck":
+		cmdHealthcheck(os.Args[2:])
 	case "-v", "--version", "version":
 		printVersion()
 	case "-h", "--help", "help":
@@ -93,43 +102,36 @@ func printHelp() {
 Usage: ai-observer [command] [options]
 
 Commands:
-  import    Import local sessions from AI tool files
-  export    Export telemetry data to Parquet files
-  delete    Delete telemetry data from database
-  setup     Show setup instructions for AI tools
-  watch     Watch local session files and import incrementally
-  pricing   Update model prices from models.dev
-  serve     Start the OTLP server (default if no command)
+  serve        Receive OTLP telemetry and serve the dashboard (default); --watch also reads session files
+  watch        Read local session files as they change and serve the dashboard, without OTLP
+  import       Import local session files once
+  export       Export telemetry to Parquet files
+  delete       Delete telemetry in a time range
+  backup       Write a consistent copy of the database to a new file
+  restore      Load an export back into the database
+  compact      Rewrite the database into a new file without its free space
+  setup        Show how to send a tool's telemetry to AI Observer
+  pricing      Update model prices from models.dev
+  healthcheck  Exit 0 when the server on this machine is ready (container health check)
 
 Options:
-  -h, --help       Show this help message
-  -v, --version    Show version information
+  -h, --help       Show this help
+  -v, --version    Show the version
 
-Use "ai-observer [command] --help" for command-specific options.
+Use "ai-observer <command> --help" for the options of a command. Options of a
+command override the settings of the same name below.
 
-Environment Variables:
-  AI_OBSERVER_HOST           Interface to listen on (default: 127.0.0.1; 0.0.0.0 for all)
-  AI_OBSERVER_API_PORT       API server port (default: 8080)
-  AI_OBSERVER_OTLP_PORT      OTLP ingestion port (default: 4318)
-  AI_OBSERVER_DATABASE_PATH  DuckDB database path (default: ./data/ai-observer.duckdb)
-  AI_OBSERVER_FRONTEND_URL   Frontend URL for CORS (default: http://localhost:5173)
-  AI_OBSERVER_ALLOWED_HOSTS  Extra host names accepted by the API (comma-separated, * = any)
-  AI_OBSERVER_LOG_LEVEL      Log level: DEBUG, INFO, WARN, ERROR (default: INFO)
-  AI_OBSERVER_PRICING_DIR    Directory with pricing files that override the built-in prices
-  AI_OBSERVER_RETENTION_DAYS Delete telemetry older than this many days (default: keep all)
-  AI_OBSERVER_REDACT         Redact stored telemetry: secrets (default), all (secrets and personal data), off
-  AI_OBSERVER_DB_MEMORY_LIMIT Memory DuckDB may use, e.g. 2GB (default: 80% of memory)
-  AI_OBSERVER_DB_THREADS     Threads DuckDB runs queries on (default: one per CPU core)
-  AI_OBSERVER_STORE_ALL_SPANS Also store Codex's per-event spans, left out as noise (true/false, default false)
-  AI_OBSERVER_MCP            Serve the MCP endpoint for agents at /mcp on the API port (true/false, default false)
-  AI_OBSERVER_CLAUDE_PATH    Custom Claude Code config directory
-  AI_OBSERVER_CODEX_PATH     Custom Codex CLI home directory
-  AI_OBSERVER_GEMINI_PATH    Custom Gemini CLI home directory
-  COPILOT_OTEL_ENABLED       Enable GitHub Copilot OTLP export
-  COPILOT_OTEL_CAPTURE_CONTENT Capture GitHub Copilot prompts and tool content
-  OPENCODE_ENABLE_TELEMETRY  Enable OpenCode OTEL plugin export
-  OPENCODE_OTLP_ENDPOINT     OpenCode OTLP endpoint (use http://localhost:4318)
-  OPENCODE_OTLP_PROTOCOL     OpenCode OTLP protocol (use http/protobuf)
+Settings (environment variables):
+`)
+	printSettings(os.Stdout)
+	fmt.Print(`
+Variables of the AI tools (set them where the tool runs; AI Observer does not
+read them, see "ai-observer setup <tool>"):
+  COPILOT_OTEL_ENABLED          Enable GitHub Copilot OTLP export
+  COPILOT_OTEL_CAPTURE_CONTENT  Capture GitHub Copilot prompts and tool content
+  OPENCODE_ENABLE_TELEMETRY     Enable the OpenCode OTEL plugin's export
+  OPENCODE_OTLP_ENDPOINT        OpenCode OTLP endpoint (http://localhost:4318, or :4317 for gRPC)
+  OPENCODE_OTLP_PROTOCOL        OpenCode OTLP protocol (http/protobuf, or grpc)
 `)
 }
 
@@ -146,26 +148,61 @@ func cmdServe(args []string) {
 	}
 }
 
+// serveArgs are the options of serve
+type serveArgs struct {
+	MCP bool
+	// Watch also watches session files (serve --watch [tool]): ToolArg as
+	// given, Tools to watch (none for all), Backfill to import existing data
+	Watch    bool
+	ToolArg  string
+	Tools    []string
+	Backfill bool
+	// Server overrides the environment's host, ports and database
+	Server serverFlags
+}
+
 // parseServeArgs reads the options of serve
-func parseServeArgs(args []string) (mcp bool, err error) {
+func parseServeArgs(args []string) (*serveArgs, error) {
+	parsed := &serveArgs{}
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	fs.BoolVar(&mcp, "mcp", false, "Serve the MCP endpoint (/mcp on the API port) for agents; also AI_OBSERVER_MCP=true")
+	fs.BoolVar(&parsed.MCP, "mcp", false, mcpHelp)
+	fs.BoolVar(&parsed.Watch, "watch", false, "Also read local session files as they change (all tools, or the one named)")
+	fs.BoolVar(&parsed.Backfill, "backfill", false, "With --watch, import the existing files on the first start")
+	parsed.Server.register(fs, true)
 	fs.Usage = func() {
-		fmt.Print(`Start the OTLP server and the dashboard API
+		fmt.Printf(`Receive OTLP telemetry (HTTP and gRPC) and serve the dashboard and its API,
+optionally reading local session files as well
 
 Usage: ai-observer serve [options]
+       ai-observer serve --watch [%s|all] [--backfill] [options]
+
+Token usage and cost of a Claude Code, Codex or Gemini CLI session that
+arrives both over OTLP and from its session file are counted once (from OTLP).
 
 Options:
-`)
+`, toolList(true))
 		printFlags(fs)
 	}
 	if err := fs.Parse(reorderArgs(fs, args)); err != nil {
-		return false, err
+		return nil, err
 	}
-	if fs.NArg() > 0 {
-		return false, fmt.Errorf("unexpected argument: %s", fs.Arg(0))
+	if !parsed.Watch {
+		if fs.NArg() > 0 {
+			return nil, fmt.Errorf("unexpected argument: %s (to watch session files as well, use --watch %s)", fs.Arg(0), fs.Arg(0))
+		}
+		if parsed.Backfill {
+			return nil, fmt.Errorf("--backfill requires --watch")
+		}
+		return parsed, nil
 	}
-	return mcp, nil
+	if fs.NArg() > 1 {
+		return nil, fmt.Errorf("unexpected argument: %s", fs.Arg(1))
+	}
+	var err error
+	if parsed.ToolArg, parsed.Tools, err = parseWatchTool(fs.Arg(0)); err != nil {
+		return nil, err
+	}
+	return parsed, nil
 }
 
 // shutdownSignals returns a context that is cancelled on SIGINT/SIGTERM, for
@@ -177,22 +214,33 @@ func shutdownSignals() (context.Context, context.CancelFunc) {
 
 // runServer serves OTLP and the API until ctx is cancelled, then shuts down
 func runServer(ctx context.Context, args []string) error {
-	mcp, err := parseServeArgs(args)
+	parsed, err := parseServeArgs(args)
 	if err != nil {
 		return err
 	}
 
-	// Initialize structured logging (text format for development readability)
-	logLevel := parseLogLevel(os.Getenv("AI_OBSERVER_LOG_LEVEL"))
-	logger.InitializeText(logLevel)
+	// Structured logging: text by default, JSON with AI_OBSERVER_LOG_FORMAT=json
+	initLogging()
 	log := logger.Logger()
 
 	cfg := config.Load()
-	cfg.MCPEnabled = cfg.MCPEnabled || mcp
+	cfg.MCPEnabled = cfg.MCPEnabled || parsed.MCP
+	parsed.Server.apply(cfg)
 
 	srv, err := server.New(cfg)
 	if err != nil {
 		return fmt.Errorf("failed to create server: %w", err)
+	}
+
+	watching := "off"
+	if parsed.Watch {
+		watching = parsed.ToolArg
+		// The watcher scans existing files (and backfills) in the
+		// background while the servers start
+		if err := srv.StartWatcher(watcher.Config{Tools: parsed.Tools, Backfill: parsed.Backfill}); err != nil {
+			srv.Shutdown(context.Background())
+			return fmt.Errorf("failed to start watcher: %w", err)
+		}
 	}
 
 	log.Info("AI Observer starting",
@@ -200,6 +248,8 @@ func runServer(ctx context.Context, args []string) error {
 		"host", cfg.Host,
 		"api_port", cfg.APIPort,
 		"otlp_port", cfg.OTLPPort,
+		"otlp_grpc_port", cfg.OTLPGRPCPort,
+		"watch", watching,
 	)
 
 	if err := serveUntilDone(ctx, srv, srv.ListenAndServe); err != nil {

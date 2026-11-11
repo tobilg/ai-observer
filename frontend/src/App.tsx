@@ -1,11 +1,14 @@
 import { lazy, Suspense, type ReactNode } from 'react'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '@/components/theme-provider'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { Toaster } from '@/components/ui/sonner'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Layout } from '@/components/layout/Layout'
-import { ErrorBoundary } from '@/components/ErrorBoundary'
+import { RouteErrorBoundary } from '@/components/RouteErrorBoundary'
+import { NotFoundPage } from '@/pages/NotFoundPage'
+import { queryClient } from '@/lib/queryClient'
 
 // Pages are loaded on demand so the initial bundle only contains the app shell
 const Dashboard = lazy(() => import('@/pages/Dashboard').then((m) => ({ default: m.Dashboard })))
@@ -18,6 +21,7 @@ const SessionTranscriptPage = lazy(() =>
   import('@/pages/SessionTranscriptPage').then((m) => ({ default: m.SessionTranscriptPage }))
 )
 const DocsPage = lazy(() => import('@/pages/DocsPage').then((m) => ({ default: m.DocsPage })))
+const StatusPage = lazy(() => import('@/pages/StatusPage').then((m) => ({ default: m.StatusPage })))
 
 function PageFallback() {
   return (
@@ -30,34 +34,38 @@ function PageFallback() {
 
 function page(element: ReactNode) {
   return (
-    <ErrorBoundary>
+    <RouteErrorBoundary>
       <Suspense fallback={<PageFallback />}>{element}</Suspense>
-    </ErrorBoundary>
+    </RouteErrorBoundary>
   )
 }
 
 function App() {
   return (
-    <ThemeProvider defaultTheme="system" storageKey="ai-observer-theme">
-      <SidebarProvider>
-        <BrowserRouter>
-          <Routes>
-            <Route path="/" element={<Layout />}>
-              <Route index element={page(<Dashboard />)} />
-              <Route path="dashboard/:id" element={page(<Dashboard />)} />
-              <Route path="traces" element={page(<TracesPage />)} />
-              <Route path="traces/:kind/:id" element={page(<TraceDetailPage />)} />
-              <Route path="metrics" element={page(<MetricsPage />)} />
-              <Route path="logs" element={page(<LogsPage />)} />
-              <Route path="sessions" element={page(<SessionsPage />)} />
-              <Route path="sessions/:sessionId" element={page(<SessionTranscriptPage />)} />
-              <Route path="docs" element={page(<DocsPage />)} />
-            </Route>
-          </Routes>
-        </BrowserRouter>
-        <Toaster />
-      </SidebarProvider>
-    </ThemeProvider>
+    <QueryClientProvider client={queryClient}>
+      <ThemeProvider defaultTheme="system" storageKey="ai-observer-theme">
+        <SidebarProvider>
+          <BrowserRouter>
+            <Routes>
+              <Route path="/" element={<Layout />}>
+                <Route index element={page(<Dashboard />)} />
+                <Route path="dashboard/:id" element={page(<Dashboard />)} />
+                <Route path="traces" element={page(<TracesPage />)} />
+                <Route path="traces/:kind/:id" element={page(<TraceDetailPage />)} />
+                <Route path="metrics" element={page(<MetricsPage />)} />
+                <Route path="logs" element={page(<LogsPage />)} />
+                <Route path="sessions" element={page(<SessionsPage />)} />
+                <Route path="sessions/:sessionId" element={page(<SessionTranscriptPage />)} />
+                <Route path="docs" element={page(<DocsPage />)} />
+                <Route path="status" element={page(<StatusPage />)} />
+                <Route path="*" element={page(<NotFoundPage />)} />
+              </Route>
+            </Routes>
+          </BrowserRouter>
+          <Toaster />
+        </SidebarProvider>
+      </ThemeProvider>
+    </QueryClientProvider>
   )
 }
 

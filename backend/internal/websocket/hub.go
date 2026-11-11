@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/tobilg/ai-observer/internal/logger"
+	"github.com/tobilg/ai-observer/internal/selfmetrics"
 )
 
 // Hub maintains the set of active clients and broadcasts messages to them.
@@ -119,6 +120,7 @@ func (h *Hub) Run() {
 				}
 				h.mu.Unlock()
 				logger.Warn("Disconnected slow WebSocket clients", "count", len(toDisconnect))
+				selfmetrics.WebSocketSlowClients.With().Add(len(toDisconnect))
 			}
 		}
 	}
@@ -135,6 +137,7 @@ func (h *Hub) Broadcast(msg Message) {
 	case h.broadcast <- msg:
 	default:
 		logger.Warn("Broadcast channel full, dropping message", "message_type", msg.Type)
+		selfmetrics.WebSocketDroppedBroadcasts.With().Inc()
 	}
 }
 

@@ -64,6 +64,20 @@ type ImportResult struct {
 	// MessageCount is the number of transcript messages parsed. Gemini rewrites
 	// its session files, so watch mode resumes it by message count.
 	MessageCount int
+	// ParserState is the state watch mode continues with (Gemini: what
+	// was stored of the last message); empty to let watch rebuild it
+	ParserState string
+	// batched holds the numbers of records of a file parsed in batches for
+	// the preview, whose records are not kept (codex_batches.go)
+	batched *recordCounts
+}
+
+// counts returns the numbers of the file's records
+func (r *ImportResult) counts() recordCounts {
+	if r.batched != nil {
+		return *r.batched
+	}
+	return recordCounts{logs: len(r.Logs), metrics: len(r.Metrics), spans: len(r.Spans)}
 }
 
 // SessionParser defines the interface for tool-specific parsers
@@ -133,20 +147,21 @@ type ImportError struct {
 
 // Add adds the counts from an ImportResult to this summary
 func (s *ImportSummary) Add(result *ImportResult, status string) {
+	n := result.counts()
 	s.Files = append(s.Files, FileSummary{
 		Path:      result.FilePath,
 		SessionID: result.SessionID,
-		Logs:      len(result.Logs),
-		Metrics:   len(result.Metrics),
-		Spans:     len(result.Spans),
+		Logs:      n.logs,
+		Metrics:   n.metrics,
+		Spans:     n.spans,
 		FirstTime: result.FirstTime,
 		LastTime:  result.LastTime,
 		Status:    status,
 	})
 
-	s.TotalLogs += len(result.Logs)
-	s.TotalMetrics += len(result.Metrics)
-	s.TotalSpans += len(result.Spans)
+	s.TotalLogs += n.logs
+	s.TotalMetrics += n.metrics
+	s.TotalSpans += n.spans
 
 	switch status {
 	case "new":

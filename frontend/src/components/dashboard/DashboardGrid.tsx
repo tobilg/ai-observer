@@ -3,94 +3,49 @@ import {
   DndContext,
   MouseSensor,
   TouchSensor,
+  KeyboardSensor,
   useSensor,
   useSensors,
 } from '@dnd-kit/core'
 import type { DragEndEvent } from '@dnd-kit/core'
-import { SortableContext, rectSortingStrategy } from '@dnd-kit/sortable'
+import { SortableContext, rectSortingStrategy, sortableKeyboardCoordinates } from '@dnd-kit/sortable'
+import { toast } from 'sonner'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { useDashboardStore } from '@/stores/dashboardStore'
-import { getEmptyCells } from '@/lib/dashboardGrid'
+import { useRemoveWidget, useUpdateWidgetPositions } from '@/hooks/useDashboardMutations'
+import { dropOnWidgetPositions, getEmptyCells, insertRowPositions, wouldOverlap } from '@/lib/dashboardGrid'
+import { errorText } from '@/lib/errors'
 import { useShallow } from 'zustand/react/shallow'
 import { WidgetWrapper } from './widgets/WidgetWrapper'
 import { WidgetRenderer } from './widgets/WidgetRenderer'
 import { EmptyCellPlaceholder } from './widgets/EmptyCellPlaceholder'
 import { RowSeparator } from './widgets/RowSeparator'
+import type { WidgetDataState } from './widgets/types'
 import type { StatsResponse } from '@/lib/api'
-import type { TraceOverview } from '@/types/traces'
-import type { DashboardWidget } from '@/types/dashboard'
-
-// Check if placing a widget at a position would overlap with any existing widget
-function wouldOverlap(
-  widget: { colSpan: number; rowSpan: number },
-  targetRow: number,
-  targetCol: number,
-  allWidgets: DashboardWidget[],
-  excludeWidgetIds: string[]
-): boolean {
-  const widgetEndCol = targetCol + widget.colSpan - 1
-  const widgetEndRow = targetRow + widget.rowSpan - 1
-
-  // Check grid boundaries
-  if (widgetEndCol > 4) return true
-
-  // Check overlap with other widgets
-  for (const w of allWidgets) {
-    if (excludeWidgetIds.includes(w.id)) continue
-
-    const wEndCol = w.gridColumn + w.colSpan - 1
-    const wEndRow = w.gridRow + w.rowSpan - 1
-
-    // Check if rectangles overlap
-    const horizontalOverlap = targetCol <= wEndCol && widgetEndCol >= w.gridColumn
-    const verticalOverlap = targetRow <= wEndRow && widgetEndRow >= w.gridRow
-
-    if (horizontalOverlap && verticalOverlap) {
-      return true
-    }
-  }
-
-  return false
-}
+import type { TracesResponse } from '@/types/traces'
+import type { DashboardWidget, TimeSelection, WidgetPosition } from '@/types/dashboard'
 
 interface DashboardGridProps {
-  stats: StatsResponse | null
-  recentTraces: TraceOverview[]
+  dashboardId: string
+  widgets: DashboardWidget[]
+  stats: WidgetDataState<StatsResponse>
+  recentTraces: WidgetDataState<TracesResponse>
+  timeSelection: TimeSelection
 }
 
-export function DashboardGrid({ stats, recentTraces }: DashboardGridProps) {
+export function DashboardGrid({ dashboardId, widgets, stats, recentTraces, timeSelection }: DashboardGridProps) {
   const isMobile = useIsMobile()
   const maxColumns = isMobile ? 2 : 4
 
-  const {
-    widgets,
-    isEditMode,
-    timeSelection,
-    fromTime,
-    toTime,
-    removeWidget,
-    reorderWidgets,
-    updateWidgetPositions,
-    moveWidgetToPosition,
-    setAddPanelOpen,
-    setTargetPosition,
-    insertRowAt,
-  } = useDashboardStore(
+  const { isEditMode, openAddPanel, openEditPanel } = useDashboardStore(
     useShallow((s) => ({
-      widgets: s.widgets,
       isEditMode: s.isEditMode,
-      timeSelection: s.timeSelection,
-      fromTime: s.fromTime,
-      toTime: s.toTime,
-      removeWidget: s.removeWidget,
-      reorderWidgets: s.reorderWidgets,
-      updateWidgetPositions: s.updateWidgetPositions,
-      moveWidgetToPosition: s.moveWidgetToPosition,
-      setAddPanelOpen: s.setAddPanelOpen,
-      setTargetPosition: s.setTargetPosition,
-      insertRowAt: s.insertRowAt,
+      openAddPanel: s.openAddPanel,
+      openEditPanel: s.openEditPanel,
     }))
   )
+  const removeWidget = useRemoveWidget(dashboardId)
+  const updatePositions = useUpdateWidgetPositions(dashboardId)
 
   const sensors = useSensors(
     useSensor(MouseSensor, {
@@ -103,143 +58,59 @@ export function DashboardGrid({ stats, recentTraces }: DashboardGridProps) {
         delay: 200,
         tolerance: 5,
       },
-    })
+    }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   )
 
-  const handleDragEnd = useCallback(async (event: DragEndEvent) => {
-    const { active, over } = event
+  // Moves are shown at once and rolled back when the server refuses them
+  const move = useCallback(
+    (positions: WidgetPosition[], failure: string) => {
+      if (positions.length === 0) return
+      updatePositions.mutate(positions, {
+        onError: (error) => toast.error(failure, { description: errorText(error) }),
+      })
+    },
+    [updatePositions]
+  )
 
+  const handleDragEnd = useCallback((event: DragEndEvent) => {
+    const { active, over } = event
     if (!over) return
+
+    const widget = widgets.find((w) => w.id === active.id)
+    if (!widget) return
 
     const overData = over.data.current
 
-    // Case 1: Dropped onto an empty cell placeholder
+    // Dropped onto an empty cell: move there if the widget fits (its own
+    // cells become free, so it does not count against itself)
     if (overData?.type === 'empty') {
-      const widget = widgets.find((w) => w.id === active.id)
-      if (!widget) return
-
-      // Check if widget would fit within grid bounds and not overlap with other widgets
-      // Note: We exclude the widget being moved since its current position will become free
-      if (wouldOverlap(widget, overData.gridRow, overData.gridColumn, widgets, [widget.id])) {
+      const target = { gridRow: overData.gridRow as number, gridColumn: overData.gridColumn as number }
+      if (wouldOverlap(widget, target, widgets, [widget.id])) {
         return
       }
-
-      // Move widget to empty position (optimistic update)
-      const oldRow = widget.gridRow
-      const oldColumn = widget.gridColumn
-      moveWidgetToPosition(widget.id, overData.gridRow, overData.gridColumn)
-
-      // Persist to backend
-      try {
-        await updateWidgetPositions([
-          { id: widget.id, gridColumn: overData.gridColumn, gridRow: overData.gridRow },
-        ])
-      } catch (error) {
-        // Rollback on error
-        moveWidgetToPosition(widget.id, oldRow, oldColumn)
-        console.error('Failed to update position:', error)
-      }
+      move([{ id: widget.id, ...target }], "Couldn't move the widget")
       return
     }
 
-    // Case 2: Dropped onto another widget (swap positions)
-    if (active.id === over.id) return
-
-    const activeWidget = widgets.find((w) => w.id === active.id)
-    const overWidget = widgets.find((w) => w.id === over.id)
-
-    if (!activeWidget || !overWidget) return
-
-    // Calculate the positions after swap using the same logic as reorderWidgets
-    let newActiveColumn: number
-    let newActiveRow: number
-    let newOverColumn: number
-    let newOverRow: number
-
-    if (activeWidget.gridRow === overWidget.gridRow) {
-      // Same row - smart reposition based on direction
-      const isMovingLeft = activeWidget.gridColumn > overWidget.gridColumn
-
-      if (isMovingLeft) {
-        // Moving left: active takes over's position, over moves right of active
-        newActiveColumn = overWidget.gridColumn
-        newActiveRow = overWidget.gridRow
-        newOverColumn = newActiveColumn + activeWidget.colSpan
-        newOverRow = newActiveRow
-
-        // Check if over widget fits in the row (max 4 columns)
-        if (newOverColumn + overWidget.colSpan - 1 > 4) {
-          // Doesn't fit, would move to next row
-          newOverColumn = 1
-          newOverRow = newActiveRow + 1
-        }
-      } else {
-        // Moving right: over takes active's position, active moves right of over's new position
-        newOverColumn = activeWidget.gridColumn
-        newOverRow = activeWidget.gridRow
-        newActiveColumn = newOverColumn + overWidget.colSpan
-        newActiveRow = overWidget.gridRow
-
-        // Check if active widget fits in the row (max 4 columns)
-        if (newActiveColumn + activeWidget.colSpan - 1 > 4) {
-          // Doesn't fit, reject the move
-          return
-        }
-      }
-    } else {
-      // Different rows - simple swap
-      newActiveColumn = overWidget.gridColumn
-      newActiveRow = overWidget.gridRow
-      newOverColumn = activeWidget.gridColumn
-      newOverRow = activeWidget.gridRow
+    // Dropped onto another widget: the two trade places, if they fit
+    const positions = dropOnWidgetPositions(widgets, String(active.id), String(over.id))
+    if (positions) {
+      move(positions, "Couldn't move the widgets")
     }
+  }, [widgets, move])
 
-    // Validate: Check if active widget would overlap at its new position
-    // Exclude both widgets being swapped from the overlap check
-    if (wouldOverlap(activeWidget, newActiveRow, newActiveColumn, widgets, [activeWidget.id, overWidget.id])) {
-      return
-    }
-
-    // Validate: Check if over widget would overlap at its new position
-    if (wouldOverlap(overWidget, newOverRow, newOverColumn, widgets, [activeWidget.id, overWidget.id])) {
-      return
-    }
-
-    // Store old positions for rollback
-    const oldActivePos = { gridRow: activeWidget.gridRow, gridColumn: activeWidget.gridColumn }
-    const oldOverPos = { gridRow: overWidget.gridRow, gridColumn: overWidget.gridColumn }
-
-    // Swap positions locally first (optimistic update)
-    reorderWidgets(active.id as string, over.id as string)
-
-    // Get the updated widget positions from the store after reorder
-    // We need to read from the store since reorderWidgets updated it
-    const updatedWidgets = useDashboardStore.getState().widgets
-    const updatedActive = updatedWidgets.find((w) => w.id === active.id)
-    const updatedOver = updatedWidgets.find((w) => w.id === over.id)
-
-    if (updatedActive && updatedOver) {
-      try {
-        await updateWidgetPositions([
-          { id: updatedActive.id, gridColumn: updatedActive.gridColumn, gridRow: updatedActive.gridRow },
-          { id: updatedOver.id, gridColumn: updatedOver.gridColumn, gridRow: updatedOver.gridRow },
-        ])
-      } catch (error) {
-        // Rollback on error
-        moveWidgetToPosition(activeWidget.id, oldActivePos.gridRow, oldActivePos.gridColumn)
-        moveWidgetToPosition(overWidget.id, oldOverPos.gridRow, oldOverPos.gridColumn)
-        console.error('Failed to update positions:', error)
-      }
-    }
-  }, [widgets, reorderWidgets, updateWidgetPositions, moveWidgetToPosition])
-
-  const handleRemove = useCallback(async (widgetId: string) => {
-    try {
-      await removeWidget(widgetId)
-    } catch (error) {
-      console.error('Failed to remove widget:', error)
-    }
+  const handleRemove = useCallback((widgetId: string) => {
+    removeWidget.mutate(widgetId, {
+      onError: (error) => toast.error("Couldn't remove the widget", { description: errorText(error) }),
+    })
   }, [removeWidget])
+
+  // Handle insert row
+  const handleInsertRow = useCallback(
+    (beforeRow: number) => move(insertRowPositions(widgets, beforeRow), "Couldn't insert the row"),
+    [widgets, move]
+  )
 
   // Sort widgets by row and column for consistent rendering
   const sortedWidgets = [...widgets].sort((a, b) => {
@@ -291,25 +162,10 @@ export function DashboardGrid({ stats, recentTraces }: DashboardGridProps) {
     [isEditMode]
   )
 
-  // Handle insert row
-  const handleInsertRow = useCallback(
-    async (beforeRow: number) => {
-      try {
-        await insertRowAt(beforeRow)
-      } catch (error) {
-        console.error('Failed to insert row:', error)
-      }
-    },
-    [insertRowAt]
-  )
-
   // Handle click on empty cell placeholder
   const handleEmptyCellClick = useCallback(
-    (gridRow: number, gridColumn: number) => {
-      setTargetPosition({ gridRow, gridColumn })
-      setAddPanelOpen(true)
-    },
-    [setTargetPosition, setAddPanelOpen]
+    (gridRow: number, gridColumn: number) => openAddPanel({ gridRow, gridColumn }),
+    [openAddPanel]
   )
 
   // Build the grid-template-rows for edit mode (disabled on mobile)
@@ -358,6 +214,7 @@ export function DashboardGrid({ stats, recentTraces }: DashboardGridProps) {
               widget={widget}
               isEditMode={isEditMode && !isMobile}
               onRemove={handleRemove}
+              onEdit={openEditPanel}
               gridRowOverride={(isEditMode && !isMobile) ? getActualGridRow(widget.gridRow) : undefined}
               gridRowSpanOverride={(isEditMode && !isMobile) ? widget.rowSpan * 2 - 1 : undefined}
               maxColumns={maxColumns}
@@ -367,8 +224,6 @@ export function DashboardGrid({ stats, recentTraces }: DashboardGridProps) {
                 stats={stats}
                 recentTraces={recentTraces}
                 timeSelection={timeSelection}
-                fromTime={fromTime}
-                toTime={toTime}
               />
             </WidgetWrapper>
           ))}

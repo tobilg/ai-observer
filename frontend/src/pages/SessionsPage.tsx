@@ -1,269 +1,184 @@
-import { useEffect, useState } from 'react'
-import { useSearchParams, useNavigate } from 'react-router-dom'
+import { useId, useMemo } from 'react'
+import { MessageSquare, SearchX } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
-import { Select } from '@/components/ui/select'
-import { DateRangePicker } from '@/components/common/date-range-picker'
 import { DataPagination } from '@/components/common/data-pagination'
-import { api } from '@/lib/api'
-import { isAbortError } from '@/lib/errors'
-import { formatTimestamp, cn } from '@/lib/utils'
-import { getServiceDisplayName, getServiceIcon, serviceFilterOptions } from '@/lib/metricMetadata'
-import type { Session } from '@/types/sessions'
-import { MessageSquare, ChevronRight } from 'lucide-react'
+import { EmptyState } from '@/components/common/empty-state'
+import { ListSkeleton, Refreshing } from '@/components/common/list-skeleton'
+import { FilterBar, SearchFilter, ServiceFilter, TimeRangeFilter } from '@/components/common/list-filters'
+import { PageHeader } from '@/components/common/page-header'
+import { QueryError } from '@/components/common/query-error'
+import { SessionRow } from '@/components/sessions/SessionRow'
+import { useDebounce } from '@/hooks/useDebounce'
+import { useListLinkState } from '@/hooks/useListLinkState'
+import { useLiveInvalidate } from '@/hooks/useLiveInvalidate'
 import { usePagination } from '@/hooks/usePagination'
-import { useTimeSelection } from '@/hooks/useTimeSelection'
-import { isAbsoluteTimeSelection, type TimeSelection } from '@/types/dashboard'
-import { toast } from 'sonner'
+import { useServiceNames } from '@/hooks/useServiceNames'
+import { useUrlState } from '@/hooks/useUrlState'
+import { isHTTPError } from '@/lib/errors'
+import { queryKeys, useServices, useSessions } from '@/lib/queries'
+import { searchTerms } from '@/lib/searchTerms'
+import { useTelemetryStore } from '@/stores/telemetryStore'
 
 // localStorage keys
 const TIME_SELECTION_STORAGE_KEY = 'ai-observer-sessions-timeselection'
 const PAGE_SIZE_STORAGE_KEY = 'ai-observer-sessions-pageSize'
 
+// URL parameters and their defaults
+const FILTER_DEFAULTS = { service: '', search: '' }
+
+// A session search reads every record in the range: wait for a pause in typing
+const SEARCH_DEBOUNCE_MS = 300
+
+// Sessions change by gaining messages, which moves them up the list: the
+// first page refreshes itself on new logs and spans (debounced), and polls
+// while the WebSocket is disconnected. Later pages stay as loaded.
+const LIVE_POLL_MS = 30_000
+const LIVE_DEBOUNCE_MS = 1_000
+const LIVE_MAX_WAIT_MS = 5_000
+
 export function SessionsPage() {
-  const [searchParams, setSearchParams] = useSearchParams()
-  const navigate = useNavigate()
-  const [sessions, setSessions] = useState<Session[]>([])
-  const [total, setTotal] = useState(0)
-  const [services, setServices] = useState<string[]>([])
-  const [loading, setLoading] = useState(true)
-  const [service, setService] = useState(searchParams.get('service') || '')
+  const timeRangeId = useId()
+  const searchErrorId = useId()
+  const linkState = useListLinkState()
+  const { displayName } = useServiceNames()
 
-  // Time selection with localStorage persistence
-  const { timeSelection, setTimeSelection, fromTime, toTime } = useTimeSelection({
-    storageKey: TIME_SELECTION_STORAGE_KEY,
-    searchParams,
+  const { filters, setFilters, time } = useUrlState({
+    filters: FILTER_DEFAULTS,
+    time: { storageKey: TIME_SELECTION_STORAGE_KEY },
+  })
+  const search = useDebounce(filters.search, SEARCH_DEBOUNCE_MS).trim()
+  const queryFilters = useMemo(() => ({ service: filters.service, search }), [filters.service, search])
+  const terms = useMemo(() => searchTerms(search), [search])
+
+  // Cursors belong to one filtered list: any change (also from the URL,
+  // e.g. browser Back) starts at the first page
+  const listKey = JSON.stringify([queryFilters, time.timeKey])
+  const pagination = usePagination({ defaultPageSize: 20, storageKey: PAGE_SIZE_STORAGE_KEY, resetOn: listKey })
+  const page = useMemo(() => ({ limit: pagination.pageSize, cursor: pagination.cursor }), [pagination.pageSize, pagination.cursor])
+
+  const sessions = useSessions(queryFilters, time.range, page)
+  const services = useServices()
+
+  const logsUpdateCount = useTelemetryStore((s) => s.logsUpdateCount)
+  const spansUpdateCount = useTelemetryStore((s) => s.spansUpdateCount)
+  useLiveInvalidate({
+    queryKey: queryKeys.sessions.list(queryFilters, time.range, { limit: pagination.pageSize }),
+    enabled: pagination.page === 1 && !time.isAbsoluteRange,
+    intervalMs: LIVE_POLL_MS,
+    updateCount: logsUpdateCount + spansUpdateCount,
+    debounceMs: LIVE_DEBOUNCE_MS,
+    maxWaitMs: LIVE_MAX_WAIT_MS,
   })
 
-  // Pagination state with localStorage persistence
-  const {
-    page,
-    pageSize,
-    cursor,
-    hasNext,
-    setNextCursor,
-    nextPage,
-    previousPage,
-    setPageSize,
-    resetToFirstPage,
-  } = usePagination({
-    defaultPageSize: 20,
-    storageKey: PAGE_SIZE_STORAGE_KEY,
-  })
+  const rows = sessions.data?.sessions ?? []
+  // The API rejects searches without terms or with too many (400, with a
+  // message saying why)
+  const invalidSearch = sessions.isError && Boolean(search) && isHTTPError(sessions.error, 400)
 
-  useEffect(() => {
-    const fetchServices = async () => {
-      try {
-        const data = await api.getServices()
-        setServices(data.services ?? [])
-      } catch (err) {
-        console.error('Failed to fetch services:', err)
-        toast.error('Failed to fetch services')
-      }
-    }
-    fetchServices()
-  }, [])
-
-  useEffect(() => {
-    const abortController = new AbortController()
-
-    const fetchSessions = async () => {
-      setLoading(true)
-      try {
-        const data = await api.getSessions({
-          service: service || undefined,
-          from: fromTime?.toISOString(),
-          to: toTime.toISOString(),
-          limit: pageSize,
-          cursor,
-        }, { signal: abortController.signal })
-        setSessions(data.sessions ?? [])
-        setTotal(data.total ?? 0)
-        setNextCursor(data.nextCursor)
-      } catch (err) {
-        if (isAbortError(err)) {
-          return
+  let content
+  if (sessions.isPending) {
+    content = <ListSkeleton rows={6} rowClassName="h-20" label="Loading sessions" />
+  } else if (sessions.isError && !sessions.data) {
+    content = (
+      <div id={invalidSearch ? searchErrorId : undefined}>
+        <QueryError
+          error={sessions.error}
+          title={invalidSearch ? 'Invalid search' : "Couldn't load sessions"}
+          onRetry={invalidSearch ? undefined : () => void sessions.refetch()}
+          retrying={sessions.isFetching}
+        />
+      </div>
+    )
+  } else if (rows.length === 0) {
+    content = search ? (
+      <EmptyState
+        icon={SearchX}
+        title={`No sessions match “${search}”`}
+        description="Every word (or “quoted phrase”) must appear in one message, tool call or event of the session. Try fewer words or a longer time range."
+      />
+    ) : (
+      <EmptyState
+        icon={MessageSquare}
+        title={filters.service ? 'No sessions of this service in this time range' : 'No sessions in this time range'}
+        description={
+          <>
+            Import session data using <code className="rounded bg-muted px-1">ai-observer import</code> or configure your AI coding
+            tools to send telemetry.
+          </>
         }
-        console.error('Failed to fetch sessions:', err)
-        toast.error('Failed to fetch sessions')
-      } finally {
-        if (!abortController.signal.aborted) {
-          setLoading(false)
-        }
-      }
-    }
-    fetchSessions()
-
-    return () => abortController.abort()
-  }, [service, fromTime, toTime, pageSize, cursor, setNextCursor])
-
-  const handleTimeSelectionChange = (selection: TimeSelection) => {
-    resetToFirstPage()
-    setTimeSelection(selection) // Also persists to localStorage
-
-    // Update URL params
-    const params: Record<string, string> = {}
-    if (service) params.service = service
-    if (isAbsoluteTimeSelection(selection)) {
-      params.from = selection.range.from.toISOString()
-      params.to = selection.range.to.toISOString()
-    } else {
-      params.timeframe = selection.timeframe.value
-    }
-    setSearchParams(params)
-  }
-
-  const handleSessionClick = (session: Session) => {
-    navigate(`/sessions/${encodeURIComponent(session.sessionId)}`)
-  }
-
-  const formatDuration = (startTime: string, lastTime: string) => {
-    const start = new Date(startTime)
-    const end = new Date(lastTime)
-    const durationMs = end.getTime() - start.getTime()
-
-    if (durationMs < 60000) {
-      return `${Math.round(durationMs / 1000)}s`
-    } else if (durationMs < 3600000) {
-      return `${Math.round(durationMs / 60000)}m`
-    } else {
-      const hours = Math.floor(durationMs / 3600000)
-      const mins = Math.round((durationMs % 3600000) / 60000)
-      return `${hours}h ${mins}m`
-    }
+      />
+    )
+  } else {
+    content = (
+      <>
+        {sessions.isError && (
+          <QueryError
+            error={sessions.error}
+            title="Couldn't refresh sessions"
+            onRetry={() => void sessions.refetch()}
+            retrying={sessions.isFetching}
+          />
+        )}
+        <Refreshing active={sessions.isPlaceholderData}>
+          <ul className="space-y-2" aria-label="Sessions">
+            {rows.map((session) => (
+              <SessionRow
+                // A session ID can be listed once per service
+                key={`${session.serviceName}:${session.sessionId}`}
+                session={session}
+                serviceName={displayName(session.serviceName)}
+                linkState={linkState}
+                terms={terms}
+              />
+            ))}
+          </ul>
+        </Refreshing>
+        <DataPagination
+          page={pagination.page}
+          pageSize={pagination.pageSize}
+          itemCount={rows.length}
+          total={sessions.data?.total ?? 0}
+          // A placeholder's nextCursor belongs to the page shown before
+          hasNext={!sessions.isPlaceholderData && Boolean(sessions.data?.nextCursor)}
+          onFirst={pagination.resetToFirstPage}
+          onPrevious={pagination.previousPage}
+          onNext={() => pagination.nextPage(sessions.isPlaceholderData ? undefined : sessions.data?.nextCursor)}
+          onPageSizeChange={pagination.setPageSize}
+          pageSizeOptions={[10, 20, 50, 100]}
+        />
+      </>
+    )
   }
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Sessions</h1>
-        <p className="text-muted-foreground">
-          View session transcripts from your AI coding tools
-        </p>
-      </div>
+      <PageHeader title="Sessions" description="View and search sessions from your AI coding tools" />
 
-      {/* Filters */}
       <Card>
         <CardContent className="pt-6">
-          <div className="flex gap-4">
-            <div className="flex items-center gap-2">
-              <label className="text-sm text-muted-foreground whitespace-nowrap">Timeframe</label>
-              <DateRangePicker
-                value={timeSelection}
-                onChange={handleTimeSelectionChange}
-              />
-            </div>
-            <div className="w-48">
-              <Select value={service} onChange={(e) => {
-                resetToFirstPage()
-                setService(e.target.value)
-              }}>
-                <option value="">All Services</option>
-                {serviceFilterOptions(services).map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </Select>
-            </div>
-          </div>
+          <FilterBar>
+            <TimeRangeFilter id={timeRangeId} value={time.timeSelection} onChange={time.setTimeSelection} />
+            <ServiceFilter value={filters.service} onChange={(service) => setFilters({ service })} services={services.data ?? []} />
+            <SearchFilter
+              label="Search sessions"
+              placeholder='Search prompts, responses, tool calls... ("exact phrase")'
+              value={filters.search}
+              onChange={(value) => setFilters({ search: value })}
+              invalid={invalidSearch}
+              describedBy={invalidSearch ? searchErrorId : undefined}
+            />
+          </FilterBar>
         </CardContent>
       </Card>
 
-      {/* Sessions List */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <MessageSquare className="h-5 w-5" />
-            Sessions
+            <MessageSquare className="h-5 w-5" aria-hidden="true" />
+            {search ? 'Matching sessions' : 'Sessions'}
           </CardTitle>
         </CardHeader>
-        <CardContent>
-          {loading ? (
-            <div className="py-8 text-center text-muted-foreground">
-              Loading...
-            </div>
-          ) : sessions.length === 0 ? (
-            <div className="py-8 text-center text-muted-foreground">
-              No sessions found. Import session data using <code className="bg-muted px-1 rounded">ai-observer import</code> or configure your AI coding tools to send telemetry.
-            </div>
-          ) : (
-            <>
-              <div className="space-y-2">
-                {sessions.map((session) => {
-                  const ServiceIcon = getServiceIcon(session.serviceName)
-                  return (
-                    <div
-                      // A session ID can be listed once per service
-                      key={`${session.serviceName}:${session.sessionId}`}
-                      className={cn(
-                        'flex items-center gap-4 p-4 rounded-lg border cursor-pointer',
-                        'hover:bg-accent/50 transition-colors'
-                      )}
-                      onClick={() => handleSessionClick(session)}
-                      role="button"
-                      tabIndex={0}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault()
-                          handleSessionClick(session)
-                        }
-                      }}
-                    >
-                      {/* Service Icon */}
-                      <div className="shrink-0">
-                        <ServiceIcon className="h-8 w-8 text-muted-foreground" />
-                      </div>
-
-                      {/* Session Info */}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="font-medium truncate">
-                            {session.sessionId}
-                          </span>
-                          <Badge variant="outline" className="shrink-0">
-                            {getServiceDisplayName(session.serviceName)}
-                          </Badge>
-                        </div>
-                        <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                          <span>{formatTimestamp(session.startTime)}</span>
-                          <span className="text-xs">
-                            Duration: {formatDuration(session.startTime, session.lastTime)}
-                          </span>
-                          {session.model && (
-                            <span className="text-xs truncate max-w-[200px]">
-                              Model: {session.model}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Message Count */}
-                      <div className="shrink-0 text-right">
-                        <div className="font-medium">{session.messageCount}</div>
-                        <div className="text-xs text-muted-foreground">messages</div>
-                      </div>
-
-                      {/* Arrow */}
-                      <ChevronRight className="h-5 w-5 text-muted-foreground shrink-0" />
-                    </div>
-                  )
-                })}
-              </div>
-              <DataPagination
-                page={page}
-                pageSize={pageSize}
-                itemCount={sessions.length}
-                total={total}
-                hasNext={hasNext}
-                onFirst={resetToFirstPage}
-                onPrevious={previousPage}
-                onNext={nextPage}
-                onPageSizeChange={setPageSize}
-              />
-            </>
-          )}
-        </CardContent>
+        <CardContent>{content}</CardContent>
       </Card>
     </div>
   )

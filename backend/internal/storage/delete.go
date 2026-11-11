@@ -148,6 +148,16 @@ func deleteInRange(ctx context.Context, execer execContexter, table, what string
 	return count, nil
 }
 
+// baselineColumns are the columns of metric_baselines: a series, the time
+// and value (a counter's value or a histogram's sum) of its point, and a
+// histogram's count, bucket counts and bounds (NULL for other metrics and
+// for baselines stored before migration 12)
+const baselineColumns = "ServiceName, MetricName, Attributes, ResourceAttributes, Timestamp, Value, Count, BucketCounts, ExplicitBounds"
+
+// baselineUpdate updates a series' baseline to another point (ON CONFLICT)
+const baselineUpdate = `Timestamp = excluded.Timestamp, Value = excluded.Value, Count = excluded.Count,
+			BucketCounts = excluded.BucketCounts, ExplicitBounds = excluded.ExplicitBounds`
+
 // keepCumulativeBaselines records the last point of each cumulative series
 // among the metric rows that where selects, before they are deleted. Metric
 // series use it as the previous point of the series' next stored point, which
@@ -155,13 +165,16 @@ func deleteInRange(ctx context.Context, execer execContexter, table, what string
 // keeps its latest baseline. A deletion from the beginning (retention) drops
 // baselines too old to be the previous point of any remaining one.
 func keepCumulativeBaselines(ctx context.Context, execer execContexter, where string, args []any, from, to time.Time) error {
+	// Histograms keep the count, bucket counts and bounds of the point too
+	// (arg_max_null: those of the latest point, also when NULL)
 	query := `
-		INSERT INTO metric_baselines
+		INSERT INTO metric_baselines (` + baselineColumns + `)
 		SELECT ServiceName, MetricName, CAST(Attributes AS VARCHAR), CAST(ResourceAttributes AS VARCHAR),
-			MAX(Timestamp), arg_max(COALESCE(Value, Sum), Timestamp)
+			MAX(Timestamp), arg_max(COALESCE(Value, Sum), Timestamp),
+			arg_max_null(Count, Timestamp), arg_max_null(BucketCounts, Timestamp), arg_max_null(ExplicitBounds, Timestamp)
 		FROM otel_metrics` + where + ` AND AggregationTemporality = 2 AND COALESCE(Value, Sum) IS NOT NULL
 		GROUP BY ALL
-		ON CONFLICT DO UPDATE SET Timestamp = excluded.Timestamp, Value = excluded.Value
+		ON CONFLICT DO UPDATE SET ` + baselineUpdate + `
 			WHERE excluded.Timestamp > metric_baselines.Timestamp`
 	if _, err := execer.ExecContext(ctx, query, args...); err != nil {
 		return fmt.Errorf("keeping cumulative baselines: %w", err)

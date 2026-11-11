@@ -308,3 +308,70 @@ func TestSessionTranscript_AgentFallbackRecognizesChildLogOutput(t *testing.T) {
 		t.Fatalf("parent reply duplicates correlated child log: %+v", got.Messages)
 	}
 }
+
+// Claude Code describes a tool call as a tool_decision event, a tool_result
+// event and a claude_code.tool span, on different spans but with one tool
+// call ID: the transcript shows the call once, with the span's duration
+func TestSessionTranscript_ClaudeToolSpanIsNotASecondToolCall(t *testing.T) {
+	s := transcriptRegressionStore(t)
+	ctx := context.Background()
+	start := time.Date(2026, 11, 8, 17, 53, 19, 0, time.UTC)
+	session := map[string]string{"session.id": "s1"}
+	with := func(extra map[string]string) map[string]string {
+		attrs := map[string]string{}
+		for k, v := range session {
+			attrs[k] = v
+		}
+		for k, v := range extra {
+			attrs[k] = v
+		}
+		return attrs
+	}
+
+	if err := s.InsertSpans(ctx, []api.Span{
+		{Timestamp: start, TraceID: "t1", SpanID: "interaction", SpanName: "claude_code.interaction", ServiceName: "claude-code",
+			Duration: int64(10 * time.Second), SpanAttributes: with(map[string]string{"gen_ai.operation.name": "invoke_agent"})},
+		{Timestamp: start.Add(time.Second), TraceID: "t1", SpanID: "tool", ParentSpanID: "interaction", SpanName: "claude_code.tool",
+			ServiceName: "claude-code", Duration: int64(4 * time.Second), SpanAttributes: with(map[string]string{
+				"gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": "Bash", "tool_name": "Bash",
+				"gen_ai.tool.call.id": "toolu_1", "tool_use_id": "toolu_1"})},
+		{Timestamp: start.Add(time.Second), TraceID: "t1", SpanID: "blocked", ParentSpanID: "tool", SpanName: "claude_code.tool.blocked_on_user",
+			ServiceName: "claude-code", Duration: int64(2 * time.Second), SpanAttributes: with(nil)},
+		// A call without events keeps its span message
+		{Timestamp: start.Add(6 * time.Second), TraceID: "t1", SpanID: "tool2", ParentSpanID: "interaction", SpanName: "claude_code.tool",
+			ServiceName: "claude-code", Duration: int64(time.Second), SpanAttributes: with(map[string]string{
+				"gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": "Read", "gen_ai.tool.call.id": "toolu_2"})},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertLogs(ctx, []api.LogRecord{
+		{Timestamp: start, ServiceName: "claude-code", TraceID: "t1", SpanID: "interaction",
+			LogAttributes: with(map[string]string{"event.name": "user_prompt", "prompt": "run the tests"})},
+		{Timestamp: start.Add(3 * time.Second), ServiceName: "claude-code", TraceID: "t1", SpanID: "blocked",
+			LogAttributes: with(map[string]string{"event.name": "tool_decision", "tool_name": "Bash", "tool_use_id": "toolu_1", "decision": "accept"})},
+		{Timestamp: start.Add(5 * time.Second), ServiceName: "claude-code", TraceID: "t1", SpanID: "interaction",
+			LogAttributes: with(map[string]string{"event.name": "tool_result", "tool_name": "Bash", "tool_use_id": "toolu_1", "success": "true"})},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := transcript.Load(ctx, s, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls []api.TranscriptMessage
+	for _, m := range resp.Messages {
+		if m.Role == "tool_use" {
+			calls = append(calls, m)
+		}
+	}
+	if len(calls) != 2 || calls[0].ToolName != "Bash" || calls[1].ToolName != "Read" {
+		t.Fatalf("tool calls = %+v, want Bash once and Read (%d messages in all)", calls, len(resp.Messages))
+	}
+	if calls[0].DurationMs != 4000 {
+		t.Errorf("Bash call duration = %d ms, want the span's 4000", calls[0].DurationMs)
+	}
+	if len(resp.Messages) != 4 {
+		t.Errorf("messages = %d, want prompt, Bash call, Bash result, Read call", len(resp.Messages))
+	}
+}

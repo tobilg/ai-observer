@@ -7,7 +7,7 @@ The `ai-observer import` command allows you to import historical session data fr
 | Tool | File Location | File Format |
 |------|---------------|-------------|
 | Claude Code | `~/.claude/projects/**/*.jsonl` | JSONL |
-| Codex CLI | `~/.codex/sessions/*.jsonl` | JSONL |
+| Codex CLI | `~/.codex/sessions/**/*.jsonl` | JSONL, also zstd-compressed (`*.jsonl.zst`) |
 | Gemini CLI | `~/.gemini/tmp/**/session-*.json` | JSON |
 
 GitHub Copilot and OpenCode are OTLP-only in AI Observer. They do not have local file import parsers; run `ai-observer serve` and use their OTLP setup instead.
@@ -43,7 +43,7 @@ Full `import claude-code` reconstructs selected activity metrics from JSONL reco
 
 Tool activity without a matching successful result is omitted. LOC is also omitted for overwrites without original contents or a patch, `replace_all` without a patch, and unusually large fallback diffs (over four million line comparisons after shared edges are removed). Commit aliases, wrappers, dynamically constructed commands, quiet commits, and unrecognized/localized completion output may be omitted. These omissions favor reporting supported activity over inventing counts from incomplete records.
 
-Imported metrics carry `import_source=local_jsonl`. Avoid summing overlapping imports and live telemetry as if they were independent activity. The normal import state skips unchanged files; re-importing a changed or forced file replaces the records stored from it (see [Import State Tracking](#import-state-tracking)). Use `--purge` to also replace live telemetry of the imported tools in a range.
+Imported metrics carry `import_source=local_jsonl`. These five activity metrics are not deduplicated against the ones Claude Code sends over OTLP, so don't sum a full import and live telemetry of the same sessions as if they were independent activity (token usage and cost are counted once, see [Sessions also sent over OTLP](#sessions-also-sent-over-otlp)). The normal import state skips unchanged files; re-importing a changed or forced file replaces the records stored from it (see [Import State Tracking](#import-state-tracking)). Use `--purge` to also replace live telemetry of the imported tools in a range.
 
 ## Repository attribution in import and watch
 
@@ -76,6 +76,7 @@ On another machine or without Git installed, attribution may fall back to matchi
 | `--purge` | Replace the imported tools' data in the time range: delete it, then re-import it from all of their files in that range. Other tools' data is kept. With `--from`/`--to`, unchanged files in the range are rebuilt too; without them, the range is derived from the new and modified files |
 | `--pricing-mode MODE` | Cost calculation mode for Claude (see [Pricing](pricing.md)) |
 | `--verbose` | Show detailed progress |
+| `--db FILE` | Database file (default `AI_OBSERVER_DATABASE_PATH` or `./data/ai-observer.duckdb`) |
 
 ## Environment Variables
 
@@ -163,7 +164,9 @@ Override default file locations:
 **Log events:**
 
 - `claude_code.api_request` - Each API request with model and session info
-- `transcript.message` - User and assistant content, including tool calls and results
+- `transcript.message` - User and assistant content, including tool calls and results; messages carry the entry's `message.uuid` and `request_id`, tool calls `tool.use_id`, which match the events Claude Code sends over OTLP
+
+> **Typed prompts before this version.** Since v0.3.0, imports and `watch` dropped every prompt that Claude Code stores as plain text (typed prompts; prompts with images were kept), so imported transcripts lacked the user's prompts and sessions their title. Run `ai-observer import claude-code --force` once to read the files again: unchanged files are otherwise skipped, and `watch` only stores prompts written after the upgrade.
 
 **Metrics:**
 
@@ -188,10 +191,18 @@ The five activity metrics are reconstructed by full imports only. See [Claude Co
 - `codex.agent_message` - Agent responses
 - `transcript.message` - Conversation messages, tool calls, tool results, and reasoning summaries
 
+**Tool calls:** every tool call in a session file is stored as one tool call and one tool result message, with the call ID Codex sends over OTLP (`tool.call_id`): commands, patches, MCP tools, web and tool searches, image views and image generation, also those run from code mode's `exec` cell (Codex 0.144 and later), which the session file records only as completed items. Results carry `success`, `exit_code` and `duration_ms` where Codex recorded them, and MCP calls `mcp_server`. Inputs and outputs are cut to 16 KiB each (start and end kept, with a note of the bytes left out). A result stores its output once, in the `tool.output` attribute, with the full size in `tool_result_size_bytes`; its log body is a summary line such as `exec_command: exit 1, 12.3 KB output`. Generated images are not stored. Code mode's `write_stdin` and `curr_time` calls are not in the session files; they appear only when the session is also sent over OTLP.
+
+**Compressed sessions:** Codex compresses session files older than 7 days to `rollout-….jsonl.zst` and deletes the `.jsonl`; resuming a session writes the `.jsonl` again. Both forms are read, and they count as the same file (the `.jsonl` path): compressing an imported session is no change, and a resumed session continues without duplicates. `watch` reads compressed files in its startup scan and with `--backfill`.
+
+> **Codex sessions imported before this version** lack most tool calls, and compressed sessions were never imported (556 of 713 files on a developer's machine). A plain `ai-observer import codex` imports the compressed sessions but keeps the old records of the others: run `ai-observer import codex --force` once (stop `watch` or `serve --watch` first). `watch` does not repair stored sessions; it only adds what is written after the upgrade.
+
 **Metrics:**
 
 - `codex_cli_rs.token.usage` - Token counts by type (input, output, cacheRead, cacheWrite, reasoning), as over OTLP
 - `codex_cli_rs.cost.usage` - Cost in USD per token count event
+
+Both carry `session.id` (the session file's `session_meta.id`), as the metrics derived over OTLP do.
 
 All these log categories and token/cost metrics receive `repository` and `git_branch` when available in both import and watch mode. Reasoning logs receive attribution, but their contents are not used to infer the repository.
 
@@ -204,13 +215,27 @@ All these log categories and token/cost metrics receive `repository` and `git_br
 - `gemini_cli.warning` - Warnings
 - `gemini_cli.info` - Info messages
 
+Replies carry their thought and tool token counts (`thoughts_token_count`, `tool_token_count`) and tool calls and results their call ID (`tool.call_id`). Message content and tool results may be text, a part or a list of parts; failed and cancelled tool calls show their error text. After a full import, `watch` also stores the tool calls and token counts Gemini CLI adds to the last reply later.
+
 **Metrics:**
 - `gemini_cli.token.usage` - Token counts by type (`input`, `output`, `cache`, `thought`, `tool`, named like Gemini CLI's own telemetry). Input tokens include the cached ones
 - `gemini_cli.cost.usage` - Cost in USD per response; cached tokens are charged at the cache rate only (see [pricing](pricing.md))
 
+Both carry `session.id`, which usage deduplication compares (see [Sessions also sent over OTLP](#sessions-also-sent-over-otlp)).
+
 `--from` and `--to` are days in the local time zone (`--to` includes the whole day), as for `export` and `delete`. A file with records outside the range is imported partially: only its records in the range are stored, and the next import reads the file again (even if it is unchanged) to add the rest.
 
 The database can only be opened by one process at a time: stop a running `ai-observer` server or `watch` before importing.
+
+### Large imports
+
+Importing all sessions of a tool can take minutes and a lot of disk space. Measured on a developer's 714 Codex session files (about 4.4 GB of JSONL, most of it compressed): 285 seconds and a 2.87 GB database. Codex files over 64 MiB are read and stored in batches of 10,000 records (still in one transaction per file), so the import's own memory stays small; DuckDB, however, caches up to 80% of the computer's memory, which reached about 3 GB. Limit it for large imports:
+
+```bash
+AI_OBSERVER_DB_MEMORY_LIMIT=512MB ai-observer import codex
+```
+
+With 512 MB the import peaked at 0.9 GB and took up to a quarter longer.
 
 ## Import State Tracking
 
@@ -227,6 +252,20 @@ The importer tracks which files have been imported to avoid duplicates:
 - A file's records and its import state are stored in one transaction; a file that fails is not marked as imported and is retried next time.
 - The import state also records how far the file was read (the end of its last complete line, a final line without newline included when it is valid JSON, or the message count for Gemini). `watch` continues from there, so lines written after an import and before watching starts are picked up. When `watch` finds a file shorter than what it already read (truncated or replaced), it reads the file again and replaces its records.
 - `import` exits with status 1 when a tool or file could not be imported; the failures are listed above the summary.
+
+## Sessions also sent over OTLP
+
+A session can reach AI Observer twice: over OTLP from the running tool, and from its session file through `import`, `watch` or `serve --watch`. Each model request is then counted once, from OTLP when OTLP recorded it, from the file otherwise; the file's token and cost points of a request OTLP recorded are removed, everything else of both sides is kept. The rule is applied whenever either side is stored, in either order.
+
+| Tool | How a request is recognized on both sides | Transcript |
+|------|-------------------------------------------|------------|
+| Claude Code | By its API request ID (`request_id` of OTLP's `api_request` event and of the imported `claude_code.api_request` log), when the session also sent its token metrics over OTLP within an hour (an exporter of logs without metrics keeps the file's usage) | Each message once: matched by entry UUID, request ID and tool call ID |
+| Codex | Inferred, since Codex sends no shared ID: an OTLP response of the same session (`session.id`) with the same count of every token type within 30 seconds | Each message once: tool calls by `call_id`, prompts by time (2 seconds) and their first 32 characters |
+| Gemini CLI | Inferred, since Gemini CLI sends no shared ID: an OTLP `api_response` of the same session (`session.id`) with the same input, output, cached, thought and tool token counts within an hour, when the session also sent its token metrics over OTLP within an hour after it (an exporter of logs without metrics keeps the file's usage) | Each message once: prompts by their first 32 characters (or, when prompt logging is off, their length) within 5 minutes; responses by their token counts; tool calls by tool name and arguments within an hour |
+
+Requests only one side recorded keep their usage: requests before telemetry was enabled or while AI Observer was down are in the file only, and requests such as Claude Code's tool routing and compaction are in OTLP only. Session lists use the transcripts' own matching, so their message counts, usage and titles equal the transcripts'. A response Gemini CLI recorded with other token counts in its file than over OTLP is not recognized and counts twice.
+
+Databases of earlier versions: migration 11 removes the Claude Code file usage that OTLP also recorded when AI Observer opens the database. Codex and Gemini CLI usage is repaired by importing again, once: `ai-observer import codex --force` and `ai-observer import gemini --force` (stop `watch` or `serve --watch` first). `watch` does not repair it, since it continues where it stopped. Transcripts and session lists need no re-import.
 
 ## Replacing Imported Data (`--purge`)
 

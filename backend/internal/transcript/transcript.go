@@ -6,16 +6,15 @@ package transcript
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/tobilg/ai-observer/internal/api"
 	"github.com/tobilg/ai-observer/internal/attrval"
+	"github.com/tobilg/ai-observer/internal/msgmerge"
+	"github.com/tobilg/ai-observer/internal/redact"
 	"github.com/tobilg/ai-observer/internal/storage"
 	"github.com/tobilg/ai-observer/internal/tools"
 )
@@ -90,53 +89,29 @@ func selectSessionSpans(spans []api.Span, sessionID string) []api.Span {
 	return result
 }
 
+// transcriptMessagesFromLogs returns the transcript messages of logs, as
+// recorded (mergeTranscriptMessages merges the records of one message)
 func transcriptMessagesFromLogs(rows []storage.SessionLog) []api.TranscriptMessage {
-	var messages []api.TranscriptMessage
-	index := 0
-	for _, row := range rows {
-		eventName := row.Attrs["event.name"]
-		if eventName == "" && strings.Contains(row.Body, ".") && !strings.Contains(row.Body, " ") {
-			eventName = row.Body
-		}
-
-		role := tools.TranscriptRole(eventName)
-		if eventName == "transcript.message" {
-			role = row.Attrs["message.role"]
-		}
-		if role == "" {
-			continue
-		}
-
-		if idxStr, ok := row.Attrs["message.index"]; ok {
-			fmt.Sscanf(idxStr, "%d", &index)
-		}
-
-		messages = append(messages, api.TranscriptMessage{
-			Timestamp:    row.Timestamp,
-			Role:         role,
-			Content:      extractMessageContent(eventName, row.Attrs, row.Body),
-			Index:        index,
-			Model:        getModelName(row.Attrs),
-			ToolName:     getToolName(row.Attrs),
-			ToolInput:    getToolInput(row.Attrs),
-			ToolOutput:   getToolOutput(row.Attrs),
-			InputTokens:  attrval.Int(row.Attrs, "input_tokens", "inputTokens", "gen_ai.usage.input_tokens", "llm.token_count.prompt"),
-			OutputTokens: attrval.Int(row.Attrs, "output_tokens", "outputTokens", "gen_ai.usage.output_tokens", "llm.token_count.completion"),
-			CacheRead:    attrval.Int(row.Attrs, "cache_read_input_tokens", "cacheRead", "gen_ai.usage.cache_read.input_tokens"),
-			CacheWrite:   attrval.Int(row.Attrs, "cache_creation_input_tokens", "cacheWrite", "gen_ai.usage.cache_creation.input_tokens"),
-			CostUSD:      attrval.Float(row.Attrs, "cost_usd", "costUsd", "llm.cost"),
-			DurationMs:   attrval.Int(row.Attrs, "duration_ms", "durationMs"),
-			Success:      attrval.Bool(row.Attrs, "success", "tool_success"),
-			OutputSize:   attrval.Int(row.Attrs, "tool_result_size_bytes", "outputSize"),
-		})
-		index++
+	records := logRecords(rows)
+	messages := make([]api.TranscriptMessage, len(records))
+	for i, r := range records {
+		messages[i] = r.msg
 	}
 	return messages
+}
+
+// logMessage returns the transcript message of a log and its event name,
+// or false when the log is no message. Its index is set by the caller.
+func logMessage(row storage.SessionLog) (api.TranscriptMessage, string, bool) {
+	return msgmerge.LogMessage(row.Timestamp, row.Body, row.Attrs)
 }
 
 type spanTranscriptMessage struct {
 	Source  sessionSpanKey
 	Message api.TranscriptMessage
+	// ToolCallID is the ID of the tool call a tool message of the span
+	// belongs to, if the span names one (tools.ToolCallIDKeys)
+	ToolCallID string
 }
 
 func transcriptMessagesFromSpans(spans []api.Span, logs []storage.SessionLog) []spanTranscriptMessage {
@@ -195,7 +170,7 @@ func transcriptMessagesFromSpans(spans []api.Span, logs []storage.SessionLog) []
 					msg.InputTokens, msg.OutputTokens, msg.CacheRead, msg.CacheWrite = 0, 0, 0, 0
 				}
 			}
-			messages = append(messages, spanTranscriptMessage{Source: spanKey(span), Message: msg})
+			messages = append(messages, spanTranscriptMessage{Source: spanKey(span), Message: msg, ToolCallID: toolCallID(span.SpanAttributes, msg.Role)})
 		}
 	}
 	return messages
@@ -315,144 +290,7 @@ func transcriptMessagesFromSpan(span api.Span) []api.TranscriptMessage {
 	return nil
 }
 
-// Only correlate messages from different signals when they identify the same
-// span and content. Equal text in distinct log entries is not a duplicate.
-func mergeTranscriptMessages(rows []storage.SessionLog, spans []spanTranscriptMessage) []api.TranscriptMessage {
-	merged := transcriptMessagesFromLogs(rows)
-	if len(spans) == 0 {
-		if merged == nil {
-			return []api.TranscriptMessage{}
-		}
-		return merged // Preserve imported message indices.
-	}
-	type messageKey struct {
-		Source                                         sessionSpanKey
-		Role, Content, ToolName, ToolInput, ToolOutput string
-	}
-	keyFor := func(source sessionSpanKey, msg api.TranscriptMessage) messageKey {
-		return messageKey{source, msg.Role, msg.Content, msg.ToolName, msg.ToolInput, msg.ToolOutput}
-	}
-	logMessages := make(map[messageKey]int)
-	index := 0
-	for _, row := range rows {
-		msgs := transcriptMessagesFromLogs([]storage.SessionLog{row})
-		if len(msgs) == 0 {
-			continue
-		}
-		if row.TraceID != "" && row.SpanID != "" && row.Attrs["event.name"] != "transcript.message" {
-			source := sessionSpanKey{row.ServiceName, row.TraceID, row.SpanID}
-			logMessages[keyFor(source, msgs[0])] = index
-		}
-		index++
-	}
-	for _, span := range spans {
-		if i, ok := logMessages[keyFor(span.Source, span.Message)]; ok {
-			merged[i] = enrichTranscriptMessage(merged[i], span.Message)
-			continue
-		}
-		merged = append(merged, span.Message)
-	}
-
-	sort.SliceStable(merged, func(i, j int) bool {
-		return merged[i].Timestamp.Before(merged[j].Timestamp)
-	})
-	for i := range merged {
-		merged[i].Index = i
-	}
-	if merged == nil {
-		return []api.TranscriptMessage{}
-	}
-	return merged
-}
-
-func enrichTranscriptMessage(log, span api.TranscriptMessage) api.TranscriptMessage {
-	if log.Model == "" {
-		log.Model = span.Model
-	}
-	if log.InputTokens == 0 {
-		log.InputTokens = span.InputTokens
-	}
-	if log.OutputTokens == 0 {
-		log.OutputTokens = span.OutputTokens
-	}
-	if log.CacheRead == 0 {
-		log.CacheRead = span.CacheRead
-	}
-	if log.CacheWrite == 0 {
-		log.CacheWrite = span.CacheWrite
-	}
-	if log.CostUSD == 0 {
-		log.CostUSD = span.CostUSD
-	}
-	if log.DurationMs == 0 {
-		log.DurationMs = span.DurationMs
-	}
-	if log.Success == nil {
-		log.Success = span.Success
-	}
-	if log.OutputSize == 0 {
-		log.OutputSize = span.OutputSize
-	}
-	return log
-}
-
-func extractGenAIMessageText(raw, role string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return ""
-	}
-
-	var messages []map[string]interface{}
-	if err := json.Unmarshal([]byte(raw), &messages); err != nil {
-		var single map[string]interface{}
-		if err := json.Unmarshal([]byte(raw), &single); err != nil {
-			return ""
-		}
-		messages = []map[string]interface{}{single}
-	}
-
-	var parts []string
-	for _, msg := range messages {
-		msgRole, _ := msg["role"].(string)
-		if role != "" && msgRole != "" && !strings.EqualFold(msgRole, role) {
-			continue
-		}
-		if text := genAIContentText(msg["content"]); text != "" {
-			parts = append(parts, text)
-			continue
-		}
-		if text := genAIContentText(msg["parts"]); text != "" {
-			parts = append(parts, text)
-		}
-	}
-	return strings.Join(parts, "\n")
-}
-
-func genAIContentText(value interface{}) string {
-	switch v := value.(type) {
-	case string:
-		return strings.TrimSpace(v)
-	case []interface{}:
-		var parts []string
-		for _, item := range v {
-			if text := genAIContentText(item); text != "" {
-				parts = append(parts, text)
-			}
-		}
-		return strings.Join(parts, "\n")
-	case map[string]interface{}:
-		if text, ok := v["content"].(string); ok && strings.TrimSpace(text) != "" {
-			return strings.TrimSpace(text)
-		}
-		if text, ok := v["text"].(string); ok && strings.TrimSpace(text) != "" {
-			return strings.TrimSpace(text)
-		}
-		if inner, ok := v["parts"]; ok {
-			return genAIContentText(inner)
-		}
-	}
-	return ""
-}
+func extractGenAIMessageText(raw, role string) string { return msgmerge.GenAIMessageText(raw, role) }
 
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
@@ -470,6 +308,13 @@ var ErrSessionNotFound = errors.New("session not found")
 type Store interface {
 	SessionLogs(ctx context.Context, sessionID string) ([]storage.SessionLog, error)
 	SessionSpans(ctx context.Context, sessionID string) ([]api.Span, error)
+}
+
+// redactingStore is a Store that redacts telemetry before storing it
+// (storage.DuckDBStore): transcript titles are redacted with its redactor,
+// as session lists redact them
+type redactingStore interface {
+	Redactor() *redact.Redactor
 }
 
 // Load returns the transcript of a session from all of its logs and spans.
@@ -493,7 +338,11 @@ func Load(ctx context.Context, store Store, sessionID string) (*api.TranscriptRe
 	if len(logRows) == 0 && len(spans) == 0 {
 		return nil, fmt.Errorf("%w: %s", ErrSessionNotFound, sessionID)
 	}
-	return Build(sessionID, logRows, spans), nil
+	resp := Build(sessionID, logRows, spans)
+	if r, ok := store.(redactingStore); ok {
+		resp.Title = title(resp.Messages, r.Redactor().String)
+	}
+	return resp, nil
 }
 
 // needsSpans reports whether spans can add to a transcript. Imported
@@ -509,7 +358,7 @@ func needsSpans(logRows []storage.SessionLog) bool {
 }
 
 // Build assembles the transcript of a session from its logs and the spans
-// selected for it
+// selected for it. Its title is not redacted (Load redacts it).
 func Build(sessionID string, logRows []storage.SessionLog, spans []api.Span) *api.TranscriptResponse {
 	messages := mergeTranscriptMessages(logRows, transcriptMessagesFromSpans(spans, logRows))
 
@@ -517,40 +366,52 @@ func Build(sessionID string, logRows []storage.SessionLog, spans []api.Span) *ap
 	return &api.TranscriptResponse{
 		SessionID:   sessionID,
 		ServiceName: serviceName,
+		Title:       title(messages, nil),
 		StartTime:   startTime,
 		LastTime:    lastTime,
 		Messages:    messages,
+		Totals:      totals(messages),
 		Total:       len(messages),
 	}
 }
 
-// ErrInvalidCursor indicates a cursor that Page did not return
-var ErrInvalidCursor = errors.New("invalid cursor")
-
-// Page returns the limit messages of a transcript that follow cursor, the
-// NextCursor of the previous page (empty for the first). The transcript is
-// assembled whole from the session's records, so pages bound what is sent
-// and shown, not what is read.
-func Page(resp *api.TranscriptResponse, limit int, cursor string) (*api.TranscriptResponse, error) {
-	offset := 0
-	if cursor != "" {
-		var err error
-		if offset, err = strconv.Atoi(cursor); err != nil || offset < 0 {
-			return nil, fmt.Errorf("%w: %q", ErrInvalidCursor, cursor)
+// title is the title of a transcript: of its first user message that gives
+// one (storage.SessionTitle), as session lists show it
+func title(messages []api.TranscriptMessage, redact func(string) string) string {
+	for _, m := range messages {
+		if m.Role != tools.RoleUser {
+			continue
+		}
+		if t := storage.SessionTitle(m.Content, redact); t != "" {
+			return t
 		}
 	}
-	page := *resp
-	page.Total = len(resp.Messages)
-	start := min(offset, len(resp.Messages))
-	end := min(start+max(limit, 1), len(resp.Messages))
-	// Never nil: clients read the messages as a list
-	page.Messages = append([]api.TranscriptMessage{}, resp.Messages[start:end]...)
-	page.HasMore = end < len(resp.Messages)
-	page.NextCursor = ""
-	if page.HasMore {
-		page.NextCursor = strconv.Itoa(end)
+	return ""
+}
+
+// totals sums the usage of messages and counts them by role
+func totals(messages []api.TranscriptMessage) *api.TranscriptTotals {
+	var t api.TranscriptTotals
+	for _, m := range messages {
+		t.CostUSD += m.CostUSD
+		t.InputTokens += int64(m.InputTokens)
+		t.OutputTokens += int64(m.OutputTokens)
+		t.CacheRead += int64(m.CacheRead)
+		t.CacheWrite += int64(m.CacheWrite)
+		switch m.Role {
+		case tools.RoleUser:
+			t.UserMessages++
+		case tools.RoleAssistant:
+			t.AssistantMessages++
+		case tools.RoleToolUse:
+			t.ToolCalls++
+		case tools.RoleToolResult:
+			if m.Success != nil && !*m.Success {
+				t.ToolErrors++
+			}
+		}
 	}
-	return &page, nil
+	return &t
 }
 
 func sessionTranscriptBounds(logRows []storage.SessionLog, spans []api.Span) (string, time.Time, time.Time) {
@@ -583,59 +444,10 @@ func sessionTranscriptBounds(logRows []storage.SessionLog, spans []api.Span) (st
 	return serviceName, startTime, lastTime
 }
 
-func getModelName(attrs map[string]string) string { return attrval.String(attrs, tools.ModelKeys...) }
+func getModelName(attrs map[string]string) string { return msgmerge.ModelName(attrs) }
 
-func getToolName(attrs map[string]string) string { return attrval.String(attrs, tools.ToolNameKeys...) }
+func getToolName(attrs map[string]string) string { return msgmerge.ToolName(attrs) }
 
-func getToolInput(attrs map[string]string) string {
-	return attrval.String(attrs, tools.ToolInputKeys...)
-}
+func getToolInput(attrs map[string]string) string { return msgmerge.ToolInput(attrs) }
 
-func getToolOutput(attrs map[string]string) string {
-	return attrval.String(attrs, tools.ToolOutputKeys...)
-}
-
-// extractMessageContent extracts actual content from logAttributes based on event type
-func extractMessageContent(eventName string, attrs map[string]string, body string) string {
-	switch eventName {
-	case "user_prompt", "codex.user_prompt", "gemini_cli.user_prompt":
-		// User prompts have the actual text in the 'prompt' attribute
-		if prompt, ok := attrs["prompt"]; ok && prompt != "" {
-			return prompt
-		}
-		return body
-
-	case "transcript.message":
-		// Imported transcripts already have content in body
-		return body
-
-	case "codex.tool_result":
-		// Codex tool results have output in attributes
-		if output, ok := attrs["output"]; ok && output != "" {
-			return output
-		}
-		return body
-
-	case "gen_ai.client.inference.operation.details", "copilot_chat.agent.turn":
-		if output := extractGenAIMessageText(attrs["gen_ai.output.messages"], "assistant"); output != "" {
-			return output
-		}
-		if output, ok := attrs["gen_ai.output.messages"]; ok && output != "" {
-			return output
-		}
-		if input := extractGenAIMessageText(attrs["gen_ai.input.messages"], "user"); input != "" {
-			return input
-		}
-		return body
-
-	case "copilot_chat.tool.call":
-		if result, ok := attrs["gen_ai.tool.call.result"]; ok && result != "" {
-			return result
-		}
-		return body
-
-	default:
-		// For other events, use the body as-is
-		return body
-	}
-}
+func getToolOutput(attrs map[string]string) string { return msgmerge.ToolOutput(attrs) }

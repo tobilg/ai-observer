@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
@@ -27,6 +27,13 @@ type DuckDBStore struct {
 	// storeAllSpans keeps the tools' noise spans of OTLP exports
 	// (dropNoiseSpans)
 	storeAllSpans bool
+	// writes counts the committed write transactions (WriteGeneration)
+	writes atomic.Uint64
+	// Background work (StartMessageKeyRefill), stopped by Close
+	bgMu     sync.Mutex
+	bgCancel context.CancelFunc
+	bgDone   chan struct{}
+	closed   bool
 }
 
 // SetStoreAllSpans makes InsertTraces store the tools' noise spans too
@@ -56,6 +63,10 @@ type Options struct {
 	// Threads is the number of threads DuckDB runs queries on. 0 keeps
 	// DuckDB's default, one per CPU core.
 	Threads int
+	// SkipMigrationBackup migrates a database that holds data without
+	// copying it first (AI_OBSERVER_SKIP_MIGRATION_BACKUP;
+	// backupBeforeMigration)
+	SkipMigrationBackup bool
 }
 
 var memoryLimitPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?\s*([KMGT]i?B)$`)
@@ -128,12 +139,20 @@ func NewDuckDBStoreWithOptions(dbPath string, opts Options) (*DuckDBStore, error
 
 	store := &DuckDBStore{db: db}
 
+	// Migrations rewrite stored data in place: copy a database that holds
+	// data before they run
+	if !opts.SkipMigrationBackup {
+		if _, err := store.backupBeforeMigration(context.Background(), dbPath); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
+
 	// Initialize schema
 	if err := store.initSchema(context.Background()); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("initializing schema: %w", err)
 	}
-
 	return store, nil
 }
 
@@ -141,14 +160,16 @@ func NewDuckDBStoreWithOptions(dbPath string, opts Options) (*DuckDBStore, error
 // process per database file, so a lock conflict means another ai-observer
 // process has it open.
 func openError(dbPath string, err error) error {
-	if strings.Contains(err.Error(), "Could not set lock") {
-		return fmt.Errorf("database %s is in use by another process, such as a running ai-observer server or watch; "+
-			"stop it before running import, export or delete: %w", dbPath, err)
+	if IsLocked(err) {
+		return fmt.Errorf("database %s is in use by another process, such as a running ai-observer server or watch. "+
+			"Only one process can open it: stop that process before running import, export, delete, backup, restore or compact. "+
+			"While a server runs, its admin API (AI_OBSERVER_ADMIN_API=true) can delete, export and back up instead: %w", dbPath, err)
 	}
 	return fmt.Errorf("opening database: %w", err)
 }
 
 func (s *DuckDBStore) Close() error {
+	s.stopBackground()
 	return s.db.Close()
 }
 

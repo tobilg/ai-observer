@@ -31,6 +31,23 @@ describe('buildChartData', () => {
     expect(colorMap.get('input')).not.toEqual(colorMap.get('output'))
   })
 
+  it('keeps buckets without a value as gaps', () => {
+    const { data } = buildChartData(
+      [
+        { name: 'm', labels: { type: 'a' }, datapoints: [[t1, 5], [t2, null]] },
+        { name: 'm', labels: { type: 'b' }, datapoints: [[t1, null], [t2, null]] },
+        { name: 'm', labels: { type: 'b' }, datapoints: [[t2, 2]] },
+      ],
+      key,
+      label,
+      String
+    )
+    expect(data).toEqual([
+      { timestamp: t1, time: String(t1), a: 5, b: null },
+      { timestamp: t2, time: String(t2), a: null, b: 2 },
+    ])
+  })
+
   it('returns nothing for no series', () => {
     expect(buildChartData([], key, label, String)).toEqual({ data: [], series: [], colorMap: new Map() })
   })

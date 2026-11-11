@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -19,8 +21,8 @@ func TestSearchSessions(t *testing.T) {
 
 	long := strings.Repeat("background ", 40)
 	logs := []api.LogRecord{
-		{Timestamp: now.Add(-48 * time.Hour), ServiceName: "claude-code", LogAttributes: map[string]string{"session.id": "s1", "prompt": "set up the project"}},
-		{Timestamp: now.Add(-2 * time.Hour), ServiceName: "claude-code", LogAttributes: map[string]string{"session.id": "s1", "prompt": long + "fix the Flaky Test in parser_test.go " + long}},
+		{Timestamp: now.Add(-48 * time.Hour), ServiceName: "claude-code", LogAttributes: map[string]string{"session.id": "s1", "event.name": "user_prompt", "prompt": "set up the project"}},
+		{Timestamp: now.Add(-2 * time.Hour), ServiceName: "claude-code", LogAttributes: map[string]string{"session.id": "s1", "event.name": "user_prompt", "prompt": long + "fix the Flaky Test in parser_test.go " + long}},
 		{Timestamp: now.Add(-time.Hour), ServiceName: "codex_cli_rs", Body: "the flaky test is gone", LogAttributes: map[string]string{"conversation.id": "s2"}},
 		{Timestamp: now.Add(-time.Hour), ServiceName: "codex_cli_rs", Body: "unrelated", LogAttributes: map[string]string{"conversation.id": "s3"}},
 	}
@@ -229,5 +231,113 @@ func TestQueryMetricTotalsByAttribute(t *testing.T) {
 	}
 	if _, err := store.QueryMetricTotals(ctx, "claude_code.cost.usage", "", now.Add(-time.Hour), now, "bad'key"); err == nil {
 		t.Error("an invalid attribute was accepted")
+	}
+}
+
+func TestSearchTerms(t *testing.T) {
+	cases := map[string]string{
+		"flaky parser test":            "flaky|parser|test",
+		"  retry\tbackoff  ":           "retry|backoff",
+		`"not found" timeout`:          "not found|timeout",
+		`timeout "  context deadline `: "timeout|context deadline",
+		"Retry retry RETRY":            "Retry",
+		`a""b`:                         "a|b",
+	}
+	for query, want := range cases {
+		if terms, err := SearchTerms(query); err != nil || strings.Join(terms, "|") != want {
+			t.Errorf("SearchTerms(%q) = %q, %v; want %q", query, terms, err, want)
+		}
+	}
+	var words []string
+	for i := range MaxSearchTerms {
+		words = append(words, fmt.Sprintf("w%d", i))
+	}
+	if terms, err := SearchTerms(strings.Join(words, " ")); err != nil || len(terms) != MaxSearchTerms {
+		t.Errorf("%d terms = %v, %v", MaxSearchTerms, terms, err)
+	}
+	tooMany := strings.Join(words, " ") + " more"
+	for _, bad := range []string{"", "   ", `""`, tooMany} {
+		if _, err := SearchTerms(bad); err == nil {
+			t.Errorf("SearchTerms(%q) succeeded", bad)
+		}
+	}
+}
+
+// Search results are cursor pages: each session once, the most recently
+// matched first, with the total of all matching sessions
+func TestSearchSessionsPage(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	var logs []api.LogRecord
+	for i := range 5 {
+		logs = append(logs, api.LogRecord{Timestamp: now.Add(-time.Duration(10-i) * time.Minute), ServiceName: "claude-code",
+			Body: fmt.Sprintf("deploy step %d failed", i), LogAttributes: map[string]string{"session.id": fmt.Sprintf("s%d", i), "event.name": "user_prompt"}})
+	}
+	// s0 also matches in a span, later than its log: one row, at the span's time
+	logs = append(logs, api.LogRecord{Timestamp: now.Add(-time.Minute), ServiceName: "claude-code", Body: "unrelated",
+		LogAttributes: map[string]string{"session.id": "s9"}})
+	spans := []api.Span{{Timestamp: now.Add(-2 * time.Minute), TraceID: "t", SpanID: "a", SpanName: "chat", ServiceName: "claude-code",
+		SpanAttributes: map[string]string{"session.id": "s0", "gen_ai.output.messages": "the deploy failed again"}}}
+	if err := store.InsertTelemetry(ctx, logs, nil, spans); err != nil {
+		t.Fatal(err)
+	}
+
+	from := now.Add(-time.Hour)
+	var order []string
+	page := Page{Limit: 2}
+	for i := 0; ; i++ {
+		resp, err := store.SearchSessionsPage(ctx, []string{"deploy", "failed"}, "", from, now, page)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Total != 5 {
+			t.Errorf("page %d: total %d, want 5", i, resp.Total)
+		}
+		for _, s := range resp.Sessions {
+			order = append(order, s.SessionID)
+			if s.Snippet == "" || s.Matches == 0 || s.MatchedAt == nil {
+				t.Errorf("%s: snippet %q, %d matches, matched at %v", s.SessionID, s.Snippet, s.Matches, s.MatchedAt)
+			}
+			if s.SessionID == "s0" && (s.Matches != 2 || !s.MatchedAt.Equal(now.Add(-2*time.Minute)) || s.Snippet != "the deploy failed again") {
+				t.Errorf("s0 = %d matches at %v, snippet %q; want the log and the span, the span newest", s.Matches, s.MatchedAt, s.Snippet)
+			}
+		}
+		if !resp.HasMore {
+			if resp.NextCursor != "" {
+				t.Errorf("last page has cursor %q", resp.NextCursor)
+			}
+			break
+		}
+		if i > 5 || resp.NextCursor == "" {
+			t.Fatalf("page %d: has more without a cursor", i)
+		}
+		page.Cursor = resp.NextCursor
+	}
+	if got := strings.Join(order, " "); got != "s0 s4 s3 s2 s1" {
+		t.Errorf("sessions = %s, want s0 (matched last by its span) and then s4 to s1", got)
+	}
+
+	// A page after the last one is empty but still counts all matches
+	last, err := store.SearchSessionsPage(ctx, []string{"deploy"}, "", from, now, Page{Limit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor := encodeCursor(pageCursor{Time: formatTimeForDB(*last.Sessions[4].MatchedAt), Keys: []string{"s1", "claude-code"}})
+	empty, err := store.SearchSessionsPage(ctx, []string{"deploy"}, "", from, now, Page{Limit: 5, Cursor: cursor})
+	if err != nil || len(empty.Sessions) != 0 || empty.Total != 5 || empty.HasMore {
+		t.Errorf("page after the last = %+v, %v", empty, err)
+	}
+	none, err := store.SearchSessionsPage(ctx, []string{"nothing matches"}, "", from, now, Page{})
+	if err != nil || none.Sessions == nil || len(none.Sessions) != 0 || none.Total != 0 {
+		t.Errorf("no matches = %+v, %v; want an empty list", none, err)
+	}
+	if _, err := store.SearchSessionsPage(ctx, []string{"deploy"}, "", from, now, Page{Cursor: "bogus"}); !errors.Is(err, ErrInvalidCursor) {
+		t.Errorf("bogus cursor: %v", err)
+	}
+	if _, err := store.SearchSessionsPage(ctx, []string{" "}, "", from, now, Page{}); !errors.Is(err, ErrSearchTerms) {
+		t.Errorf("blank terms: %v", err)
 	}
 }

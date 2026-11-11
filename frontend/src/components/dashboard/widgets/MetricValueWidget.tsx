@@ -1,8 +1,10 @@
 import { useMemo } from 'react'
 import { Card } from '@/components/ui/card'
 import { Gauge } from 'lucide-react'
-import { useMetricData } from '@/contexts/metricData'
-import { getMetricMetadata, formatMetricValue, getSourceDisplayName, getServiceDisplayName } from '@/lib/metricMetadata'
+import { useMetricData, useRefreshMetricData } from '@/contexts/metricData'
+import { getMetricMetadata, formatMetricValue, getSourceDisplayName, statUnit } from '@/lib/metricMetadata'
+import { useServiceNames } from '@/hooks/useServiceNames'
+import { WidgetError, WidgetLoading } from './WidgetStatus'
 import type { WidgetConfig } from '@/types/dashboard'
 
 interface MetricValueWidgetProps {
@@ -17,7 +19,9 @@ export function MetricValueWidget({
   config,
 }: MetricValueWidgetProps) {
   // Get data from context (batched fetch)
-  const { series, loading, error } = useMetricData(widgetId)
+  const { series, loading, refreshing, error, stat } = useMetricData(widgetId)
+  const refreshAll = useRefreshMetricData()
+  const { displayName } = useServiceNames()
 
   // Get metadata for the configured metric (for display formatting only)
   const metadata = useMemo(
@@ -27,9 +31,9 @@ export function MetricValueWidget({
 
   // Get service name from config, series labels, or fall back to source display name
   const serviceName = (() => {
-    if (config.service) return getServiceDisplayName(config.service)
+    if (config.service) return displayName(config.service)
     for (const s of series) {
-      if (s.labels?.service) return getServiceDisplayName(s.labels.service)
+      if (s.labels?.service) return displayName(s.labels.service)
     }
     // Fall back to source display name from metric metadata
     if (metadata?.source && metadata.source !== 'unknown') {
@@ -47,39 +51,22 @@ export function MetricValueWidget({
     return breakdown?.knownValues?.[config.breakdownValue] || config.breakdownValue
   }, [config.breakdownAttribute, config.breakdownValue, metadata])
 
-  // Calculate total value from all series
-  // If breakdownAttribute and breakdownValue are set, filter to only matching series
-  // Each series has a single datapoint with [0, aggregated_value]
-  const value = useMemo(() => {
-    if (series.length === 0) return null
-
-    // If both breakdownAttribute and breakdownValue are set, filter series
-    if (config.breakdownAttribute && config.breakdownValue) {
-      const filteredSeries = series.filter((s) => {
-        // Check if series labels match the breakdown criteria
-        const breakdownKey = config.breakdownAttribute || 'type'
-        return s.labels?.[breakdownKey] === config.breakdownValue
-      })
-
-      if (filteredSeries.length === 0) return null
-      return filteredSeries.reduce((acc, s) => acc + (s.datapoints[0]?.[1] || 0), 0)
-    }
-
-    // Default: sum all series
-    return series.reduce((acc, s) => acc + (s.datapoints[0]?.[1] || 0), 0)
-  }, [series, config.breakdownAttribute, config.breakdownValue])
+  // The server merges all points (filtered to the breakdown value) into one
+  // series of one point: [0, value]. No points in the range: no series; no
+  // value (an average without values): null.
+  const value = series[0]?.datapoints[0]?.[1] ?? null
 
   // Format value using metadata unit
   const formattedValue = useMemo(() => {
     if (value === null) return '—'
     if (metadata) {
-      return formatMetricValue(value, metadata.unit)
+      return formatMetricValue(value, statUnit(metadata.unit, stat))
     }
     // Fallback formatting
     if (Math.abs(value) >= 1000000) return `${(value / 1000000).toFixed(1)}M`
     if (Math.abs(value) >= 1000) return `${(value / 1000).toFixed(1)}K`
     return Number.isInteger(value) ? value.toString() : value.toFixed(2)
-  }, [value, metadata])
+  }, [value, metadata, stat])
 
   return (
     <Card className="@container border-0 shadow-none h-full">
@@ -94,27 +81,25 @@ export function MetricValueWidget({
               <span className="text-sm @[140px]:text-base font-medium truncate">
                 {title}
               </span>
-              {breakdownDisplayValue && (
+              {(breakdownDisplayValue || stat) && (
                 <span className="text-xs text-muted-foreground truncate mt-0.5">
-                  ({breakdownDisplayValue})
+                  ({[breakdownDisplayValue, stat].filter(Boolean).join(', ')})
                 </span>
               )}
             </span>
           </div>
-          <Gauge className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+          <Gauge className="h-4 w-4 text-muted-foreground flex-shrink-0" aria-hidden="true" />
         </div>
         {/* Value - centered in remaining space */}
         <div className="flex-1 flex flex-col justify-center">
-          {loading ? (
-            <div className="text-2xl @[140px]:text-4xl font-bold text-muted-foreground">...</div>
-          ) : error ? (
-            <div className="text-sm text-destructive">
-              {error}
-            </div>
-          ) : !config.metricName ? (
+          {!config.metricName ? (
             <div className="text-sm text-muted-foreground">Not configured</div>
+          ) : loading ? (
+            <WidgetLoading className="h-10" />
+          ) : error ? (
+            <WidgetError message={error} onRetry={refreshAll} retrying={refreshing} />
           ) : (
-            <div className="text-2xl @[140px]:text-4xl font-bold">{formattedValue}</div>
+            <div className="text-2xl @[140px]:text-4xl font-bold tabular-nums">{formattedValue}</div>
           )}
           {/* Spacer matching subtext height in StatsWidget */}
           <div className="h-4" />

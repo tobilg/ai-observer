@@ -11,13 +11,11 @@ import (
 	"github.com/tobilg/ai-observer/internal/pricing"
 	"github.com/tobilg/ai-observer/internal/server"
 	"github.com/tobilg/ai-observer/internal/storage"
+	"github.com/tobilg/ai-observer/internal/tools"
 )
 
 func cmdImport(args []string) {
-	if err := runImport(args); err != nil {
-		fmt.Printf("Error: %v\n", err)
-		os.Exit(1)
-	}
+	exitOnError(runImport(args))
 }
 
 // ImportFlags holds the parsed flags for the import command
@@ -32,6 +30,8 @@ type ImportFlags struct {
 	// PricingMode is the Claude Code cost mode: auto, calculate or display
 	PricingMode string
 	Tool        string
+	// DB is the database file (--db), overriding AI_OBSERVER_DATABASE_PATH
+	DB string
 }
 
 // parseImportFlags parses command line arguments into ImportFlags
@@ -39,28 +39,23 @@ func parseImportFlags(args []string) (*ImportFlags, error) {
 	fs := flag.NewFlagSet("import", flag.ContinueOnError)
 
 	flags := &ImportFlags{}
-	fs.StringVar(&flags.From, "from", "", "Only import sessions from DATE (YYYY-MM-DD)")
-	fs.StringVar(&flags.To, "to", "", "Only import sessions up to DATE (YYYY-MM-DD)")
-	fs.BoolVar(&flags.DryRun, "dry-run", false, "Show what would be imported without storing")
-	fs.BoolVar(&flags.Force, "force", false, "Re-import already-imported sessions")
+	registerDateFlags(fs, &flags.From, &flags.To, "import", false)
+	registerDryRunFlag(fs, &flags.DryRun, "what would be imported")
+	fs.BoolVar(&flags.Force, "force", false, "Import files again also when they are unchanged")
 	fs.BoolVar(&flags.Verbose, "verbose", false, "Show detailed progress")
-	fs.BoolVar(&flags.Purge, "purge", false, "Delete existing data in time range before import")
-	fs.BoolVar(&flags.Yes, "yes", false, "Skip confirmation prompts")
-	fs.StringVar(&flags.PricingMode, "pricing-mode", "auto", "Claude Code cost mode: auto (recorded costUSD, else calculated), calculate, display")
+	fs.BoolVar(&flags.Purge, "purge", false, "Delete the tools' data in the time range first, then import all of their files in it")
+	registerYesFlag(fs, &flags.Yes)
+	fs.StringVar(&flags.PricingMode, "pricing-mode", "auto", "Claude Code cost: auto (recorded costUSD, else calculated), calculate or display")
+	registerDBFlag(fs, &flags.DB)
 
 	fs.Usage = func() {
-		fmt.Print(`Import local sessions from AI tool files
+		fmt.Printf(`Import local session files once (watch reads them as they change)
 
-Usage: ai-observer import [claude-code|codex|gemini|all] [options]
+Usage: ai-observer import [%s|all] [options]
 
-Arguments:
-  claude-code  Import from Claude Code (~/.claude/projects/**/*.jsonl)
-  codex        Import from Codex CLI (~/.codex/sessions/*.jsonl)
-  gemini       Import from Gemini CLI (~/.gemini/tmp/**/session-*.json)
-  all          Import from all tools
-
-Options:
-`)
+`, toolList(true))
+		printArguments(os.Stdout, toolArguments(true, func(p tools.Provider) string { return "Import " + p.DisplayName + " session files" }, "Import the files of all of them"))
+		fmt.Println("Options:")
 		printFlags(fs)
 	}
 
@@ -110,7 +105,11 @@ func runImport(args []string) error {
 	}
 
 	// Load config and initialize store
+	initLogging()
 	cfg := config.Load()
+	if flags.DB != "" {
+		cfg.DatabasePath = flags.DB
+	}
 	store, err := storage.NewDuckDBStoreWithOptions(cfg.DatabasePath, cfg.StorageOptions())
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)

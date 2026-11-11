@@ -46,6 +46,7 @@ func LoadOverrides(dir string) ([]string, error) {
 		} else {
 			(*provider).merge(override)
 		}
+		recordOverride(name, path, data)
 		loaded = append(loaded, path)
 	}
 

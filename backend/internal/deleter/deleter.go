@@ -1,7 +1,6 @@
 package deleter
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -9,7 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tobilg/ai-observer/internal/storage"
+	"github.com/tobilg/ai-observer/internal/diskspace"
+	"github.com/tobilg/ai-observer/internal/prompt"
 )
 
 // Scope defines what data types to delete
@@ -59,7 +59,7 @@ type Summary struct {
 }
 
 // Preview returns a summary of what would be deleted without actually deleting
-func Preview(ctx context.Context, store *storage.DuckDBStore, opts Options) (*Summary, error) {
+func Preview(ctx context.Context, store Counter, opts Options) (*Summary, error) {
 	summary := &Summary{}
 
 	switch opts.Scope {
@@ -103,7 +103,7 @@ func Preview(ctx context.Context, store *storage.DuckDBStore, opts Options) (*Su
 }
 
 // Execute performs the actual deletion
-func Execute(ctx context.Context, store *storage.DuckDBStore, opts Options) (*Summary, error) {
+func Execute(ctx context.Context, store Store, opts Options) (*Summary, error) {
 	summary := &Summary{}
 
 	switch opts.Scope {
@@ -142,6 +142,57 @@ func Execute(ctx context.Context, store *storage.DuckDBStore, opts Options) (*Su
 	}
 
 	return summary, nil
+}
+
+// ExecuteChunked deletes like Execute, a chunk of the time range per
+// transaction, oldest first. Each deletion holds the database's write
+// lock, so a running server deletes a large range in chunks (like
+// retention) instead of blocking ingestion until all of it is gone; a
+// failure leaves the chunks deleted before it deleted. The summary counts
+// spans, not traces.
+func ExecuteChunked(ctx context.Context, store Store, opts Options, chunk time.Duration) (*Summary, error) {
+	if chunk <= 0 {
+		return Execute(ctx, store, opts)
+	}
+	total := &Summary{}
+	for start := opts.From; !start.After(opts.To); start = start.Add(chunk) {
+		part := opts
+		part.From = start
+		if end := start.Add(chunk); end.Before(opts.To) {
+			part.To = end
+		}
+		summary, err := Execute(ctx, store, part)
+		if err != nil {
+			return total, err
+		}
+		total.LogCount += summary.LogCount
+		total.MetricCount += summary.MetricCount
+		total.SpanCount += summary.SpanCount
+		if !part.To.Before(opts.To) {
+			break
+		}
+	}
+	return total, nil
+}
+
+// reportSpace checkpoints the database, so the blocks of the deleted
+// records are reused by new data instead of growing the file, and prints
+// the free space inside it
+func reportSpace(ctx context.Context, store Store, opts Options) {
+	out := opts.out()
+	if err := store.Checkpoint(ctx); err != nil {
+		fmt.Fprintf(out, "Warning: %v\n", err)
+		return
+	}
+	size, err := store.DatabaseSize(ctx)
+	if err != nil || size.FileBytes == 0 {
+		return
+	}
+	fmt.Fprintf(out, "\nThe database file is %s, of which %s are free blocks that new data reuses.\n",
+		diskspace.FormatBytes(size.FileBytes), diskspace.FormatBytes(size.FreeBytes()))
+	if size.CompactionWorthwhile() {
+		fmt.Fprintln(out, "To return the free space to the disk, run `ai-observer compact` (with AI Observer stopped).")
+	}
 }
 
 // PrintSummary prints the delete summary to opts.Out
@@ -201,14 +252,7 @@ func ConfirmDelete(opts Options) bool {
 	fmt.Fprintln(out, "This action cannot be undone.")
 	fmt.Fprint(out, "Continue? [y/N] ")
 
-	reader := bufio.NewReader(opts.in())
-	response, err := reader.ReadString('\n')
-	if err != nil {
-		return false
-	}
-
-	response = strings.TrimSpace(strings.ToLower(response))
-	return response == "y" || response == "yes"
+	return prompt.Confirmed(opts.in())
 }
 
 // IsEmpty returns true if the summary has no records to delete
@@ -217,7 +261,7 @@ func (s *Summary) IsEmpty() bool {
 }
 
 // Run executes the full delete workflow with preview and confirmation
-func Run(ctx context.Context, store *storage.DuckDBStore, opts Options) error {
+func Run(ctx context.Context, store Store, opts Options) error {
 	// Preview what would be deleted
 	summary, err := Preview(ctx, store, opts)
 	if err != nil {
@@ -249,6 +293,7 @@ func Run(ctx context.Context, store *storage.DuckDBStore, opts Options) error {
 
 	// Print result
 	PrintResult(result, opts)
+	reportSpace(ctx, store, opts)
 
 	// Deleting keeps the import state, so a plain import skips the files
 	fmt.Fprintln(opts.out(), "\nImported session files stay marked as imported. To restore their records,")

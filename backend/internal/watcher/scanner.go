@@ -2,11 +2,13 @@ package watcher
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/tobilg/ai-observer/internal/importer"
 	"github.com/tobilg/ai-observer/internal/logger"
 )
 
@@ -100,8 +102,19 @@ func (w *Watcher) initialScan(backfill bool) {
 				if info.IsDir() {
 					return nil
 				}
+				fileSize := info.Size()
 				if !tw.MatchesFile(path) {
-					return nil
+					// A compressed session file is scanned by its plain
+					// path and content size, unless the plain file exists
+					// too (it is scanned itself)
+					plain, ok := compressedFile(tw, path)
+					if !ok {
+						return nil
+					}
+					path, fileSize = plain, contentSize(plain)
+					if fileSize < 0 {
+						return nil
+					}
 				}
 
 				state, stateErr := w.store.GetImportState(w.ctx, string(tw.source), path)
@@ -109,8 +122,6 @@ func (w *Watcher) initialScan(backfill bool) {
 					logger.Error("Failed to get import state during initial scan", "path", path, "error", stateErr)
 					return nil
 				}
-
-				fileSize := info.Size()
 
 				if state == nil {
 					// No prior state
@@ -160,6 +171,41 @@ func (w *Watcher) initialScan(backfill bool) {
 			}
 		}
 	}
+}
+
+// compressedFile returns the plain path of a compressed session file of tw
+// whose plain file does not exist
+func compressedFile(tw *ToolWatcher, path string) (string, bool) {
+	if tw.compressed == nil {
+		return "", false
+	}
+	plain, ok := tw.compressed(path)
+	if !ok {
+		return "", false
+	}
+	if _, err := os.Lstat(plain); err == nil {
+		return "", false
+	}
+	return plain, true
+}
+
+// contentSize returns the size of a session file's content: of the file, or
+// of the content of its compressed form, from the frame header or, when the
+// header lacks it, by decompressing it; -1 if it cannot be read
+func contentSize(path string) int64 {
+	if size := importer.SessionFileSize(path); size >= 0 {
+		return size
+	}
+	file, _, err := importer.OpenSessionFile(path)
+	if err != nil {
+		return -1
+	}
+	defer file.Close()
+	size, err := io.Copy(io.Discard, file)
+	if err != nil {
+		return -1
+	}
+	return size
 }
 
 // endMessageCount returns the message count at the current end of the file

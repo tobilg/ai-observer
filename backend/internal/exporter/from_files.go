@@ -43,6 +43,7 @@ func runFromFiles(ctx context.Context, opts Options) error {
 		return fmt.Errorf("creating temp database: %w", err)
 	}
 	defer tempStore.Close()
+	tempStore.SetRedactor(opts.Redactor)
 
 	// Create importer and register parsers
 	imp := importer.NewImporter(tempStore, opts.Verbose)

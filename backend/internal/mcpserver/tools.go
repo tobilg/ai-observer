@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -21,9 +23,11 @@ import (
 // the storage redactor, which covers telemetry stored before redaction was
 // enabled.
 type handlers struct {
-	store    *storage.DuckDBStore
+	store    Store
 	redactor *redact.Redactor
 	now      func() time.Time
+	// transcripts caches the transcripts get_transcript pages through
+	transcripts *transcript.Cache
 }
 
 func (h *handlers) text(s string) string { return h.redactor.String(s) }
@@ -41,10 +45,19 @@ type searchConversationsIn struct {
 type sessionOut struct {
 	SessionID string `json:"session_id"`
 	Tool      string `json:"tool"`
-	Model     string `json:"model,omitempty"`
-	StartTime string `json:"start_time"`
-	LastTime  string `json:"last_time"`
-	Messages  int    `json:"messages"`
+	// Title is the first user prompt, on one line, at most 200 characters
+	Title      string `json:"title,omitempty"`
+	Model      string `json:"model,omitempty"`
+	Repository string `json:"repository,omitempty"`
+	Branch     string `json:"branch,omitempty"`
+	StartTime  string `json:"start_time"`
+	LastTime   string `json:"last_time"`
+	Messages   int    `json:"messages"`
+	// Usage of the session's messages that carry it; missing when none
+	// does (tools that record usage elsewhere)
+	CostUSD      *float64 `json:"cost_usd,omitempty"`
+	InputTokens  *int64   `json:"input_tokens,omitempty"`
+	OutputTokens *int64   `json:"output_tokens,omitempty"`
 }
 
 type sessionMatchOut struct {
@@ -62,10 +75,12 @@ type searchConversationsOut struct {
 	Sessions []sessionMatchOut `json:"sessions"`
 }
 
-func sessionOf(s api.Session) sessionOut {
+func (h *handlers) sessionOf(s api.Session) sessionOut {
 	return sessionOut{
-		SessionID: s.SessionID, Tool: toolName(s.ServiceName), Model: s.Model,
+		SessionID: s.SessionID, Tool: toolName(s.ServiceName), Title: h.text(s.Title), Model: s.Model,
+		Repository: s.Repository, Branch: s.Branch,
 		StartTime: formatTime(s.StartTime), LastTime: formatTime(s.LastTime), Messages: s.MessageCount,
+		CostUSD: s.CostUSD, InputTokens: s.InputTokens, OutputTokens: s.OutputTokens,
 	}
 }
 
@@ -78,7 +93,7 @@ func (h *handlers) searchConversations(ctx context.Context, _ *mcp.CallToolReque
 	if err != nil {
 		return nil, searchConversationsOut{}, err
 	}
-	terms, err := searchTerms(in.Query)
+	terms, err := storage.SearchTerms(in.Query)
 	if err != nil {
 		return nil, searchConversationsOut{}, err
 	}
@@ -89,7 +104,7 @@ func (h *handlers) searchConversations(ctx context.Context, _ *mcp.CallToolReque
 	out := searchConversationsOut{Terms: terms, From: formatTime(from), To: formatTime(to), Sessions: []sessionMatchOut{}}
 	for _, m := range matches {
 		out.Sessions = append(out.Sessions, sessionMatchOut{
-			sessionOut: sessionOf(m.Session), Matches: m.Matches, MatchedAt: formatTime(m.MatchedAt), Snippet: h.text(m.Snippet),
+			sessionOut: h.sessionOf(m.Session), Matches: m.Matches, MatchedAt: formatTime(m.MatchedAt), Snippet: h.text(m.Snippet),
 		})
 	}
 	return nil, out, nil
@@ -128,7 +143,7 @@ func (h *handlers) listSessions(ctx context.Context, _ *mcp.CallToolRequest, in 
 	}
 	out := listSessionsOut{From: formatTime(from), To: formatTime(to), Total: resp.Total, Sessions: []sessionOut{}, NextCursor: resp.NextCursor}
 	for _, s := range resp.Sessions {
-		out.Sessions = append(out.Sessions, sessionOf(s))
+		out.Sessions = append(out.Sessions, h.sessionOf(s))
 	}
 	return nil, out, nil
 }
@@ -138,13 +153,17 @@ func (h *handlers) listSessions(ctx context.Context, _ *mcp.CallToolRequest, in 
 type getTranscriptIn struct {
 	SessionID string   `json:"session_id" jsonschema:"session ID from list_sessions or search_conversations"`
 	Roles     []string `json:"roles,omitempty" jsonschema:"only these roles: user, assistant, tool_use, tool_result, system (default: all)"`
+	Search    string   `json:"search,omitempty" jsonschema:"only messages containing all of these words, in any order (case-insensitive substrings; \"quoted phrases\" match exactly), in their text, tool name, tool input or output. Each has its position in the whole transcript: read the messages around one with cursor set to its position and no search or roles"`
 	Limit     int      `json:"limit,omitempty" jsonschema:"maximum messages (default 50, at most 200)"`
-	Cursor    string   `json:"cursor,omitempty" jsonschema:"next_cursor of the previous page"`
+	Cursor    string   `json:"cursor,omitempty" jsonschema:"next_cursor of the previous page, or a message position to start at"`
 	MaxChars  int      `json:"max_chars,omitempty" jsonschema:"maximum characters per text field (default 2000, at most 20000); longer text is cut"`
 }
 
 type messageOut struct {
-	Index        int     `json:"index"`
+	Index int `json:"index"`
+	// Position is the message's 0-based position in the whole transcript,
+	// set when roles or search leave messages out
+	Position     *int    `json:"position,omitempty"`
 	Time         string  `json:"time"`
 	Role         string  `json:"role"`
 	Content      string  `json:"content,omitempty"`
@@ -160,17 +179,46 @@ type messageOut struct {
 }
 
 type getTranscriptOut struct {
-	SessionID  string       `json:"session_id"`
-	Tool       string       `json:"tool"`
-	StartTime  string       `json:"start_time"`
-	LastTime   string       `json:"last_time"`
+	SessionID string `json:"session_id"`
+	Tool      string `json:"tool"`
+	Title     string `json:"title,omitempty"`
+	StartTime string `json:"start_time"`
+	LastTime  string `json:"last_time"`
+	// Totals are over all messages of the session, whatever is selected
+	Totals totalsOut `json:"totals"`
+	// Terms shows how search was split
+	Terms []string `json:"terms,omitempty"`
+	// Total counts the selected messages (all without roles and search)
 	Total      int          `json:"total_messages"`
 	Messages   []messageOut `json:"messages"`
 	NextCursor string       `json:"next_cursor,omitempty"`
 }
 
+type totalsOut struct {
+	CostUSD           float64 `json:"cost_usd"`
+	InputTokens       int64   `json:"input_tokens"`
+	OutputTokens      int64   `json:"output_tokens"`
+	CacheReadTokens   int64   `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens  int64   `json:"cache_write_tokens,omitempty"`
+	UserMessages      int     `json:"user_messages"`
+	AssistantMessages int     `json:"assistant_messages"`
+	ToolCalls         int     `json:"tool_calls"`
+	ToolErrors        int     `json:"tool_errors,omitempty"`
+}
+
+func totalsOf(t *api.TranscriptTotals) totalsOut {
+	if t == nil {
+		return totalsOut{}
+	}
+	return totalsOut{
+		CostUSD: t.CostUSD, InputTokens: t.InputTokens, OutputTokens: t.OutputTokens,
+		CacheReadTokens: t.CacheRead, CacheWriteTokens: t.CacheWrite,
+		UserMessages: t.UserMessages, AssistantMessages: t.AssistantMessages, ToolCalls: t.ToolCalls, ToolErrors: t.ToolErrors,
+	}
+}
+
 func (h *handlers) getTranscript(ctx context.Context, _ *mcp.CallToolRequest, in getTranscriptIn) (*mcp.CallToolResult, getTranscriptOut, error) {
-	resp, err := transcript.Load(ctx, h.store, in.SessionID)
+	resp, err := h.transcripts.Load(ctx, in.SessionID)
 	if errors.Is(err, transcript.ErrSessionNotFound) {
 		return nil, getTranscriptOut{}, fmt.Errorf("no session %q: find session IDs with list_sessions or search_conversations", in.SessionID)
 	}
@@ -178,32 +226,52 @@ func (h *handlers) getTranscript(ctx context.Context, _ *mcp.CallToolRequest, in
 		return nil, getTranscriptOut{}, err
 	}
 
-	roles := make(map[string]bool, len(in.Roles))
-	for _, r := range in.Roles {
-		roles[r] = true
-	}
-	var messages []api.TranscriptMessage
-	for _, m := range resp.Messages {
-		if len(roles) == 0 || roles[m.Role] {
-			messages = append(messages, m)
+	var terms []string
+	if in.Search != "" {
+		if terms, err = storage.SearchTerms(in.Search); err != nil {
+			return nil, getTranscriptOut{}, err
 		}
 	}
-
 	offset, err := offsetCursor(in.Cursor)
 	if err != nil {
 		return nil, getTranscriptOut{}, err
 	}
+
+	// The positions of the selected messages in the whole transcript
+	roles := make(map[string]bool, len(in.Roles))
+	for _, r := range in.Roles {
+		roles[r] = true
+	}
+	var positions []int
+	if terms != nil {
+		positions = transcript.Search(resp, terms)
+	} else {
+		positions = make([]int, len(resp.Messages))
+		for i := range positions {
+			positions[i] = i
+		}
+	}
+	if len(roles) > 0 {
+		positions = slices.DeleteFunc(positions, func(i int) bool { return !roles[resp.Messages[i].Role] })
+	}
+	filtered := len(roles) > 0 || terms != nil
+
 	limit := limitArg(in.Limit, 50, 200)
 	maxChars := limitArg(in.MaxChars, 2000, 20000)
 	out := getTranscriptOut{
-		SessionID: resp.SessionID, Tool: toolName(resp.ServiceName),
+		SessionID: resp.SessionID, Tool: toolName(resp.ServiceName), Title: h.text(resp.Title),
 		StartTime: formatTime(resp.StartTime), LastTime: formatTime(resp.LastTime),
-		Total: len(messages), Messages: []messageOut{},
+		Totals: totalsOf(resp.Totals), Terms: terms,
+		Total: len(positions), Messages: []messageOut{},
 	}
-	for i := offset; i < len(messages) && i < offset+limit; i++ {
-		out.Messages = append(out.Messages, h.message(messages[i], maxChars))
+	for i := offset; i < len(positions) && i < offset+limit; i++ {
+		msg := h.message(resp.Messages[positions[i]], maxChars)
+		if filtered {
+			msg.Position = &positions[i]
+		}
+		out.Messages = append(out.Messages, msg)
 	}
-	if offset+limit < len(messages) {
+	if offset+limit < len(positions) {
 		out.NextCursor = strconv.Itoa(offset + limit)
 	}
 	return nil, out, nil
@@ -507,12 +575,16 @@ func (h *handlers) listMetricNames(ctx context.Context, _ *mcp.CallToolRequest, 
 }
 
 type queryMetricsIn struct {
-	Name      string `json:"name" jsonschema:"metric name from list_metric_names, such as claude_code.token.usage"`
-	Tool      string `json:"tool,omitempty" jsonschema:"only points of this tool"`
-	From      string `json:"from,omitempty" jsonschema:"start of the range (default: 24 hours before to)"`
-	To        string `json:"to,omitempty" jsonschema:"end of the range (default: now)"`
-	Aggregate bool   `json:"aggregate,omitempty" jsonschema:"one total per series over the whole range instead of time buckets"`
-	Interval  string `json:"interval,omitempty" jsonschema:"bucket size such as 5m, 1h or 1d (default: about 50 buckets over the range)"`
+	Name      string            `json:"name" jsonschema:"metric name from list_metric_names, such as claude_code.token.usage"`
+	Tool      string            `json:"tool,omitempty" jsonschema:"only points of this tool"`
+	From      string            `json:"from,omitempty" jsonschema:"start of the range (default: 24 hours before to)"`
+	To        string            `json:"to,omitempty" jsonschema:"end of the range (default: now)"`
+	Aggregate bool              `json:"aggregate,omitempty" jsonschema:"one total per series over the whole range instead of time buckets"`
+	Interval  string            `json:"interval,omitempty" jsonschema:"bucket size such as 5m, 1h, 1d or 1w (default: about 50 buckets over the range)"`
+	GroupBy   []string          `json:"group_by,omitempty" jsonschema:"up to 2 point attributes to group series by instead of the token type (and model for totals), such as [\"model\"] or [\"model\", \"repository\"]; the series labels show the attributes a metric has"`
+	Filters   map[string]string `json:"filters,omitempty" jsonschema:"only points whose attributes have these exact values, such as {\"model\": \"claude-sonnet-5-5\"}"`
+	Stat      string            `json:"stat,omitempty" jsonschema:"statistic of histogram metrics (durations, sizes): avg (default), sum, count, min, max, p50, p90, p95 or p99; percentiles are estimated from the histogram buckets"`
+	Timezone  string            `json:"timezone,omitempty" jsonschema:"IANA time zone the buckets follow, so days start at its midnight, such as Europe/Berlin (default: the server's time zone)"`
 }
 
 type pointOut struct {
@@ -526,15 +598,23 @@ type seriesOut struct {
 }
 
 type queryMetricsOut struct {
-	Name     string      `json:"name"`
-	From     string      `json:"from"`
-	To       string      `json:"to"`
-	Interval string      `json:"interval,omitempty"`
-	Series   []seriesOut `json:"series"`
+	Name string `json:"name"`
+	From string `json:"from"`
+	To   string `json:"to"`
+	// Interval is the bucket size (a Go duration); missing for totals
+	Interval string `json:"interval,omitempty"`
+	// TimeZone is the zone the buckets follow; missing for totals
+	TimeZone   string      `json:"timezone,omitempty"`
+	MetricType string      `json:"metric_type,omitempty"`
+	Stat       string      `json:"stat,omitempty"`
+	Series     []seriesOut `json:"series"`
+	Note       string      `json:"note,omitempty"`
 }
 
 // maxMetricPoints bounds the points query_metrics returns
 const maxMetricPoints = 2000
+
+const histogramNote = "Buckets without values have no point."
 
 func (h *handlers) queryMetrics(ctx context.Context, _ *mcp.CallToolRequest, in queryMetricsIn) (*mcp.CallToolResult, queryMetricsOut, error) {
 	service, err := serviceFor(in.Tool)
@@ -552,22 +632,33 @@ func (h *handlers) queryMetrics(ctx context.Context, _ *mcp.CallToolRequest, in 
 		}
 	}
 	interval = max(interval.Truncate(time.Second), time.Minute)
-
-	resp, err := h.store.QueryMetricSeries(ctx, in.Name, service, from, to, int64(interval/time.Second), in.Aggregate)
+	zone, loc, err := h.timeZone(in.Timezone)
 	if err != nil {
 		return nil, queryMetricsOut{}, err
 	}
-	out := queryMetricsOut{Name: in.Name, From: formatTime(from), To: formatTime(to), Series: []seriesOut{}}
+
+	q := api.MetricQuery{Name: in.Name, Service: service, Aggregate: in.Aggregate, GroupBy: in.GroupBy, Filters: in.Filters, Stat: in.Stat}
+	resp, err := h.store.QuerySeries(ctx, q, storage.SeriesRange{From: from, To: to, Interval: int64(interval / time.Second), TimeZone: zone})
+	if err != nil {
+		return nil, queryMetricsOut{}, toolQueryError(err)
+	}
+	out := queryMetricsOut{Name: in.Name, From: formatTime(from), To: formatTime(to), MetricType: resp.MetricType, Stat: resp.Stat, Series: []seriesOut{}}
 	if !in.Aggregate {
-		out.Interval = interval.String()
+		out.Interval = (time.Duration(resp.Interval) * time.Second).String()
+		out.TimeZone = zone
 	}
 	points := 0
 	for _, s := range resp.Series {
 		series := seriesOut{Labels: h.redactor.Map(s.Labels), Points: []pointOut{}}
 		for _, dp := range s.DataPoints {
+			// Empty buckets of averages, extremes and percentiles have no value
+			if math.IsNaN(dp[1]) {
+				out.Note = histogramNote
+				continue
+			}
 			p := pointOut{Value: dp[1]}
 			if !in.Aggregate {
-				p.Time = formatTime(time.UnixMilli(int64(dp[0])))
+				p.Time = time.UnixMilli(int64(dp[0])).In(loc).Format(time.RFC3339)
 			}
 			series.Points = append(series.Points, p)
 		}
@@ -583,4 +674,29 @@ func (h *handlers) queryMetrics(ctx context.Context, _ *mcp.CallToolRequest, in 
 		}
 	}
 	return nil, out, nil
+}
+
+// timeZone returns the zone of a tool's timezone argument (the server's
+// zone when empty) and its location
+func (h *handlers) timeZone(name string) (string, *time.Location, error) {
+	if name == "" {
+		name = h.store.LocalTimeZone()
+	}
+	if err := h.store.ValidateTimeZone(name); err != nil {
+		return "", nil, toolQueryError(err)
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return "", nil, fmt.Errorf("unknown time zone %q", name)
+	}
+	return name, loc, nil
+}
+
+// toolQueryError names a query's invalid argument as the tools call it
+func toolQueryError(err error) error {
+	var invalid *storage.MetricQueryError
+	if !errors.As(err, &invalid) {
+		return err
+	}
+	return errors.New(strings.ReplaceAll(invalid.Message, "groupBy", "group_by"))
 }

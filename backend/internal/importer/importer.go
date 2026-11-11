@@ -1,17 +1,16 @@
 package importer
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/tobilg/ai-observer/internal/api"
 	"github.com/tobilg/ai-observer/internal/deleter"
+	"github.com/tobilg/ai-observer/internal/prompt"
 	"github.com/tobilg/ai-observer/internal/storage"
 )
 
@@ -366,7 +365,7 @@ func (i *Importer) scanSource(ctx context.Context, parser SessionParser, opts Op
 		}
 
 		// Parse the file to get counts
-		result, err := parser.ParseFile(ctx, filePath)
+		result, err := parseForPreview(ctx, parser, filePath, opts)
 		if err != nil {
 			summary.AddError(filePath, err)
 			continue
@@ -476,9 +475,28 @@ func (i *Importer) importSource(ctx context.Context, parser SessionParser, opts 
 		// Size and modification time before parsing: if the file changes
 		// while it is parsed, they no longer match and the next import
 		// hashes it
-		info, err := os.Stat(filePath)
+		info, err := StatSessionFile(filePath)
 		if err != nil {
 			fail(filePath, err)
+			continue
+		}
+
+		// A large file is parsed and stored in batches (codex_batches.go)
+		if bp, ok := batchable(parser, opts, info.Size); ok {
+			result, n, err := i.importInBatches(ctx, bp, source, filePath, info, prev, dst)
+			if err != nil {
+				fail(filePath, fmt.Errorf("importing: %w", err))
+				continue
+			}
+			if n.logs+n.metrics+n.spans > 0 {
+				stats.files++
+				stats.logs += n.logs
+				stats.metrics += n.metrics
+				stats.spans += n.spans
+				if i.verbose {
+					fmt.Fprintf(i.out, "  [%s] %s: %d logs, %d metrics\n", source, result.SessionID, n.logs, n.metrics)
+				}
+			}
 			continue
 		}
 
@@ -516,8 +534,9 @@ func (i *Importer) importSource(ctx context.Context, parser SessionParser, opts 
 		// Watch mode continues where this import stopped reading
 		state.ByteOffset = result.ParsedBytes
 		state.MessageCount = result.MessageCount
-		state.FileSize = info.Size()
-		state.FileModTimeNs = info.ModTime().UnixNano()
+		state.ParserState = result.ParserState
+		state.FileSize = info.Size
+		state.FileModTimeNs = info.ModTimeNs
 
 		// A date range that left out records of the file makes the state
 		// partial, so the next import reads the file again. Watch only reads
@@ -527,6 +546,7 @@ func (i *Importer) importSource(ctx context.Context, parser SessionParser, opts 
 		if after {
 			state.ByteOffset = 0
 			state.MessageCount = 0
+			state.ParserState = ""
 		}
 		// Every stored record of the file now carries its path, unless
 		// records of an earlier version remain outside the range
@@ -653,14 +673,7 @@ func (i *Importer) confirmImport(withPurge bool) bool {
 	}
 	fmt.Fprint(i.out, "Continue? [y/N] ")
 
-	reader := bufio.NewReader(i.in)
-	response, err := reader.ReadString('\n')
-	if err != nil {
-		return false
-	}
-
-	response = strings.TrimSpace(strings.ToLower(response))
-	return response == "y" || response == "yes"
+	return prompt.Confirmed(i.in)
 }
 
 // GetParser returns the parser for a source type

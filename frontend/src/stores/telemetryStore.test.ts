@@ -3,8 +3,7 @@ import { MAX_RECENT_ITEMS, useTelemetryStore, type StoredNotification } from './
 
 describe('telemetryStore', () => {
   beforeEach(() => {
-    // Reset store state before each test using the store's clearRecentData action
-    useTelemetryStore.getState().clearRecentData()
+    useTelemetryStore.setState({ recentSpanTimes: [], recentLogTimes: [], metricsReceivedCount: 0 })
   })
 
   const notification = (...timestamps: number[]): StoredNotification => ({
@@ -87,29 +86,6 @@ describe('telemetryStore', () => {
       useTelemetryStore.getState().addLogs({ count: 0, services: [] } as unknown as StoredNotification)
 
       expect(useTelemetryStore.getState().recentLogTimes).toEqual([])
-    })
-  })
-
-  describe('clearRecentData', () => {
-    it('clears all data', () => {
-      useTelemetryStore.getState().addSpans(notification(1))
-      useTelemetryStore.getState().addMetrics(notification(1))
-      useTelemetryStore.getState().addLogs(notification(1))
-
-      useTelemetryStore.getState().clearRecentData()
-
-      const state = useTelemetryStore.getState()
-      expect(state.recentSpanTimes).toEqual([])
-      expect(state.recentLogTimes).toEqual([])
-      expect(state.metricsReceivedCount).toBe(0)
-    })
-
-    it('allows adding data after clearing', () => {
-      useTelemetryStore.getState().addSpans(notification(1))
-      useTelemetryStore.getState().clearRecentData()
-      useTelemetryStore.getState().addSpans(notification(2))
-
-      expect(useTelemetryStore.getState().recentSpanTimes).toEqual([2])
     })
   })
 

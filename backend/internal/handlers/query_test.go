@@ -33,6 +33,11 @@ func setupTestHandlers(t *testing.T) (*Handlers, func()) {
 	return h, cleanup
 }
 
+// db returns the handlers' store as the DuckDB store tests set up
+func (h *Handlers) db() *storage.DuckDBStore {
+	return h.store.(*storage.DuckDBStore)
+}
+
 // insertTestTrace inserts a test trace into the store
 func insertTestTrace(t *testing.T, store *storage.DuckDBStore, traceID, spanID, serviceName, spanName string) {
 	t.Helper()
@@ -95,7 +100,7 @@ func TestGetStatsTimeRange(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	if err := h.store.InsertSpans(ctx, []api.Span{{
+	if err := h.db().InsertSpans(ctx, []api.Span{{
 		TraceID:     "outside-request-range",
 		SpanID:      "span-1",
 		ServiceName: "svc",
@@ -177,7 +182,12 @@ func TestQueryTraces(t *testing.T) {
 		{"with search filter", "/api/traces?search=test", http.StatusOK},
 		{"with time range", "/api/traces?from=2024-01-01T00:00:00Z&to=2024-12-31T23:59:59Z", http.StatusOK},
 		{"limit capped at 1000", "/api/traces?limit=5000", http.StatusOK},
-		{"invalid limit uses default", "/api/traces?limit=invalid", http.StatusOK},
+		{"invalid limit", "/api/traces?limit=invalid", http.StatusBadRequest},
+		{"zero limit", "/api/traces?limit=0", http.StatusBadRequest},
+		{"negative offset", "/api/traces?offset=-5", http.StatusBadRequest},
+		{"background", "/api/traces?background=true", http.StatusOK},
+		{"invalid background", "/api/traces?background=yes", http.StatusBadRequest},
+		{"unknown parameters are ignored", "/api/traces?foo=bar", http.StatusOK},
 	}
 
 	for _, tt := range tests {
@@ -199,7 +209,7 @@ func TestGetTrace(t *testing.T) {
 	defer cleanup()
 
 	// Insert a test trace first
-	insertTestTrace(t, h.store, "trace-123", "span-456", "test-service", "test-span")
+	insertTestTrace(t, h.db(), "trace-123", "span-456", "test-service", "test-span")
 
 	tests := []struct {
 		name       string
@@ -233,7 +243,7 @@ func TestGetTraceSpans_CopilotTraceID(t *testing.T) {
 	defer cleanup()
 
 	traceID := "ef47fb6b7e5cf1fd1dd3969ad3d7ddefaefbd34d7a71bd79"
-	insertTestTrace(t, h.store, traceID, "7f8d1be9fdb869ef1fe76ebb", "copilot-chat", "chat gpt-4o-mini-2024-07-18")
+	insertTestTrace(t, h.db(), traceID, "7f8d1be9fdb869ef1fe76ebb", "copilot-chat", "chat gpt-4o-mini-2024-07-18")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/traces/"+traceID+"/spans?kind="+api.TraceKindOTelTrace, nil)
 	rctx := chi.NewRouteContext()
@@ -298,8 +308,8 @@ func TestQueryLogs(t *testing.T) {
 	defer cleanup()
 
 	// Insert test logs
-	insertTestLog(t, h.store, "test-service", "INFO", "Test log message")
-	insertTestLog(t, h.store, "test-service", "ERROR", "Error log message")
+	insertTestLog(t, h.db(), "test-service", "INFO", "Test log message")
+	insertTestLog(t, h.db(), "test-service", "ERROR", "Error log message")
 
 	tests := []struct {
 		name       string
@@ -547,6 +557,8 @@ func TestQueryRecentTraces(t *testing.T) {
 		{"default", "/api/traces/recent", http.StatusOK},
 		{"with limit", "/api/traces/recent?limit=5", http.StatusOK},
 		{"limit over 100 capped", "/api/traces/recent?limit=200", http.StatusOK},
+		{"invalid limit", "/api/traces/recent?limit=x", http.StatusBadRequest},
+		{"invalid to", "/api/traces/recent?to=x", http.StatusBadRequest},
 	}
 
 	for _, tt := range tests {
@@ -558,38 +570,6 @@ func TestQueryRecentTraces(t *testing.T) {
 
 			if rec.Code != tt.wantStatus {
 				t.Errorf("expected status %d, got %d", tt.wantStatus, rec.Code)
-			}
-		})
-	}
-}
-
-func TestParsePagination(t *testing.T) {
-	tests := []struct {
-		name       string
-		query      string
-		wantLimit  int
-		wantOffset int
-	}{
-		{"default values", "", 50, 0},
-		{"custom limit", "limit=25", 25, 0},
-		{"custom offset", "offset=10", 50, 10},
-		{"both custom", "limit=20&offset=5", 20, 5},
-		{"large limit is passed on (storage caps it)", "limit=2000", 2000, 0},
-		{"invalid limit uses default", "limit=abc", 50, 0},
-		{"negative offset uses 0", "offset=-5", 50, 0},
-		{"zero limit uses default", "limit=0", 50, 0},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/?"+tt.query, nil)
-			limit, offset := parsePagination(req)
-
-			if limit != tt.wantLimit {
-				t.Errorf("limit: expected %d, got %d", tt.wantLimit, limit)
-			}
-			if offset != tt.wantOffset {
-				t.Errorf("offset: expected %d, got %d", tt.wantOffset, offset)
 			}
 		})
 	}
@@ -675,7 +655,7 @@ func TestGetSessionTranscript_CopilotListedSessionReturnsTranscript(t *testing.T
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	sessionID := "copilot-conv-1"
 
-	if err := h.store.InsertLogs(ctx, []api.LogRecord{{
+	if err := h.db().InsertLogs(ctx, []api.LogRecord{{
 		Timestamp:   now,
 		ServiceName: "copilot-chat",
 		Body:        "copilot_chat.session.start",
@@ -686,7 +666,7 @@ func TestGetSessionTranscript_CopilotListedSessionReturnsTranscript(t *testing.T
 	}}); err != nil {
 		t.Fatalf("failed to insert copilot session log: %v", err)
 	}
-	if err := h.store.InsertSpans(ctx, []api.Span{{
+	if err := h.db().InsertSpans(ctx, []api.Span{{
 		Timestamp:   now.Add(time.Second),
 		TraceID:     "trace-copilot",
 		SpanID:      "span-agent",
@@ -743,7 +723,7 @@ func TestGetSessionTranscript_WholeSession(t *testing.T) {
 	h, cleanup := setupTestHandlers(t)
 	defer cleanup()
 	start := time.Date(2026, 1, 2, 10, 0, 0, 0, time.UTC)
-	if err := h.store.InsertLogs(context.Background(), []api.LogRecord{
+	if err := h.db().InsertLogs(context.Background(), []api.LogRecord{
 		{Timestamp: start, ServiceName: "claude-code", LogAttributes: map[string]string{"session.id": "s1", "event.name": "user_prompt", "prompt": "early"}},
 		{Timestamp: start.Add(50 * time.Hour), ServiceName: "claude-code", LogAttributes: map[string]string{"session.id": "s1", "event.name": "user_prompt", "prompt": "late"}},
 	}); err != nil {
@@ -784,7 +764,7 @@ func TestGetSessionTranscript_StorageFailureReturns500WithoutDetails(t *testing.
 	defer cleanup()
 
 	// A closed database makes every query fail; that must not look like a missing session.
-	h.store.Close()
+	h.db().Close()
 
 	rec := requestSessionTranscript(h, "some-session")
 	if rec.Code != http.StatusInternalServerError {
@@ -837,12 +817,13 @@ func TestGetStatsIsCached(t *testing.T) {
 	if got := get().LogCount; got != 0 {
 		t.Fatalf("initial log count = %d", got)
 	}
-	insertTestLog(t, h.store, "svc", "INFO", "hello")
+	insertTestLog(t, h.db(), "svc", "INFO", "hello")
 	if got := get().LogCount; got != 0 {
 		t.Errorf("log count = %d within the cache TTL, want the cached 0", got)
 	}
 
-	h.stats.expires = time.Now().Add(-time.Second)
+	// Long expired: not served while refreshing, but waited for
+	h.stats.expires = time.Now().Add(-statsMaxStale - time.Second)
 	if got := get().LogCount; got != 1 {
 		t.Errorf("log count = %d after expiry, want 1", got)
 	}
@@ -920,7 +901,7 @@ func TestGetSessionTranscript_Pages(t *testing.T) {
 		logs = append(logs, api.LogRecord{Timestamp: start.Add(time.Duration(i) * time.Minute), ServiceName: "claude-code",
 			LogAttributes: map[string]string{"session.id": "s1", "event.name": "user_prompt", "prompt": "prompt " + strconv.Itoa(i)}})
 	}
-	if err := h.store.InsertLogs(context.Background(), logs); err != nil {
+	if err := h.db().InsertLogs(context.Background(), logs); err != nil {
 		t.Fatal(err)
 	}
 
@@ -954,5 +935,38 @@ func TestGetSessionTranscript_Pages(t *testing.T) {
 	}
 	if code, _ := get("?cursor=abc"); code != http.StatusBadRequest {
 		t.Errorf("invalid cursor: status %d, want 400", code)
+	}
+}
+
+func TestGetSessionTranscript_CachedUntilTelemetryIsWritten(t *testing.T) {
+	h, cleanup := setupTestHandlers(t)
+	defer cleanup()
+	ctx := context.Background()
+	start := time.Date(2026, 1, 2, 10, 0, 0, 0, time.UTC)
+	prompt := func(minute int) api.LogRecord {
+		return api.LogRecord{Timestamp: start.Add(time.Duration(minute) * time.Minute), ServiceName: "claude-code",
+			LogAttributes: map[string]string{"session.id": "s1", "event.name": "user_prompt", "prompt": "prompt " + strconv.Itoa(minute)}}
+	}
+	if err := h.db().InsertLogs(ctx, []api.LogRecord{prompt(0)}); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := h.loadTranscript(ctx, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := h.loadTranscript(ctx, "s1"); again != first {
+		t.Error("the transcript was built again although nothing was written")
+	}
+
+	if err := h.db().InsertLogs(ctx, []api.LogRecord{prompt(1)}); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := h.loadTranscript(ctx, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fresh.Messages) != 2 {
+		t.Errorf("after a write: %d messages, want the new one too (2)", len(fresh.Messages))
 	}
 }

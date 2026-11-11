@@ -1,16 +1,24 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { api } from '@/lib/api'
-import { getServiceDisplayName } from '@/lib/metricMetadata'
+import { describe, it, expect, beforeEach } from 'vitest'
+import { act, renderHook } from '@testing-library/react'
+import { getServiceDisplayName, serviceFilterOptions } from '@/lib/metricMetadata'
+import { useServiceNames } from '@/hooks/useServiceNames'
 import { useProviderStore } from './providerStore'
 
-vi.mock('@/lib/api', () => ({
-  api: { getProviders: vi.fn() },
-}))
+const providers = [
+  { tool: 'claude-code', serviceName: 'claude-code', displayName: 'Claude Code', sessionFiles: true },
+  { tool: 'new-tool', serviceName: 'new_tool_svc', displayName: 'New Tool', sessionFiles: false },
+  {
+    tool: 'multi',
+    serviceName: 'multi-a',
+    displayName: 'Multi A',
+    sessionFiles: false,
+    otherServices: [{ serviceName: 'multi-b', displayName: 'Multi B' }],
+  },
+]
 
 describe('providerStore', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
-    useProviderStore.setState({ displayNames: {}, loaded: false })
+    useProviderStore.setState({ displayNames: {}, toolServices: {}, loaded: false })
   })
 
   it('names services with the fallback until the providers have loaded', () => {
@@ -18,36 +26,33 @@ describe('providerStore', () => {
     expect(getServiceDisplayName('unknown-service')).toBe('unknown-service')
   })
 
-  it('names services from the backend provider list once loaded', async () => {
-    vi.mocked(api.getProviders).mockResolvedValue({
-      providers: [
-        { tool: 'claude-code', serviceName: 'claude-code', displayName: 'Claude Code', sessionFiles: true },
-        { tool: 'new-tool', serviceName: 'new_tool_svc', displayName: 'New Tool', sessionFiles: false },
-      ],
-    })
-
-    await useProviderStore.getState().load()
+  it('names services from the backend provider list once loaded', () => {
+    useProviderStore.getState().setProviders(providers)
 
     expect(getServiceDisplayName('new_tool_svc')).toBe('New Tool')
+    expect(getServiceDisplayName('multi-b')).toBe('Multi B')
     // Services the backend does not list keep the fallback
     expect(getServiceDisplayName('gemini_cli')).toBe('Gemini CLI')
   })
 
-  it('loads the providers only once', async () => {
-    vi.mocked(api.getProviders).mockResolvedValue({ providers: [] })
+  it('takes the tools with several services from the provider list', () => {
+    useProviderStore.getState().setProviders(providers)
 
-    await useProviderStore.getState().load()
-    await useProviderStore.getState().load()
-
-    expect(api.getProviders).toHaveBeenCalledTimes(1)
+    expect(useProviderStore.getState().toolServices).toEqual({ multi: ['multi-a', 'multi-b'] })
+    expect(serviceFilterOptions(['multi-a', 'multi-b']).map((o) => o.value)).toEqual(['multi', 'multi-a', 'multi-b'])
   })
 
-  it('keeps the fallback names when the request fails, and tries again later', async () => {
-    vi.mocked(api.getProviders).mockRejectedValue(new Error('offline'))
+  it('re-renders components through useServiceNames when the providers arrive', () => {
+    const { result } = renderHook(() => useServiceNames())
+    const before = result.current
+    expect(before.displayName('new_tool_svc')).toBe('new_tool_svc')
+    expect(before.loaded).toBe(false)
 
-    await useProviderStore.getState().load()
+    act(() => useProviderStore.getState().setProviders(providers))
 
-    expect(useProviderStore.getState().loaded).toBe(false)
-    expect(getServiceDisplayName('copilot-chat')).toBe('GitHub Copilot (VS Code)')
+    expect(result.current).not.toBe(before)
+    expect(result.current.loaded).toBe(true)
+    expect(result.current.displayName('new_tool_svc')).toBe('New Tool')
+    expect(result.current.filterOptions(['claude-code'])).toEqual([{ value: 'claude-code', label: 'Claude Code' }])
   })
 })

@@ -62,6 +62,15 @@ func (h *SPAHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Vite names the files in assets/ after a hash of their content, so a
+	// name never serves other content and browsers may keep them for good.
+	// Other files (favicon.svg) are checked again after an hour.
+	if strings.HasPrefix(upath, "/assets/") {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+	}
+
 	// Serve the file with proper content type
 	http.FileServer(h.fs).ServeHTTP(w, r)
 }
@@ -77,5 +86,9 @@ func (h *SPAHandler) serveIndex(w http.ResponseWriter, r *http.Request) {
 	defer f.Close()
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// The page names the current asset files, so it is always revalidated:
+	// a cached page of an earlier version would request assets that no
+	// longer exist
+	w.Header().Set("Cache-Control", "no-cache")
 	io.Copy(w, f)
 }

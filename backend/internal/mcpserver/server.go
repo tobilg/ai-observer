@@ -15,7 +15,6 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tobilg/ai-observer/internal/logger"
-	"github.com/tobilg/ai-observer/internal/storage"
 	"github.com/tobilg/ai-observer/internal/transcript"
 )
 
@@ -33,13 +32,29 @@ Typical use:
 
 Times accept RFC 3339, dates (UTC) or ages relative to now such as 30m, 24h, 7d, 2w. Lists are paged: pass next_cursor as cursor for the next page. Long text is cut (max_chars); secrets in stored text are replaced by [REDACTED:...] markers.`
 
+// Option configures the MCP server
+type Option func(*handlers)
+
+// WithTranscripts makes get_transcript and the transcript resource read
+// transcripts through cache, which the server shares with the REST API.
+// Without it the MCP server has a cache of its own.
+func WithTranscripts(cache *transcript.Cache) Option {
+	return func(h *handlers) { h.transcripts = cache }
+}
+
 // New returns the MCP server with AI Observer's tools. usage_summary,
 // query_metrics, get_trace and list_sessions also name a view for hosts
 // that render MCP Apps (app.go).
-func New(store *storage.DuckDBStore, version string) *mcp.Server {
+func New(store Store, version string, opts ...Option) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "ai-observer", Title: "AI Observer", Version: version},
 		&mcp.ServerOptions{Instructions: instructions})
 	h := &handlers{store: store, redactor: store.Redactor(), now: time.Now}
+	for _, opt := range opts {
+		opt(h)
+	}
+	if h.transcripts == nil {
+		h.transcripts = transcript.NewCache(store)
+	}
 
 	readOnly := func(name, title, description string) *mcp.Tool {
 		closed := false
@@ -47,22 +62,22 @@ func New(store *storage.DuckDBStore, version string) *mcp.Server {
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: &closed}}
 	}
 	mcp.AddTool(server, readOnly("search_conversations", "Search conversations",
-		"Find sessions with a prompt, reply or tool call that contains all words of the query, in any order (case-insensitive substrings; \"quoted phrases\" match exactly), newest match first, with a snippet around the match. Use get_transcript to read a session."),
+		"Find sessions with a prompt, reply or tool call that contains all words of the query, in any order (case-insensitive substrings; \"quoted phrases\" match exactly), newest match first, with a snippet around the match and the session's title, repository, branch and usage. Use get_transcript to read a session."),
 		h.searchConversations)
 	mcp.AddTool(server, withApp(readOnly("list_sessions", "List sessions",
-		"List the sessions (conversations) of the AI coding tools with activity in a time range, most recently active first, with tool, model, start, last activity and message count.")),
+		"List the sessions (conversations) of the AI coding tools with activity in a time range, most recently active first, with title (first prompt), tool, model, repository, branch, start, last activity, message count (as get_transcript shows them) and, where recorded, cost and tokens.")),
 		h.listSessions)
 	mcp.AddTool(server, readOnly("get_transcript", "Get transcript",
-		"Read the transcript of a session: user prompts, assistant replies, tool calls and results in order, paged, with long text cut to max_chars."),
+		"Read the transcript of a session: user prompts, assistant replies, tool calls and results in order, paged, with long text cut to max_chars, and the session's title and usage totals over all messages. A message recorded both in a session file and over OTLP is shown once. With search, only the messages containing all its words, each with its position in the transcript, usable as cursor."),
 		h.getTranscript)
 	mcp.AddTool(server, withApp(readOnly("usage_summary", "Usage summary",
-		"Token usage and cost in USD over a time range, grouped by tool, model, day or repository.")),
+		"Token usage and cost in USD over a time range, grouped by tool, model, day (in timezone, default the server's) or repository, with the models that have no price.")),
 		h.usageSummary)
 	mcp.AddTool(server, readOnly("search_logs", "Search logs",
 		"Search the stored log records (events such as prompts, API requests, tool results and errors) by text, tool, severity or trace, newest first."),
 		h.searchLogs)
 	mcp.AddTool(server, readOnly("list_traces", "List traces",
-		"List traces (requests, agent turns and tool calls recorded as spans) in a time range, newest first, optionally matching a text. Background traces of Codex's app and exec servers (internal requests outside a conversation) are left out unless include_background is set."),
+		"List traces (requests, agent turns and tool calls recorded as spans) with spans in a time range, newest first, optionally matching a text; each is described by all of its spans, also those outside the range. Background traces of Codex's app and exec servers (internal requests outside a conversation) are left out unless include_background is set."),
 		h.listTraces)
 	mcp.AddTool(server, withApp(readOnly("get_trace", "Get trace",
 		"Read the spans of a trace as a tree (depth first) with durations, status and attributes.")),
@@ -71,7 +86,7 @@ func New(store *storage.DuckDBStore, version string) *mcp.Server {
 		"List the names of the stored metrics, optionally of one tool."),
 		h.listMetricNames)
 	mcp.AddTool(server, withApp(readOnly("query_metrics", "Query metrics",
-		"Read a metric as time series (buckets) or totals over a range, per series of service, type and model. Cumulative counters are turned into increases.")),
+		"Read a metric as time series (buckets) or totals over a range, per service and token type (and model for totals), or grouped by up to two attributes (group_by), filtered by exact attribute values (filters). Histograms (durations, sizes) show their average or another statistic (stat: sum, count, min, max, p50, p90, p95, p99). Cumulative counters become increases; buckets follow timezone (default: the server's zone).")),
 		h.queryMetrics)
 
 	server.AddResourceTemplate(&mcp.ResourceTemplate{
@@ -91,8 +106,8 @@ func New(store *storage.DuckDBStore, version string) *mcp.Server {
 // server-sent events. The API router's Host and Origin checks and token
 // authentication apply before it, so the SDK's own localhost check, which
 // would reject the host names allowed with AI_OBSERVER_ALLOWED_HOSTS, is off.
-func NewHandler(store *storage.DuckDBStore, version string) http.Handler {
-	server := New(store, version)
+func NewHandler(store Store, version string, opts ...Option) http.Handler {
+	server := New(store, version, opts...)
 	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
 		Stateless:                  true,
 		JSONResponse:               true,
@@ -114,7 +129,7 @@ func (h *handlers) readTranscriptResource(ctx context.Context, req *mcp.ReadReso
 	if err != nil {
 		return nil, mcp.ResourceNotFoundError(uri)
 	}
-	resp, err := transcript.Load(ctx, h.store, sessionID)
+	resp, err := h.transcripts.Load(ctx, sessionID)
 	if errors.Is(err, transcript.ErrSessionNotFound) {
 		return nil, mcp.ResourceNotFoundError(uri)
 	}

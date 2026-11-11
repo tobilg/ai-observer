@@ -31,6 +31,9 @@ func printFlags(fs *flag.FlagSet) {
 
 // flagTypeName returns a human-readable type name for the flag
 func flagTypeName(f *flag.Flag) string {
+	if t, ok := f.Value.(interface{ TypeName() string }); ok {
+		return t.TypeName()
+	}
 	// Check the default value to infer type
 	if f.DefValue == "0" || strings.HasPrefix(f.DefValue, "-") || isNumeric(f.DefValue) {
 		return "int"

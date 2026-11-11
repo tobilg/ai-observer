@@ -72,9 +72,15 @@ func codexOperationOverview(rootSpanID string, spans []api.Span) *api.TraceOverv
 	}
 	end := spans[0].Timestamp
 	var failed, ok int
+	// The session of the operation: of its spans that have one, when they
+	// have the same (as trace lists show it)
+	sessions := make(map[string]bool)
 	for _, span := range spans {
 		if span.SpanID == rootSpanID {
 			root = span
+		}
+		if span.SessionID != "" {
+			sessions[span.SessionID] = true
 		}
 		if codexTurnID(span) != "" {
 			o.GroupLevel = api.TraceGroupLevelCodexTurn
@@ -95,6 +101,11 @@ func codexOperationOverview(rootSpanID string, spans []api.Span) *api.TraceOverv
 	o.TraceID, o.RootSpanID, o.RootSpan, o.ServiceName = root.TraceID, root.SpanID, root.SpanName, root.ServiceName
 	o.Duration = int64(end.Sub(o.StartTime))
 	o.Status = storage.TraceStatus(failed, ok)
+	if len(sessions) == 1 {
+		for id := range sessions {
+			o.SessionID = id
+		}
+	}
 	return o
 }
 

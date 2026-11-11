@@ -69,7 +69,7 @@ func convertGauge(base api.MetricDataPoint, gauge *metricspb.Gauge) []api.Metric
 		m := base
 		m.Timestamp = nanosToTime(dp.GetTimeUnixNano())
 		m.Attributes = convertAttributes(dp.GetAttributes())
-		m.MetricType = "gauge"
+		m.MetricType = api.MetricTypeGauge
 		value := getNumberValue(dp)
 		m.Value = &value
 		metrics = append(metrics, m)
@@ -86,7 +86,7 @@ func convertSum(base api.MetricDataPoint, sum *metricspb.Sum) []api.MetricDataPo
 		m := base
 		m.Timestamp = nanosToTime(dp.GetTimeUnixNano())
 		m.Attributes = convertAttributes(dp.GetAttributes())
-		m.MetricType = "sum"
+		m.MetricType = api.MetricTypeSum
 		value := getNumberValue(dp)
 		m.Value = &value
 		m.AggregationTemporality = &aggregationTemp
@@ -104,7 +104,7 @@ func convertHistogram(base api.MetricDataPoint, hist *metricspb.Histogram) []api
 		m := base
 		m.Timestamp = nanosToTime(dp.GetTimeUnixNano())
 		m.Attributes = convertAttributes(dp.GetAttributes())
-		m.MetricType = "histogram"
+		m.MetricType = api.MetricTypeHistogram
 		count := dp.GetCount()
 		m.Count = &count
 		if dp.Sum != nil {
@@ -135,7 +135,7 @@ func convertExpHistogram(base api.MetricDataPoint, hist *metricspb.ExponentialHi
 		m := base
 		m.Timestamp = nanosToTime(dp.GetTimeUnixNano())
 		m.Attributes = convertAttributes(dp.GetAttributes())
-		m.MetricType = "exponential_histogram"
+		m.MetricType = api.MetricTypeExponentialHistogram
 		count := dp.GetCount()
 		m.Count = &count
 		if dp.Sum != nil {
@@ -178,7 +178,7 @@ func convertSummary(base api.MetricDataPoint, summary *metricspb.Summary) []api.
 		m := base
 		m.Timestamp = nanosToTime(dp.GetTimeUnixNano())
 		m.Attributes = convertAttributes(dp.GetAttributes())
-		m.MetricType = "summary"
+		m.MetricType = api.MetricTypeSummary
 		count := dp.GetCount()
 		m.Count = &count
 		sum := dp.GetSum()

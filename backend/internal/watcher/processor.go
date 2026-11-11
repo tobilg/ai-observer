@@ -1,9 +1,9 @@
 package watcher
 
 import (
-	"os"
-
+	"github.com/tobilg/ai-observer/internal/importer"
 	"github.com/tobilg/ai-observer/internal/logger"
+	"github.com/tobilg/ai-observer/internal/selfmetrics"
 	"github.com/tobilg/ai-observer/internal/storage"
 	"github.com/tobilg/ai-observer/internal/websocket"
 )
@@ -20,6 +20,7 @@ func (w *Watcher) processFile(filePath string) {
 	state, err := w.store.GetImportState(w.ctx, string(tw.source), filePath)
 	if err != nil {
 		logger.Error("Failed to get import state", "path", filePath, "error", err)
+		selfmetrics.WatcherErrors.With(string(tw.source)).Inc()
 		return
 	}
 	if state == nil {
@@ -49,6 +50,7 @@ func (w *Watcher) processFile(filePath string) {
 			return
 		}
 		logger.Error("Failed to parse file incrementally", "path", filePath, "error", err)
+		selfmetrics.WatcherErrors.With(string(tw.source)).Inc()
 		return
 	}
 
@@ -74,6 +76,7 @@ func (w *Watcher) processFile(filePath string) {
 		}
 		logger.Error("Failed to store watcher batch", "path", filePath, "error", err,
 			"logs", len(result.Logs), "metrics", len(result.Metrics), "spans", len(result.Spans))
+		selfmetrics.WatcherErrors.With(string(tw.source)).Inc()
 		return
 	}
 
@@ -95,6 +98,7 @@ func (w *Watcher) processFile(filePath string) {
 		"logs", len(result.Logs),
 		"metrics", len(result.Metrics),
 		"spans", len(result.Spans))
+	selfmetrics.WatcherFilesProcessed.With(string(tw.source)).Inc()
 }
 
 // startsOver reports whether an import of a date range left out records
@@ -115,13 +119,11 @@ func rewritten(tw *ToolWatcher, path string, state *storage.ImportState) bool {
 	return size >= 0 && size < state.ByteOffset
 }
 
-// fileSize returns the size of the file at path, or -1 if it cannot be read
+// fileSize returns the size of the file's content at path (of its
+// compressed form's content when only that exists), or -1 if it cannot be
+// read or is not known
 func fileSize(path string) int64 {
-	info, err := os.Stat(path)
-	if err != nil {
-		return -1
-	}
-	return info.Size()
+	return importer.SessionFileSize(path)
 }
 
 // logStoppedDuring reports a file whose processing the watcher's shutdown

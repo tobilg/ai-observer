@@ -37,8 +37,9 @@ function CustomTooltip({ active, payload, label, tooltipFormatter, compact }: Cu
     <div style={style.contentStyle}>
       <p style={style.labelStyle}>{label}</p>
       {payload.map((entry: Payload<number, string>, index: number) => {
-        // Read value directly from payload entry which Recharts populates from data[dataKey]
-        const value = entry.value as number | undefined
+        // Read value directly from payload entry which Recharts populates from
+        // data[dataKey]; null (a bucket without a value) shows as missing
+        const value = (entry.value ?? undefined) as number | undefined
         const name = entry.dataKey as string
         const [formattedValue, displayLabel] = tooltipFormatter(value, name)
         const color = entry.color || entry.fill

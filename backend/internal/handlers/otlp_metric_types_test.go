@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tobilg/ai-observer/internal/api"
 	"github.com/tobilg/ai-observer/internal/storage"
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
@@ -17,7 +18,7 @@ import (
 )
 
 // Histograms, exponential histograms and summaries sent over OTLP are stored
-// with their count, sum, min and max, and series read their sums
+// with their count, sum, min and max, and series read their sums (stat sum)
 func TestHandleMetrics_DistributionTypesRoundTrip(t *testing.T) {
 	h, cleanup := setupTestHandlers(t)
 	defer cleanup()
@@ -93,7 +94,12 @@ func TestHandleMetrics_DistributionTypesRoundTrip(t *testing.T) {
 			t.Errorf("%s: min/max = %v/%v, want %v/%v", w.name, p.Min, p.Max, w.min, w.max)
 		}
 
-		series, err := h.store.QueryMetricSeries(ctx, w.name, "gemini_cli", from, to, 60, true)
+		// Histograms default to their average: ask for the sum
+		q := api.MetricQuery{Name: w.name, Service: "gemini_cli", Aggregate: true}
+		if w.metricType != "summary" {
+			q.Stat = storage.StatSum
+		}
+		series, err := h.store.QuerySeries(ctx, q, storage.SeriesRange{From: from, To: to})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -5,18 +5,18 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/tobilg/ai-observer/internal/config"
 	"github.com/tobilg/ai-observer/internal/exporter"
 	"github.com/tobilg/ai-observer/internal/importer"
+	"github.com/tobilg/ai-observer/internal/server"
 	"github.com/tobilg/ai-observer/internal/storage"
+	"github.com/tobilg/ai-observer/internal/tools"
 )
 
 func cmdExport(args []string) {
-	if err := runExport(args); err != nil {
-		fmt.Printf("Error: %v\n", err)
-		os.Exit(1)
-	}
+	exitOnError(runExport(args))
 }
 
 // ExportFlags holds the parsed flags for the export command
@@ -30,6 +30,8 @@ type ExportFlags struct {
 	Verbose   bool
 	Yes       bool
 	Source    string
+	// DB is the database file (--db), overriding AI_OBSERVER_DATABASE_PATH
+	DB string
 }
 
 // parseExportFlags parses command line arguments into ExportFlags
@@ -37,31 +39,27 @@ func parseExportFlags(args []string) (*ExportFlags, error) {
 	fs := flag.NewFlagSet("export", flag.ContinueOnError)
 
 	flags := &ExportFlags{}
-	fs.StringVar(&flags.Output, "output", "", "Output directory (required)")
-	fs.StringVar(&flags.From, "from", "", "Start date filter (YYYY-MM-DD)")
-	fs.StringVar(&flags.To, "to", "", "End date filter (YYYY-MM-DD)")
-	fs.BoolVar(&flags.FromFiles, "from-files", false, "Read from raw files instead of database")
-	fs.BoolVar(&flags.Zip, "zip", false, "Create ZIP archive of exported files")
-	fs.BoolVar(&flags.DryRun, "dry-run", false, "Preview what would be exported")
+	fs.Var(valueFlag{&flags.Output, "directory"}, "output", "Directory to write the export to (required)")
+	registerDateFlags(fs, &flags.From, &flags.To, "export", false)
+	fs.BoolVar(&flags.FromFiles, "from-files", false, "Read the tools' session files instead of the database")
+	fs.BoolVar(&flags.Zip, "zip", false, "Also write a ZIP archive of the exported files")
+	registerDryRunFlag(fs, &flags.DryRun, "what would be exported")
 	fs.BoolVar(&flags.Verbose, "verbose", false, "Show detailed progress")
-	fs.BoolVar(&flags.Yes, "yes", false, "Skip confirmation prompts")
+	registerYesFlag(fs, &flags.Yes)
+	registerDBFlag(fs, &flags.DB)
 
 	fs.Usage = func() {
-		fmt.Print(`Export telemetry data to Parquet files
+		fmt.Printf(`Export telemetry to Parquet files (restore loads them back)
 
-Usage: ai-observer export [claude-code|codex|gemini|opencode|copilot-chat|github-copilot|all] --output <directory> [options]
+Records keep the path of the session file they were imported from, and the
+import state of those files is exported too, so importing or watching the same
+files after a restore stores nothing twice. The export holds these local paths.
 
-Arguments:
-  claude-code  Export Claude Code data
-  codex        Export Codex CLI data
-  gemini       Export Gemini CLI data
-  opencode     Export OpenCode data
-  copilot-chat Export GitHub Copilot VS Code Extension data
-  github-copilot Export GitHub Copilot CLI data
-  all          Export all data
+Usage: ai-observer export [%s|all] --output <directory> [options]
 
-Options:
-`)
+`, toolList(false))
+		printArguments(os.Stdout, toolArguments(false, func(p tools.Provider) string { return "Export the telemetry of " + p.DisplayName }, "Export all telemetry"))
+		fmt.Println("Options:")
 		printFlags(fs)
 	}
 
@@ -124,15 +122,37 @@ func runExport(args []string) error {
 
 	ctx := context.Background()
 
-	// For from-files mode, we don't need the main database
+	initLogging()
+	cfg := config.Load()
+
+	// For from-files mode, we don't need the main database. The session
+	// files are read into a temporary database, redacted as an import is.
 	if flags.FromFiles {
+		opts.Redactor = server.NewRedactor(cfg.Redaction)
 		return exporter.Run(ctx, nil, opts)
 	}
 
-	// Load config and initialize store for database export
-	cfg := config.Load()
+	// Initialize store for database export
+	if flags.DB != "" {
+		cfg.DatabasePath = flags.DB
+	}
 	store, err := storage.NewDuckDBStoreWithOptions(cfg.DatabasePath, cfg.StorageOptions())
 	if err != nil {
+		if storage.IsLocked(err) {
+			body := map[string]any{"source": string(source)}
+			if fromDate != nil {
+				body["from"] = fromDate.Format(time.RFC3339)
+			}
+			if toDate != nil {
+				body["to"] = toDate.Format(time.RFC3339)
+			}
+			if flags.Zip {
+				body["zip"] = true
+			}
+			return lockedError(err, cfg, "export", body,
+				"The server writes the export to a new directory in its backup directory (AI_OBSERVER_BACKUP_DIR,\n"+
+					"default: backups next to the database) instead of --output.")
+		}
 		return fmt.Errorf("failed to open database: %w", err)
 	}
 	defer store.Close()

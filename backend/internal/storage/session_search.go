@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -30,20 +31,93 @@ type SessionMatch struct {
 // snippetRadius is the number of characters kept on each side of a match
 const snippetRadius = 120
 
+// MaxSearchTerms bounds the terms of a search: each term is another
+// case-insensitive scan of every text in the range
+const MaxSearchTerms = 10
+
+// ErrSearchTerms indicates a search query without terms or with more than
+// MaxSearchTerms
+var ErrSearchTerms = errors.New("invalid search")
+
+// SearchTerms splits a search query into its terms: words separated by
+// whitespace, or "phrases in double quotes", which are kept as one term.
+// Repeated terms (ignoring case) are dropped.
+func SearchTerms(query string) ([]string, error) {
+	var terms []string
+	seen := make(map[string]bool)
+	add := func(term string) {
+		term = strings.TrimSpace(term)
+		key := strings.ToLower(term)
+		if term == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		terms = append(terms, term)
+	}
+	var term strings.Builder
+	quoted := false
+	for _, r := range query {
+		switch {
+		case r == '"':
+			add(term.String())
+			term.Reset()
+			quoted = !quoted
+		case unicode.IsSpace(r) && !quoted:
+			add(term.String())
+			term.Reset()
+		default:
+			term.WriteRune(r)
+		}
+	}
+	add(term.String())
+	if len(terms) == 0 {
+		return nil, fmt.Errorf(`%w: a search needs one or more words, or "a phrase" in double quotes`, ErrSearchTerms)
+	}
+	if len(terms) > MaxSearchTerms {
+		return nil, fmt.Errorf("%w: %d terms, at most %d are allowed: use fewer or more specific words", ErrSearchTerms, len(terms), MaxSearchTerms)
+	}
+	return terms, nil
+}
+
 // SearchSessions returns the sessions with logs or spans in [from, to] that
-// contain every one of terms (case-insensitive substrings, in any order, in
-// the log body or attribute values, not attribute keys), the most recently
-// matched first. Terms must appear in the same record, not just somewhere in
-// the session. Logs carry the conversations of most tools; GitHub Copilot's
-// live in GenAI span attributes. Each session shows its whole extent, like
-// the session list. Snippets are taken from redacted text, so a cut cannot
-// split a secret into parts the redactor no longer recognizes.
+// contain every one of terms, the most recently matched first: the first
+// page of SearchSessionsPage, as SessionMatch values.
 func (s *DuckDBStore) SearchSessions(ctx context.Context, terms []string, service string, from, to time.Time, limit int) ([]SessionMatch, error) {
+	resp, err := s.SearchSessionsPage(ctx, terms, service, from, to, Page{Limit: limit})
+	if err != nil {
+		return nil, err
+	}
+	result := make([]SessionMatch, len(resp.Sessions))
+	for i, session := range resp.Sessions {
+		result[i] = SessionMatch{Session: session, Matches: session.Matches, Snippet: session.Snippet}
+		if session.MatchedAt != nil {
+			result[i].MatchedAt = *session.MatchedAt
+		}
+	}
+	return result, nil
+}
+
+// SearchSessionsPage returns a page of the sessions with logs or spans in
+// [from, to] that contain every one of terms (case-insensitive substrings,
+// in any order, in the log body or attribute values, not attribute keys),
+// the most recently matched first. Terms must appear in the same record,
+// not just somewhere in the session. Logs carry the conversations of most
+// tools; GitHub Copilot's live in GenAI span attributes. Each session shows
+// its whole extent, like the session list, and carries Snippet, Matches and
+// MatchedAt. Snippets are taken from redacted text, so a cut cannot split a
+// secret into parts the redactor no longer recognizes.
+//
+// Pages are cursor pages like QuerySessions': sorted by the newest match,
+// then SessionId and ServiceName. Total counts the matching sessions.
+func (s *DuckDBStore) SearchSessionsPage(ctx context.Context, terms []string, service string, from, to time.Time, page Page) (*api.SessionsResponse, error) {
 	terms = slices.DeleteFunc(slices.Clone(terms), func(t string) bool { return strings.TrimSpace(t) == "" })
 	if len(terms) == 0 {
-		return nil, fmt.Errorf("a search term is required")
+		return nil, fmt.Errorf("%w: a search term is required", ErrSearchTerms)
 	}
-	limit, _ = normalizePagination(limit, 0)
+	limit, offset, err := pageLimit(page)
+	if err != nil {
+		return nil, err
+	}
 	// DuckDB checks the terms in the order of the conditions, each only in
 	// the records that contained the ones before, so a rare term first saves
 	// most of the work (2.4x for three terms in a benchmark). Longer terms
@@ -51,9 +125,9 @@ func (s *DuckDBStore) SearchSessions(ctx context.Context, terms []string, servic
 	byLength := slices.Clone(terms)
 	slices.SortStableFunc(byLength, func(a, b string) int { return len(b) - len(a) })
 
-	type key struct{ id, service string }
-	matches := make(map[key]*SessionMatch)
-	collect := func(table, textColumns string, plainColumns, jsonColumns []string) error {
+	// The matching records of a table, with their texts as one JSON array,
+	// so the snippet can be taken from the field that matched
+	matching := func(table, textColumns string, plainColumns, jsonColumns []string) (string, []any) {
 		var where conditions
 		where.add("SessionId IS NOT NULL")
 		where.add("Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP", formatTimeForDB(from), formatTimeForDB(to))
@@ -62,78 +136,99 @@ func (s *DuckDBStore) SearchSessions(ctx context.Context, terms []string, servic
 			cond, args := termCondition(plainColumns, jsonColumns, term)
 			where.add(cond, args...)
 		}
-		query := `
-			SELECT SessionId, ServiceName, COUNT(*), MAX(Timestamp), CAST(arg_max(` + textColumns + `, Timestamp) AS VARCHAR)
-			FROM ` + table + where.clause("WHERE") + `
+		return "SELECT SessionId, ServiceName, Timestamp, " + textColumns + " AS texts FROM " + table + where.clause("WHERE"), where.args
+	}
+	logsSQL, logsArgs := matching("otel_logs", "to_json([COALESCE(Body, ''), CAST(LogAttributes AS VARCHAR)])",
+		[]string{"Body"}, []string{"LogAttributes"})
+	spansSQL, spansArgs := matching("otel_traces", "to_json([CAST(SpanAttributes AS VARCHAR)])",
+		nil, []string{"SpanAttributes"})
+	// A session's matches in logs and spans are one row, so a session is on
+	// one page only
+	matched := `
+		WITH matching AS (` + logsSQL + `
+			UNION ALL ` + spansSQL + `
+		), matched AS (
+			SELECT SessionId, ServiceName, COUNT(*) AS matches, MAX(Timestamp) AS matched_at,
+				CAST(arg_max(texts, Timestamp) AS VARCHAR) AS texts
+			FROM matching
 			GROUP BY SessionId, ServiceName
-			ORDER BY MAX(Timestamp) DESC
-			LIMIT ?`
-		rows, err := s.db.QueryContext(ctx, query, append(where.args, limit)...)
+		)`
+	matchedArgs := concatArgs(logsArgs, spansArgs)
+
+	var after conditions
+	if page.Cursor != "" {
+		c, err := decodeCursor(page.Cursor, 2)
 		if err != nil {
-			return fmt.Errorf("searching %s: %w", table, err)
+			return nil, err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var k key
-			var count int
-			var at time.Time
-			var texts sql.NullString
-			if err := rows.Scan(&k.id, &k.service, &count, &at, &texts); err != nil {
-				return fmt.Errorf("scanning %s match: %w", table, err)
-			}
-			m := matches[k]
-			if m == nil {
-				m = &SessionMatch{Session: api.Session{SessionID: k.id, ServiceName: k.service, StartTime: at, LastTime: at}}
-				matches[k] = m
-			}
-			m.Matches += count
-			if at.After(m.MatchedAt) {
-				m.MatchedAt = at
-				m.Snippet = snippetFrom(texts.String, terms, s.redactor.String)
-			}
+		cond, args := newestFirstAfter("matched_at", []string{"SessionId", "ServiceName"}, c.Time, []any{c.Keys[0], c.Keys[1]})
+		after.add(cond, args...)
+	}
+	// The total is counted over the matched sessions before the cursor
+	// condition, in the same query as the page
+	query := matched + `, counted AS (
+			SELECT *, COUNT(*) OVER () AS total FROM matched
+		)
+		SELECT SessionId, ServiceName, matches, matched_at, texts, total
+		FROM counted` + after.clause("WHERE") + `
+		ORDER BY matched_at DESC, SessionId DESC, ServiceName DESC
+		LIMIT ? OFFSET ?`
+	rows, err := s.db.QueryContext(ctx, query, concatArgs(matchedArgs, after.args, []any{limit + 1, offset})...)
+	if err != nil {
+		return nil, fmt.Errorf("searching sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []api.Session
+	total := -1
+	for rows.Next() {
+		var session api.Session
+		var at time.Time
+		var texts sql.NullString
+		if err := rows.Scan(&session.SessionID, &session.ServiceName, &session.Matches, &at, &texts, &total); err != nil {
+			return nil, fmt.Errorf("scanning session match: %w", err)
 		}
-		return rows.Err()
+		// Replaced by the session's whole extent below
+		session.StartTime, session.LastTime = at, at
+		session.MatchedAt = &at
+		sessions = append(sessions, session)
+		if len(sessions) <= limit {
+			session := &sessions[len(sessions)-1]
+			session.Snippet = snippetFrom(texts.String, terms, s.redactor.String)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating session matches: %w", err)
+	}
+	if total < 0 {
+		// An empty page has no row to carry the total
+		if page.Cursor == "" && offset == 0 {
+			total = 0
+		} else if err := s.db.QueryRowContext(ctx, matched+" SELECT COUNT(*) FROM matched", matchedArgs...).Scan(&total); err != nil {
+			return nil, fmt.Errorf("counting matching sessions: %w", err)
+		}
 	}
 
-	// The newest matching record's texts come back as one JSON array, so
-	// the snippet can be taken from the field that matched
-	if err := collect("otel_logs", "to_json([COALESCE(Body, ''), CAST(LogAttributes AS VARCHAR)])",
-		[]string{"Body"}, []string{"LogAttributes"}); err != nil {
+	resp := &api.SessionsResponse{Sessions: sessions, Total: total}
+	if len(sessions) > limit {
+		resp.Sessions = sessions[:limit]
+		resp.HasMore = true
+		last := resp.Sessions[limit-1]
+		resp.NextCursor = encodeCursor(pageCursor{
+			Time: formatTimeForDB(*last.MatchedAt),
+			Keys: []string{last.SessionID, last.ServiceName},
+		})
+	}
+	if resp.Sessions == nil {
+		resp.Sessions = []api.Session{}
+	}
+	if err := s.fillSessionExtents(ctx, resp.Sessions); err != nil {
 		return nil, err
 	}
-	if err := collect("otel_traces", "to_json([CAST(SpanAttributes AS VARCHAR)])",
-		nil, []string{"SpanAttributes"}); err != nil {
+	if err := s.fillSpanSessionExtents(ctx, resp.Sessions); err != nil {
 		return nil, err
 	}
-
-	result := make([]SessionMatch, 0, len(matches))
-	for _, m := range matches {
-		result = append(result, *m)
-	}
-	sort.Slice(result, func(i, j int) bool {
-		if !result[i].MatchedAt.Equal(result[j].MatchedAt) {
-			return result[i].MatchedAt.After(result[j].MatchedAt)
-		}
-		return result[i].SessionID < result[j].SessionID
-	})
-	if len(result) > limit {
-		result = result[:limit]
-	}
-
-	sessions := make([]api.Session, len(result))
-	for i, m := range result {
-		sessions[i] = m.Session
-	}
-	if err := s.fillSessionExtents(ctx, sessions); err != nil {
-		return nil, err
-	}
-	if err := s.fillSpanSessionExtents(ctx, sessions); err != nil {
-		return nil, err
-	}
-	for i := range result {
-		result[i].Session = sessions[i]
-	}
-	return result, nil
+	return resp, nil
 }
 
 // termCondition returns the condition that a record contains term in one of
@@ -152,7 +247,7 @@ func termCondition(plainColumns, jsonColumns []string, term string) (string, []a
 	}
 	prefilter := jsonUnchanged(term)
 	for _, column := range jsonColumns {
-		values := "array_to_string(json_extract_string(" + column + ", '$.*'), chr(10)) ILIKE ?" + escape
+		values := jsonValuesText(column) + " ILIKE ?" + escape
 		if prefilter {
 			conds = append(conds, "(CAST("+column+" AS VARCHAR) ILIKE ?"+escape+" AND "+values+")")
 			args = append(args, pattern, pattern)

@@ -12,6 +12,7 @@ import (
 	"github.com/tobilg/ai-observer/internal/api"
 	"github.com/tobilg/ai-observer/internal/otlp"
 	"github.com/tobilg/ai-observer/internal/pricing"
+	"github.com/tobilg/ai-observer/internal/storage"
 	"github.com/tobilg/ai-observer/internal/tools"
 )
 
@@ -40,10 +41,11 @@ var usageMetrics = []usageMetric{
 }
 
 type usageSummaryIn struct {
-	From    string `json:"from,omitempty" jsonschema:"start of the range (default: 7 days before to)"`
-	To      string `json:"to,omitempty" jsonschema:"end of the range (default: now)"`
-	GroupBy string `json:"group_by,omitempty" jsonschema:"tool (default), model, day (UTC) or repository (repositories are known for imported and watched sessions)"`
-	Tool    string `json:"tool,omitempty" jsonschema:"only this tool"`
+	From     string `json:"from,omitempty" jsonschema:"start of the range (default: 7 days before to)"`
+	To       string `json:"to,omitempty" jsonschema:"end of the range (default: now)"`
+	GroupBy  string `json:"group_by,omitempty" jsonschema:"tool (default), model, day or repository (repositories are known for imported and watched sessions)"`
+	Tool     string `json:"tool,omitempty" jsonschema:"only this tool"`
+	Timezone string `json:"timezone,omitempty" jsonschema:"IANA time zone whose days group_by day uses, such as Europe/Berlin (default: the server's time zone)"`
 }
 
 type usageRow struct {
@@ -57,9 +59,11 @@ type usageRow struct {
 }
 
 type usageSummaryOut struct {
-	From         string     `json:"from"`
-	To           string     `json:"to"`
-	GroupBy      string     `json:"group_by"`
+	From    string `json:"from"`
+	To      string `json:"to"`
+	GroupBy string `json:"group_by"`
+	// TimeZone is the zone of the days (group_by day)
+	TimeZone     string     `json:"timezone,omitempty"`
 	Rows         []usageRow `json:"rows"`
 	TotalCostUSD float64    `json:"total_cost_usd"`
 	// UnpricedModels have tokens but no cost in the range ("tool: model")
@@ -67,7 +71,7 @@ type usageSummaryOut struct {
 	Note           string   `json:"note"`
 }
 
-const usageNote = "Costs and tokens as AI Observer recorded them. Sessions that were both imported from files and sent over OTLP count twice; Claude Code reports its own cost, the other tools' costs are calculated from built-in prices, and models in unpriced_models have none, so their tokens add no cost (prices can be added, see docs/pricing.md). total_tokens leaves out token types that are part of another type: cached input of Codex (cacheRead, cacheWrite), Gemini (cache) and GitHub Copilot (cache_read), which their input includes, and Codex reasoning, which its output includes."
+const usageNote = "Costs and tokens as AI Observer recorded them. A Claude Code, Codex or Gemini CLI request recorded both over OTLP and in its session file counts once; Claude Code reports its own cost, the other tools' costs are calculated from built-in prices, and models in unpriced_models have none, so their tokens add no cost (prices can be added, see docs/pricing.md). total_tokens leaves out token types that are part of another type: cached input of Codex (cacheRead, cacheWrite), Gemini (cache) and GitHub Copilot (cache_read), which their input includes, and Codex reasoning, which its output includes."
 
 func (h *handlers) usageSummary(ctx context.Context, _ *mcp.CallToolRequest, in usageSummaryIn) (*mcp.CallToolResult, usageSummaryOut, error) {
 	from, to, err := timeRange(in.From, in.To, h.now(), 7*24*time.Hour)
@@ -86,6 +90,13 @@ func (h *handlers) usageSummary(ctx context.Context, _ *mcp.CallToolRequest, in 
 	service, err := serviceFor(in.Tool)
 	if err != nil {
 		return nil, usageSummaryOut{}, err
+	}
+	var zone string
+	loc := time.UTC
+	if groupBy == "day" {
+		if zone, loc, err = h.timeZone(in.Timezone); err != nil {
+			return nil, usageSummaryOut{}, err
+		}
 	}
 
 	type key struct{ tool, group string }
@@ -115,7 +126,7 @@ func (h *handlers) usageSummary(ctx context.Context, _ *mcp.CallToolRequest, in 
 	}
 	for _, m := range filtered {
 		for _, metric := range []string{m.cost, m.tokens} {
-			series, err := h.usageSeries(ctx, metric, service, from, to, groupBy)
+			series, err := h.usageSeries(ctx, metric, service, from, to, groupBy, zone)
 			if err != nil {
 				return nil, usageSummaryOut{}, err
 			}
@@ -132,7 +143,7 @@ func (h *handlers) usageSummary(ctx context.Context, _ *mcp.CallToolRequest, in 
 						continue
 					}
 					if groupBy == "day" {
-						group = time.UnixMilli(int64(dp[0])).UTC().Format("2006-01-02")
+						group = time.UnixMilli(int64(dp[0])).In(loc).Format("2006-01-02")
 					}
 					r := row(m.tool, group)
 					if metric == m.cost {
@@ -157,7 +168,7 @@ func (h *handlers) usageSummary(ctx context.Context, _ *mcp.CallToolRequest, in 
 		return nil, usageSummaryOut{}, err
 	}
 
-	out := usageSummaryOut{From: formatTime(from), To: formatTime(to), GroupBy: groupBy, Rows: []usageRow{}, UnpricedModels: unpriced, Note: usageNote}
+	out := usageSummaryOut{From: formatTime(from), To: formatTime(to), GroupBy: groupBy, TimeZone: zone, Rows: []usageRow{}, UnpricedModels: unpriced, Note: usageNote}
 	for _, r := range rows {
 		r.CostUSD = roundCost(r.CostUSD)
 		out.TotalCostUSD += r.CostUSD
@@ -215,11 +226,12 @@ func (h *handlers) unpricedModels(ctx context.Context, metrics []usageMetric, se
 }
 
 // usageSeries reads one usage metric: totals by model or repository, or
-// daily buckets
-func (h *handlers) usageSeries(ctx context.Context, metric, service string, from, to time.Time, groupBy string) (*api.TimeSeriesResponse, error) {
+// the days of zone
+func (h *handlers) usageSeries(ctx context.Context, metric, service string, from, to time.Time, groupBy, zone string) (*api.TimeSeriesResponse, error) {
 	switch groupBy {
 	case "day":
-		return h.store.QueryMetricSeries(ctx, metric, service, from, to, 86400, false)
+		return h.store.QuerySeries(ctx, api.MetricQuery{Name: metric, Service: service},
+			storage.SeriesRange{From: from, To: to, Interval: 24 * 60 * 60, TimeZone: zone})
 	case "repository":
 		return h.store.QueryMetricTotals(ctx, metric, service, from, to, "repository")
 	default:

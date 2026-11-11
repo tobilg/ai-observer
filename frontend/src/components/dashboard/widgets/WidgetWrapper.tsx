@@ -1,5 +1,6 @@
 import { useSortable } from '@dnd-kit/sortable'
-import { GripVertical, X } from 'lucide-react'
+import { GripVertical, Pencil, X } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import type { DashboardWidget } from '@/types/dashboard'
 
@@ -7,6 +8,7 @@ interface WidgetWrapperProps {
   widget: DashboardWidget
   isEditMode: boolean
   onRemove: (widgetId: string) => void
+  onEdit: (widgetId: string) => void
   children: React.ReactNode
   gridRowOverride?: number
   gridRowSpanOverride?: number
@@ -17,6 +19,7 @@ export function WidgetWrapper({
   widget,
   isEditMode,
   onRemove,
+  onEdit,
   children,
   gridRowOverride,
   gridRowSpanOverride,
@@ -26,6 +29,7 @@ export function WidgetWrapper({
     attributes,
     listeners,
     setNodeRef,
+    setActivatorNodeRef,
     transform,
     transition,
     isDragging,
@@ -66,28 +70,47 @@ export function WidgetWrapper({
       ref={setNodeRef}
       style={style}
       className={cn(
-        'relative rounded-lg border bg-card text-card-foreground shadow-sm',
+        'relative min-w-0 rounded-lg border bg-card text-card-foreground shadow-sm',
         isDragging && 'z-50 opacity-90 shadow-lg',
         isEditMode && 'outline outline-2 outline-offset-[-2px] outline-primary/30'
       )}
     >
       {isEditMode && (
-        <div className="flex items-center justify-between px-2 pt-1 -mb-2">
-          <button
+        <div className="flex items-center justify-between px-1 pt-1 -mb-2">
+          <Button
+            ref={setActivatorNodeRef}
+            type="button"
+            variant="ghost"
+            size="icon-sm"
             {...attributes}
             {...listeners}
             aria-label={`Move ${widget.title}`}
-            className="cursor-grab rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground active:cursor-grabbing"
+            className="size-7 cursor-grab text-muted-foreground active:cursor-grabbing"
           >
             <GripVertical className="h-4 w-4" />
-          </button>
-          <button
-            onClick={() => onRemove(widget.id)}
-            aria-label={`Remove ${widget.title}`}
-            className="rounded p-0.5 text-muted-foreground hover:bg-destructive hover:text-destructive-foreground"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          </Button>
+          <div className="flex items-center gap-0.5">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => onEdit(widget.id)}
+              aria-label={`Edit ${widget.title}`}
+              className="size-7 text-muted-foreground"
+            >
+              <Pencil className="h-4 w-4" />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => onRemove(widget.id)}
+              aria-label={`Remove ${widget.title}`}
+              className="size-7 text-muted-foreground hover:bg-destructive hover:text-white"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
       )}
       {children}

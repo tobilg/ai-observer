@@ -7,12 +7,20 @@ interface ErrorBoundaryProps {
   children: ReactNode
   fallback?: ReactNode
   onReset?: () => void
+  // A change of any of these values clears the error, e.g. the route's path
+  // (RouteErrorBoundary): the boundary stays mounted across routes, so
+  // without it every other page would keep showing the error
+  resetKeys?: unknown[]
 }
 
 interface ErrorBoundaryState {
   hasError: boolean
   error: Error | null
   errorInfo: React.ErrorInfo | null
+}
+
+function keysChanged(previous: unknown[] = [], next: unknown[] = []): boolean {
+  return previous.length !== next.length || previous.some((key, index) => !Object.is(key, next[index]))
 }
 
 export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
@@ -29,6 +37,12 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     this.setState({ errorInfo })
     // Log error to console for debugging
     console.error('ErrorBoundary caught an error:', error, errorInfo)
+  }
+
+  componentDidUpdate(prevProps: ErrorBoundaryProps): void {
+    if (this.state.hasError && keysChanged(prevProps.resetKeys, this.props.resetKeys)) {
+      this.setState({ hasError: false, error: null, errorInfo: null })
+    }
   }
 
   handleReset = (): void => {
@@ -74,17 +88,4 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
     return this.props.children
   }
-}
-
-// Wrapper component that provides context
-interface ErrorBoundaryWithContextProps extends ErrorBoundaryProps {
-  children: ReactNode
-}
-
-export function ErrorBoundaryWithContext({ children, ...props }: ErrorBoundaryWithContextProps): ReactNode {
-  return (
-    <ErrorBoundary {...props}>
-      {children}
-    </ErrorBoundary>
-  )
 }

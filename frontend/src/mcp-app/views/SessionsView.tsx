@@ -2,7 +2,8 @@ import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { formatRange, sessionCounts, toolDisplayName } from '../data'
+import { formatCost } from '@/lib/format'
+import { formatRange, sessionCounts, sessionPlace, sessionsCost, toolDisplayName } from '../data'
 import type { CallTool, SessionsResult } from '../types'
 import { ErrorText, Notice, ViewHeader } from './parts'
 
@@ -30,6 +31,8 @@ export function SessionsView({ data, args, callTool }: { data: SessionsResult; a
     }
   }
 
+  const cost = sessionsCost(page.sessions)
+
   return (
     <div className="space-y-4">
       <ViewHeader
@@ -41,6 +44,7 @@ export function SessionsView({ data, args, callTool }: { data: SessionsResult; a
             {toolDisplayName(tool)}: {count}
           </Badge>
         ))}
+        {cost != null && <Badge variant="outline">Cost: {formatCost(cost)}</Badge>}
       </ViewHeader>
 
       {page.sessions.length === 0 ? (
@@ -50,17 +54,26 @@ export function SessionsView({ data, args, callTool }: { data: SessionsResult; a
           <Table className="text-xs">
             <TableHeader>
               <TableRow>
+                <TableHead>Session</TableHead>
                 <TableHead>Tool</TableHead>
                 <TableHead>Model</TableHead>
                 <TableHead>Started</TableHead>
                 <TableHead>Last activity</TableHead>
                 <TableHead className="text-right">Messages</TableHead>
-                <TableHead>Session</TableHead>
+                <TableHead className="text-right">Cost</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {page.sessions.map((s) => (
                 <TableRow key={`${s.tool}/${s.session_id}`}>
+                  <TableCell className="max-w-72">
+                    <div className="truncate" title={s.title}>
+                      {s.title || <span className="text-muted-foreground">Untitled</span>}
+                    </div>
+                    <div className="truncate font-mono text-muted-foreground" title={s.session_id}>
+                      {sessionPlace(s) ?? s.session_id}
+                    </div>
+                  </TableCell>
                   <TableCell className="whitespace-nowrap">{toolDisplayName(s.tool)}</TableCell>
                   <TableCell className="max-w-48 truncate" title={s.model}>
                     {s.model || '—'}
@@ -68,8 +81,8 @@ export function SessionsView({ data, args, callTool }: { data: SessionsResult; a
                   <TableCell className="whitespace-nowrap">{formatTime(s.start_time)}</TableCell>
                   <TableCell className="whitespace-nowrap">{formatTime(s.last_time)}</TableCell>
                   <TableCell className="text-right tabular-nums">{s.messages}</TableCell>
-                  <TableCell className="max-w-40 truncate font-mono" title={s.session_id}>
-                    {s.session_id}
+                  <TableCell className="text-right tabular-nums">
+                    {s.cost_usd != null ? formatCost(s.cost_usd) : '—'}
                   </TableCell>
                 </TableRow>
               ))}

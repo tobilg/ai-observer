@@ -20,6 +20,7 @@ func (s *Server) setupRoutes(h *handlers.Handlers) error {
 		r.Post("/logs", h.HandleLogs)
 	})
 	s.otlpRouter.Get("/health", h.Health)
+	s.otlpRouter.Get("/ready", h.Ready)
 
 	// Query API for frontend (port 8080)
 	s.apiRouter.Route("/api", func(r chi.Router) {
@@ -33,6 +34,7 @@ func (s *Server) setupRoutes(h *handlers.Handlers) error {
 		r.Get("/metrics", h.QueryMetrics)
 		r.Get("/metrics/names", h.ListMetricNames)
 		r.Get("/metrics/breakdown-values", h.GetBreakdownValues)
+		r.Get("/metrics/attribute-keys", h.GetMetricAttributeKeys)
 		r.Get("/metrics/series", h.QueryMetricSeries)
 		r.Post("/metrics/batch-series", h.QueryBatchMetricSeries)
 
@@ -50,6 +52,13 @@ func (s *Server) setupRoutes(h *handlers.Handlers) error {
 
 		// Stats
 		r.Get("/stats", h.GetStats)
+		r.Get("/status", h.GetStatus)
+
+		// Maintenance (AI_OBSERVER_ADMIN_API=true)
+		r.Route("/admin", s.adminRoutes)
+
+		// AI Observer's own metrics (also /metrics in the Prometheus format)
+		r.Get("/internal/metrics", h.InternalMetrics)
 
 		// Dashboards
 		r.Get("/dashboards", h.ListDashboards)
@@ -68,14 +77,18 @@ func (s *Server) setupRoutes(h *handlers.Handlers) error {
 	// WebSocket for real-time updates (port 8080)
 	s.apiRouter.Get("/ws", h.HandleWebSocket)
 
-	// Health check (port 8080)
+	// Health check (port 8080): liveness, and readiness with a database check
 	s.apiRouter.Get("/health", h.Health)
+	s.apiRouter.Get("/ready", h.Ready)
+
+	// Self-metrics in the Prometheus text format, behind the API's token
+	s.apiRouter.Get("/metrics", h.PrometheusMetrics)
 
 	// MCP endpoint for agents (AI_OBSERVER_MCP=true or --mcp), on the API
 	// port behind its Host, Origin and token checks. Its requests have no
 	// timeout, so they end when the server shuts down.
 	if s.config.MCPEnabled {
-		s.apiRouter.Handle(mcpserver.Path, endOnStop(s.stopping, mcpserver.NewHandler(s.storage, version.Version)))
+		s.apiRouter.Handle(mcpserver.Path, endOnStop(s.stopping, mcpserver.NewHandler(s.storage, version.Version, mcpserver.WithTranscripts(s.transcripts))))
 	} else {
 		// Not the dashboard page, which a client would take for a reply
 		s.apiRouter.Handle(mcpserver.Path, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

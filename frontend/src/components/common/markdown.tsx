@@ -1,5 +1,7 @@
-import { memo } from 'react'
-import ReactMarkdown, { type Components } from 'react-markdown'
+import { memo, useMemo, type ReactElement } from 'react'
+import ReactMarkdown, { type Components, type Options } from 'react-markdown'
+import { CopyButton } from '@/components/common/copy-button'
+import { HIGHLIGHT_CLASS, termsPattern } from '@/lib/highlight'
 import { cn } from '@/lib/utils'
 import hljs from 'highlight.js/lib/core'
 import bash from 'highlight.js/lib/languages/bash'
@@ -84,6 +86,65 @@ function highlightCode(code: string, language?: string): string {
 interface MarkdownProps {
   children: string
   className?: string
+  // Search terms to mark in the text (not in code blocks)
+  highlight?: readonly string[]
+}
+
+// The parts of hast nodes this module reads (the hast types are not a
+// dependency of the app)
+interface HastNode {
+  type: string
+  tagName?: string
+  value?: string
+  properties?: Record<string, unknown>
+  children?: HastNode[]
+}
+
+function hastText(node: HastNode | undefined): string {
+  if (!node) return ''
+  if (node.type === 'text') return node.value ?? ''
+  return (node.children ?? []).map(hastText).join('')
+}
+
+/**
+ * rehype plugin: wraps the occurrences of terms in text in <mark>. Code
+ * blocks are left alone, since they are highlighted from their raw text.
+ */
+function rehypeMarkTerms(terms: readonly string[]) {
+  const pattern = termsPattern(terms)
+  const mark = (node: HastNode) => {
+    if (!pattern || !node.children || node.tagName === 'pre') {
+      return
+    }
+    const children: HastNode[] = []
+    for (const child of node.children) {
+      if (child.type !== 'text' || !child.value) {
+        mark(child)
+        children.push(child)
+        continue
+      }
+      const text = child.value
+      let last = 0
+      for (const found of text.matchAll(pattern)) {
+        const start = found.index ?? 0
+        if (start > last) children.push({ type: 'text', value: text.slice(last, start) })
+        children.push({
+          type: 'element',
+          tagName: 'mark',
+          properties: { className: HIGHLIGHT_CLASS.split(' ') },
+          children: [{ type: 'text', value: found[0] }],
+        })
+        last = start + found[0].length
+      }
+      if (last === 0) {
+        children.push(child)
+      } else if (last < text.length) {
+        children.push({ type: 'text', value: text.slice(last) })
+      }
+    }
+    node.children = children
+  }
+  return (tree: HastNode) => mark(tree)
 }
 
 // Defined once, so ReactMarkdown does not get new components on every render
@@ -112,8 +173,15 @@ const markdownComponents: Components = {
     <p className="mb-2 last:mb-0">{children}</p>
   ),
   // Code blocks
-  pre: ({ children }) => (
-    <pre className="bg-muted rounded-md p-3 overflow-x-auto my-2 text-xs max-w-full">{children}</pre>
+  pre: ({ node, children }) => (
+    <div className="relative my-2 max-w-full">
+      <pre className="bg-muted rounded-md p-3 pr-10 overflow-x-auto text-xs max-w-full">{children}</pre>
+      <CopyButton
+        value={hastText(node as unknown as HastNode).replace(/\n$/, '')}
+        label="Copy code"
+        className="absolute right-1 top-1 size-7"
+      />
+    </div>
   ),
   code: ({ className, children, ...props }) => {
     // Check if this is inline code (no className) or a code block
@@ -185,10 +253,41 @@ const markdownComponents: Components = {
   ),
 }
 
-export const Markdown = memo(function Markdown({ children, className }: MarkdownProps) {
+// Parsing markdown is the main cost of a transcript message, and virtualized
+// lists mount messages again whenever they scroll back into view: rendered
+// trees are kept by content (and search terms), the most recent first out
+const RENDER_CACHE_SIZE = 300
+const renderCache = new Map<string, ReactElement>()
+
+function renderMarkdown(content: string, terms: readonly string[]): ReactElement {
+  const key = `${terms.join('\u0001')}\u0000${content}`
+  const cached = renderCache.get(key)
+  if (cached) {
+    // Most recently used last
+    renderCache.delete(key)
+    renderCache.set(key, cached)
+    return cached
+  }
+  const rehypePlugins: Options['rehypePlugins'] = terms.length > 0 ? [[rehypeMarkTerms, terms]] : undefined
+  // The synchronous ReactMarkdown uses no hooks: it returns the rendered tree
+  const element = ReactMarkdown({ children: content, components: markdownComponents, rehypePlugins })
+  if (renderCache.size >= RENDER_CACHE_SIZE) {
+    const oldest = renderCache.keys().next().value
+    if (oldest !== undefined) {
+      renderCache.delete(oldest)
+    }
+  }
+  renderCache.set(key, element)
+  return element
+}
+
+const NO_TERMS: readonly string[] = []
+
+export const Markdown = memo(function Markdown({ children, className, highlight = NO_TERMS }: MarkdownProps) {
+  const element = useMemo(() => renderMarkdown(children, highlight), [children, highlight])
   return (
     <div className={cn('prose prose-sm dark:prose-invert max-w-none overflow-hidden', className)}>
-      <ReactMarkdown components={markdownComponents}>{children}</ReactMarkdown>
+      {element}
     </div>
   )
 })

@@ -297,6 +297,9 @@ func TestExporterExport(t *testing.T) {
 		"traces.parquet",
 		"logs.parquet",
 		"metrics.parquet",
+		"metric_baselines.parquet",
+		"dashboards.json",
+		"manifest.json",
 	}
 	for _, file := range expectedFiles {
 		path := filepath.Join(tmpDir, file)
@@ -426,31 +429,6 @@ func TestValidSources(t *testing.T) {
 		if !expected[s] {
 			t.Errorf("unexpected source %q in ValidSources", s)
 		}
-	}
-}
-
-func TestFormatSize(t *testing.T) {
-	tests := []struct {
-		bytes    int64
-		expected string
-	}{
-		{0, "0 B"},
-		{500, "500 B"},
-		{1023, "1023 B"},
-		{1024, "1.0 KB"},
-		{1536, "1.5 KB"},
-		{1048576, "1.0 MB"},
-		{1073741824, "1.0 GB"},
-		{1099511627776, "1.0 TB"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.expected, func(t *testing.T) {
-			result := formatSize(tt.bytes)
-			if result != tt.expected {
-				t.Errorf("formatSize(%d) = %q, want %q", tt.bytes, result, tt.expected)
-			}
-		})
 	}
 }
 
@@ -779,10 +757,11 @@ func TestRunWithSkipConfirm(t *testing.T) {
 		t.Fatalf("Run failed: %v", err)
 	}
 
-	// Verify files were created
+	// Verify files were created: the three telemetry tables, the metric
+	// baselines and the import state
 	files, _ := filepath.Glob(filepath.Join(tmpDir, "*.parquet"))
-	if len(files) != 3 {
-		t.Errorf("expected 3 parquet files, got %d", len(files))
+	if len(files) != 5 {
+		t.Errorf("expected 5 parquet files, got %d", len(files))
 	}
 }
 

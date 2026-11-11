@@ -12,7 +12,12 @@ import (
 // skipped without backfill or after full import. It reads only the committed prefix and
 // emits no records. SectionReader leaves the incremental file position intact.
 func replayRepositoryPrefix(ctx context.Context, file *os.File, offset int64, observe func([]byte)) error {
-	reader := bufio.NewReader(io.NewSectionReader(file, 0, offset))
+	return replayLines(ctx, io.NewSectionReader(file, 0, offset), observe)
+}
+
+// replayLines passes each line of r to observe
+func replayLines(ctx context.Context, r io.Reader, observe func([]byte)) error {
+	reader := bufio.NewReader(r)
 	for {
 		if err := ctx.Err(); err != nil {
 			return err

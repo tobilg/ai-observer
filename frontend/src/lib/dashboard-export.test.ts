@@ -57,6 +57,7 @@ describe('dashboard-export', () => {
             gridRow: 1,
             colSpan: 2,
             rowSpan: 1,
+            config: {},
             createdAt: '2024-01-01T00:00:00Z',
             updatedAt: '2024-01-02T00:00:00Z',
           },
@@ -97,7 +98,7 @@ describe('dashboard-export', () => {
             gridRow: 1,
             colSpan: 2,
             rowSpan: 2,
-            config: { metricName: 'claude_code.token.usage', aggregate: true },
+            config: { metricName: 'claude_code.token.usage', chartStacked: false },
             createdAt: '2024-01-01T00:00:00Z',
             updatedAt: '2024-01-02T00:00:00Z',
           },
@@ -108,7 +109,7 @@ describe('dashboard-export', () => {
 
       expect(result.widgets[0].config).toEqual({
         metricName: 'claude_code.token.usage',
-        aggregate: true,
+        chartStacked: false,
       })
     })
 

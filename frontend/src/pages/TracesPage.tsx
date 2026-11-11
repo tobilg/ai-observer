@@ -1,451 +1,196 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { useId, useMemo } from 'react'
+import { Activity } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Select } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { DateRangePicker } from '@/components/common/date-range-picker'
 import { DataPagination } from '@/components/common/data-pagination'
-import { WaterfallView } from '@/components/traces/WaterfallView'
-import { api } from '@/lib/api'
-import { isAbortError } from '@/lib/errors'
-import { formatDuration, formatTimestamp, getStatusColor, cn } from '@/lib/utils'
-import { getServiceDisplayName, serviceFilterOptions } from '@/lib/metricMetadata'
-import type { TraceOverview, SpansResponse } from '@/types/traces'
-import { ChevronRight, ChevronDown, RefreshCw } from 'lucide-react'
-import { isAbsoluteTimeSelection, type TimeSelection } from '@/types/dashboard'
+import { EmptyState } from '@/components/common/empty-state'
+import { ListSkeleton, Refreshing } from '@/components/common/list-skeleton'
+import { FilterBar, NewItemsButton, SearchFilter, ServiceFilter, TimeRangeFilter } from '@/components/common/list-filters'
+import { PageHeader } from '@/components/common/page-header'
+import { QueryError } from '@/components/common/query-error'
+import { TraceRow } from '@/components/traces/TraceRow'
 import { useDebounce } from '@/hooks/useDebounce'
+import { useExpandedRow } from '@/hooks/useExpandedRow'
+import { useListLinkState } from '@/hooks/useListLinkState'
+import { useLiveInvalidate } from '@/hooks/useLiveInvalidate'
+import { useNewItems } from '@/hooks/useNewItems'
 import { usePagination } from '@/hooks/usePagination'
-import { useTimeSelection } from '@/hooks/useTimeSelection'
-import { toast } from 'sonner'
+import { useServiceNames } from '@/hooks/useServiceNames'
+import { useUrlState } from '@/hooks/useUrlState'
+import { countTraces, queryKeys, useServices, useTraces } from '@/lib/queries'
+import { traceRowKey, uniqueRowKeys } from '@/lib/rowKeys'
 import { useTelemetryStore } from '@/stores/telemetryStore'
 
 // localStorage keys
 const TIME_SELECTION_STORAGE_KEY = 'ai-observer-traces-timeselection'
 const PAGE_SIZE_STORAGE_KEY = 'ai-observer-traces-pageSize'
 
-function getTraceKind(trace: TraceOverview) {
-  return trace.kind ?? 'otel_trace'
-}
+// URL parameters and their defaults. background: Codex's app and exec
+// servers record internal requests (file, settings and account reads) as
+// hundreds of traces an hour; the API leaves out those outside a
+// conversation unless asked for.
+const FILTER_DEFAULTS = { service: '', search: '', background: false }
 
-function getTraceRequestId(trace: TraceOverview) {
-  if (getTraceKind(trace) === 'codex_operation') {
-    return trace.id || trace.rootSpanId || trace.traceId
-  }
-  return trace.traceId || trace.id || trace.rootSpanId
-}
+const SEARCH_DEBOUNCE_MS = 200
 
-function getTraceRowKey(trace: TraceOverview, index: number) {
-  return [
-    getTraceKind(trace),
-    getTraceRequestId(trace),
-    trace.traceId,
-    trace.rootSpanId,
-    trace.startTime,
-    index,
-  ].filter(Boolean).join(':')
-}
+// The first page of a relative range is fetched again this often, so the
+// window keeps moving while nobody looks at new traces; new traces are only
+// shown on request ("N new traces"), so rows don't move under the reader
+const WINDOW_REFRESH_MS = 60_000
 
 export function TracesPage() {
-  const [searchParams, setSearchParams] = useSearchParams()
-  const [traces, setTraces] = useState<TraceOverview[]>([])
-  const [total, setTotal] = useState(0)
-  const [expandedTraceKey, setExpandedTraceKey] = useState<string | null>(null)
-  // The first page of the expanded traces' spans
-  const [spansMap, setSpansMap] = useState<Map<string, SpansResponse>>(new Map())
-  const [services, setServices] = useState<string[]>([])
-  const [loading, setLoading] = useState(true)
-  const [service, setService] = useState(searchParams.get('service') || '')
-  const [search, setSearch] = useState(searchParams.get('search') || '')
-  // Codex's app and exec servers record internal requests (file, settings
-  // and account reads) as hundreds of traces an hour; the API leaves out
-  // those outside a conversation unless asked for
-  const [background, setBackground] = useState(searchParams.get('background') === 'true')
-  const debouncedSearch = useDebounce(search, 200)
+  const timeRangeId = useId()
+  const backgroundId = useId()
+  const rowIdPrefix = useId()
+  const linkState = useListLinkState()
+  const { displayName } = useServiceNames()
 
-  // Time selection with localStorage persistence
-  const { timeSelection, setTimeSelection, fromTime, toTime } = useTimeSelection({
-    storageKey: TIME_SELECTION_STORAGE_KEY,
-    searchParams,
+  const { filters, setFilters, time } = useUrlState({
+    filters: FILTER_DEFAULTS,
+    time: { storageKey: TIME_SELECTION_STORAGE_KEY },
   })
-
-  // Real-time data from WebSocket
-  const recentSpanTimes = useTelemetryStore((state) => state.recentSpanTimes)
-  const clearRecentSpans = useTelemetryStore((state) => state.clearRecentSpans)
-
-  // Pagination state with localStorage persistence
-  const {
-    page,
-    pageSize,
-    cursor,
-    hasNext,
-    setNextCursor,
-    nextPage,
-    previousPage,
-    setPageSize,
-    resetToFirstPage,
-  } = usePagination({
-    defaultPageSize: 10,
-    storageKey: PAGE_SIZE_STORAGE_KEY,
-  })
-
-  // Anchor time for tracking new traces (used by refresh button)
-  const [anchorTime, setAnchorTime] = useState<Date>(() => new Date())
-
-  const [newTracesCount, setNewTracesCount] = useState(0)
-  const hasNewSpans = useMemo(
-    () => recentSpanTimes.some((time) => time > anchorTime.getTime()),
-    [recentSpanTimes, anchorTime]
+  const search = useDebounce(filters.search, SEARCH_DEBOUNCE_MS)
+  const queryFilters = useMemo(
+    () => ({ service: filters.service, search, background: filters.background }),
+    [filters.service, search, filters.background],
   )
 
-  useEffect(() => {
-    const fetchServices = async () => {
-      try {
-        const data = await api.getServices()
-        setServices(data.services ?? [])
-      } catch (err) {
-        console.error('Failed to fetch services:', err)
-        toast.error('Failed to fetch services')
-      }
-    }
-    fetchServices()
-  }, [])
+  // Cursors belong to one filtered list: any change (also from the URL,
+  // e.g. browser Back) starts at the first page
+  const listKey = JSON.stringify([queryFilters, time.timeKey])
+  const pagination = usePagination({ defaultPageSize: 10, storageKey: PAGE_SIZE_STORAGE_KEY, resetOn: listKey })
+  const page = useMemo(() => ({ limit: pagination.pageSize, cursor: pagination.cursor }), [pagination.pageSize, pagination.cursor])
 
-  useEffect(() => {
-    const abortController = new AbortController()
+  const traces = useTraces(queryFilters, time.range, page)
+  const services = useServices()
 
-    const fetchTraces = async () => {
-      setLoading(true)
-      try {
-        const data = await api.getTraces({
-          service: service || undefined,
-          search: debouncedSearch || undefined,
-          background,
-          from: fromTime.toISOString(),
-          to: toTime.toISOString(),
-          limit: pageSize,
-          cursor,
-        }, { signal: abortController.signal })
-        setTraces(data.traces ?? [])
-        setTotal(data.total ?? 0)
-        setNextCursor(data.nextCursor)
-      } catch (err) {
-        if (isAbortError(err)) {
-          return // Ignore abort errors
+  const firstPageKey = queryKeys.traces.list(queryFilters, time.range, { limit: pagination.pageSize })
+  const countNew = useMemo(() => countTraces(queryFilters), [queryFilters])
+  const newTraces = useNewItems({
+    name: 'traces',
+    filters: queryFilters,
+    count: countNew,
+    anchor: traces.dataUpdatedAt,
+    recentTimes: useTelemetryStore((s) => s.recentSpanTimes),
+    enabled: !time.isAbsoluteRange,
+    refetch: firstPageKey,
+    onSeen: pagination.resetToFirstPage,
+  })
+  useLiveInvalidate({
+    queryKey: firstPageKey,
+    enabled: pagination.page === 1 && !time.isAbsoluteRange && newTraces.count === 0,
+    intervalMs: WINDOW_REFRESH_MS,
+    updateCount: 0,
+  })
+
+  const [expanded, toggleExpanded] = useExpandedRow(`${listKey}|${pagination.pageSize}|${pagination.cursor ?? ''}`)
+
+  const loaded = traces.data?.traces
+  const rows = useMemo(() => loaded ?? [], [loaded])
+  const rowKeys = useMemo(() => uniqueRowKeys(rows, traceRowKey), [rows])
+  const filtered = Boolean(filters.service || search)
+
+  let content
+  if (traces.isPending) {
+    content = <ListSkeleton rows={6} rowClassName="h-20" label="Loading traces" />
+  } else if (traces.isError && !traces.data) {
+    content = (
+      <QueryError error={traces.error} title="Couldn't load traces" onRetry={() => void traces.refetch()} retrying={traces.isFetching} />
+    )
+  } else if (rows.length === 0) {
+    content = (
+      <EmptyState
+        icon={Activity}
+        title={filtered ? 'No traces match these filters' : 'No traces in this time range'}
+        description={
+          filtered
+            ? 'Try another service or search, or a longer time range.'
+            : 'Choose a longer time range, or configure your AI coding tool to send trace telemetry.'
         }
-        console.error('Failed to fetch traces:', err)
-        toast.error('Failed to fetch traces')
-      } finally {
-        if (!abortController.signal.aborted) {
-          setLoading(false)
-        }
-      }
-    }
-    fetchTraces()
-
-    return () => abortController.abort()
-  }, [service, debouncedSearch, background, fromTime, toTime, pageSize, cursor, setNextCursor])
-
-  useEffect(() => {
-    if (!hasNewSpans) {
-      return
-    }
-
-    const abortController = new AbortController()
-    const timeout = window.setTimeout(async () => {
-      try {
-        const data = await api.getTraces({
-          service: service || undefined,
-          search: debouncedSearch || undefined,
-          background,
-          from: anchorTime.toISOString(),
-          to: new Date().toISOString(),
-          limit: 1,
-        }, { signal: abortController.signal })
-        if (!abortController.signal.aborted) {
-          setNewTracesCount(data.total ?? 0)
-        }
-      } catch (err) {
-        if (isAbortError(err)) {
-          return
-        }
-        console.error('Failed to count new traces:', err)
-      }
-    }, 250)
-
-    return () => {
-      window.clearTimeout(timeout)
-      abortController.abort()
-    }
-  }, [hasNewSpans, anchorTime, service, debouncedSearch, background])
-
-  useEffect(() => {
-    const abortController = new AbortController()
-
-    // Fetch spans only for the currently expanded trace.
-    const fetchMissingSpans = async () => {
-      if (!expandedTraceKey || spansMap.has(expandedTraceKey)) {
-        return
-      }
-
-      const expandedTrace = traces.find((trace, index) => getTraceRowKey(trace, index) === expandedTraceKey)
-      if (!expandedTrace) {
-        return
-      }
-
-      try {
-        const data = await api.getTraceSpans(getTraceRequestId(expandedTrace), getTraceKind(expandedTrace), { signal: abortController.signal })
-        if (!abortController.signal.aborted) {
-          setSpansMap(prev => new Map(prev).set(expandedTraceKey, { ...data, spans: data.spans ?? [] }))
-        }
-      } catch (err) {
-        if (isAbortError(err)) {
-          return
-        }
-        console.error('Failed to fetch spans:', err)
-        toast.error('Failed to fetch trace spans')
-      }
-    }
-    fetchMissingSpans()
-
-    return () => abortController.abort()
-  }, [expandedTraceKey, spansMap, traces])
-
-  const updateSearchParams = (updates: { service?: string; search?: string; background?: boolean; timeSelection?: TimeSelection }) => {
-    const params: Record<string, string> = {}
-    const newService = updates.service ?? service
-    const newSearch = updates.search ?? search
-    const newBackground = updates.background ?? background
-    const newTimeSelection = updates.timeSelection ?? timeSelection
-
-    if (newService) params.service = newService
-    if (newSearch) params.search = newSearch
-    if (newBackground) params.background = 'true'
-
-    // Handle time selection params
-    if (isAbsoluteTimeSelection(newTimeSelection)) {
-      params.from = newTimeSelection.range.from.toISOString()
-      params.to = newTimeSelection.range.to.toISOString()
-    } else {
-      params.timeframe = newTimeSelection.timeframe.value
-    }
-
-    setSearchParams(params)
-  }
-
-  const handleServiceChange = (value: string) => {
-    resetToFirstPage()
-    setService(value)
-    updateSearchParams({ service: value })
-  }
-
-  const handleBackgroundChange = (checked: boolean) => {
-    resetToFirstPage()
-    setBackground(checked)
-    updateSearchParams({ background: checked })
-  }
-
-  const handleTimeSelectionChange = (selection: TimeSelection) => {
-    resetToFirstPage()
-    setTimeSelection(selection) // Also persists to localStorage
-    updateSearchParams({ timeSelection: selection })
-  }
-
-  const handleRefresh = () => {
-    setAnchorTime(new Date())
-    setNewTracesCount(0)
-    setExpandedTraceKey(null)
-    resetToFirstPage()
-    clearRecentSpans()
-  }
-
-  const toggleTrace = (traceKey: string) => {
-    setExpandedTraceKey(prev => prev === traceKey ? null : traceKey)
+      />
+    )
+  } else {
+    content = (
+      <>
+        {traces.isError && (
+          <QueryError error={traces.error} title="Couldn't refresh traces" onRetry={() => void traces.refetch()} retrying={traces.isFetching} />
+        )}
+        <Refreshing active={traces.isPlaceholderData}>
+          <ul className="space-y-2" aria-label="Traces">
+            {rows.map((trace, index) => {
+              const key = rowKeys[index]
+              return (
+                <TraceRow
+                  key={key}
+                  trace={trace}
+                  panelId={`${rowIdPrefix}-trace-${index}`}
+                  expanded={expanded === key}
+                  onToggle={() => toggleExpanded(key)}
+                  serviceName={displayName(trace.serviceName)}
+                  linkState={linkState}
+                />
+              )
+            })}
+          </ul>
+        </Refreshing>
+        <DataPagination
+          page={pagination.page}
+          pageSize={pagination.pageSize}
+          itemCount={rows.length}
+          total={traces.data?.total ?? 0}
+          // A placeholder's nextCursor belongs to the page shown before
+          hasNext={!traces.isPlaceholderData && Boolean(traces.data?.nextCursor)}
+          onFirst={pagination.resetToFirstPage}
+          onPrevious={pagination.previousPage}
+          onNext={() => pagination.nextPage(traces.isPlaceholderData ? undefined : traces.data?.nextCursor)}
+          onPageSizeChange={pagination.setPageSize}
+        />
+      </>
+    )
   }
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Traces</h1>
-          <p className="text-muted-foreground">
-            View and analyze distributed traces
-          </p>
-        </div>
-        {hasNewSpans && newTracesCount > 0 && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleRefresh}
-            className="gap-2"
-          >
-            <RefreshCw className="h-3 w-3" />
-            {newTracesCount} new {newTracesCount === 1 ? 'trace' : 'traces'}
-          </Button>
-        )}
-      </div>
+      <PageHeader title="Traces" description="View and analyze traces from your AI coding tools" />
 
-      {/* Filters */}
       <Card>
         <CardContent className="pt-6">
-          <div className="flex gap-4">
-            <div className="flex items-center gap-2">
-              <label className="text-sm text-muted-foreground whitespace-nowrap">Timeframe</label>
-              <DateRangePicker
-                value={timeSelection}
-                onChange={handleTimeSelectionChange}
-              />
-            </div>
-            <div className="w-48">
-              <Select
-                value={service}
-                onChange={(e) => handleServiceChange(e.target.value)}
-              >
-                <option value="">All Services</option>
-                {serviceFilterOptions(services).map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            <div className="flex-1">
-              <Input
-                placeholder="Search spans, errors, attributes..."
-                value={search}
-                onChange={(e) => {
-                  resetToFirstPage()
-                  setSearch(e.target.value)
-                }}
-              />
-            </div>
+          <FilterBar>
+            <TimeRangeFilter id={timeRangeId} value={time.timeSelection} onChange={time.setTimeSelection} />
+            <ServiceFilter value={filters.service} onChange={(service) => setFilters({ service })} services={services.data ?? []} />
+            <SearchFilter
+              label="Search traces"
+              placeholder="Search spans, errors, attributes..."
+              value={filters.search}
+              onChange={(value) => setFilters({ search: value })}
+            />
             <Tooltip>
               <TooltipTrigger asChild>
                 <div className="flex items-center gap-2">
-                  <Switch id="background-traces" checked={background} onCheckedChange={handleBackgroundChange} />
-                  <Label htmlFor="background-traces" className="whitespace-nowrap text-sm text-muted-foreground">
+                  <Switch
+                    id={backgroundId}
+                    checked={filters.background}
+                    onCheckedChange={(checked) => setFilters({ background: checked })}
+                  />
+                  <Label htmlFor={backgroundId} className="font-normal whitespace-nowrap text-muted-foreground">
                     Background requests
                   </Label>
                 </div>
               </TooltipTrigger>
-              <TooltipContent>
-                Codex app server traces outside a conversation: file, settings and account reads
-              </TooltipContent>
+              <TooltipContent>Codex app server traces outside a conversation: file, settings and account reads</TooltipContent>
             </Tooltip>
-          </div>
+          </FilterBar>
         </CardContent>
       </Card>
 
-      {/* Traces List */}
       <Card>
-        <CardHeader>
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 space-y-0">
           <CardTitle>Traces</CardTitle>
+          {newTraces.count > 0 && <NewItemsButton count={newTraces.count} noun={['trace', 'traces']} onClick={newTraces.markSeen} />}
         </CardHeader>
-        <CardContent>
-          {loading ? (
-            <div className="py-8 text-center text-muted-foreground">
-              Loading...
-            </div>
-          ) : traces.length === 0 ? (
-            <div className="py-8 text-center text-muted-foreground">
-              No traces found
-            </div>
-          ) : (
-            <>
-              <div className="space-y-2">
-                {traces.map((trace, index) => {
-                  const traceKey = getTraceRowKey(trace, index)
-                  const isExpanded = expandedTraceKey === traceKey
-                  const spanPage = spansMap.get(traceKey)
-                  const spans = spanPage?.spans
-
-                  return (
-                    <div key={traceKey} className="rounded-lg border">
-                      {/* Trace header (clickable) */}
-                      <div
-                        className={cn(
-                          'p-3 cursor-pointer transition-colors hover:bg-accent',
-                          isExpanded && 'bg-accent'
-                        )}
-                        onClick={() => toggleTrace(traceKey)}
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2 min-w-0 flex-1">
-                            <Badge className={getStatusColor(trace.status)}>
-                              {trace.status}
-                            </Badge>
-                            <span className="font-medium text-sm truncate" title={trace.rootSpan}>
-                              {trace.rootSpan}
-                            </span>
-                          </div>
-                          {isExpanded ? (
-                            <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />
-                          ) : (
-                            <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
-                          )}
-                        </div>
-                        <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
-                          <span>{getServiceDisplayName(trace.serviceName)}</span>
-                          <span>{formatDuration(trace.duration)}</span>
-                        </div>
-                        <div className="mt-1 flex items-center justify-between text-xs text-muted-foreground">
-                          <span>{trace.spanCount} spans</span>
-                          <span>{formatTimestamp(trace.startTime)}</span>
-                        </div>
-                      </div>
-
-                      {/* Waterfall (expanded) */}
-                      {isExpanded && (
-                        <div className="border-t p-3">
-                          {!spans ? (
-                            <div className="py-4 text-center text-muted-foreground">
-                              Loading spans...
-                            </div>
-                          ) : spans.length === 0 ? (
-                            <div className="py-4 text-center text-muted-foreground">
-                              No spans found
-                            </div>
-                          ) : (
-                            <>
-                              <WaterfallView spans={spans} trace={trace} />
-                              {spanPage?.hasMore && (
-                                <div className="mt-3 border-t pt-3 text-center text-sm text-muted-foreground">
-                                  Showing the first {spans.length.toLocaleString('en-US')} of {(spanPage.total ?? trace.spanCount).toLocaleString('en-US')} spans.{' '}
-                                  <Link
-                                    className="underline underline-offset-4 hover:text-foreground"
-                                    to={`/traces/${getTraceKind(trace)}/${encodeURIComponent(getTraceRequestId(trace))}`}
-                                  >
-                                    Open the trace
-                                  </Link>{' '}
-                                  to load more.
-                                </div>
-                              )}
-                            </>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-              <DataPagination
-                page={page}
-                pageSize={pageSize}
-                itemCount={traces.length}
-                total={total}
-                hasNext={hasNext}
-                onFirst={resetToFirstPage}
-                onPrevious={previousPage}
-                onNext={nextPage}
-                onPageSizeChange={setPageSize}
-              />
-            </>
-          )}
-        </CardContent>
+        <CardContent>{content}</CardContent>
       </Card>
     </div>
   )

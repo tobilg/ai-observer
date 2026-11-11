@@ -8,8 +8,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/tobilg/ai-observer/internal/api"
 	"github.com/tobilg/ai-observer/internal/logger"
+	"github.com/tobilg/ai-observer/internal/mcpserver"
+	"github.com/tobilg/ai-observer/internal/selfmetrics"
 )
 
 // RequestLogger logs HTTP requests
@@ -34,6 +37,55 @@ func RequestLogger(next http.Handler) http.Handler {
 			"status", wrapped.statusCode,
 			"duration", time.Since(start),
 		)
+	})
+}
+
+// requestMetrics returns the self-metrics middleware of the OTLP router
+// (OTLPMetrics) or the API router (APIMetrics)
+func requestMetrics(otlp bool) func(http.Handler) http.Handler {
+	if otlp {
+		return OTLPMetrics
+	}
+	return APIMetrics
+}
+
+// OTLPMetrics counts OTLP export requests by signal and result in the
+// self-metrics (selfmetrics.OTLPRequests). It runs before authentication, so
+// rejected exports are counted too.
+func OTLPMetrics(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		signal, ok := strings.CutPrefix(r.URL.Path, "/v1/")
+		if !ok || (signal != "traces" && signal != "metrics" && signal != "logs") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+		next.ServeHTTP(wrapped, r)
+		selfmetrics.OTLPRequests.With(selfmetrics.TransportHTTP, signal, selfmetrics.OTLPResult(wrapped.statusCode)).Inc()
+	})
+}
+
+// APIMetrics records the duration of API and MCP requests by route pattern
+// (selfmetrics.APIRequestSeconds) and counts those that timed out (504,
+// selfmetrics.APITimeouts). Requests that reach no route, such as static
+// files and those rejected before routing, are not recorded.
+func APIMetrics(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+		next.ServeHTTP(wrapped, r)
+		rctx := chi.RouteContext(r.Context())
+		if rctx == nil {
+			return
+		}
+		route := rctx.RoutePattern()
+		if !strings.HasPrefix(route, "/api/") && route != mcpserver.Path {
+			return
+		}
+		selfmetrics.APIRequestSeconds.With(route).ObserveSince(start)
+		if wrapped.statusCode == http.StatusGatewayTimeout {
+			selfmetrics.APITimeouts.With(route).Inc()
+		}
 	})
 }
 

@@ -106,20 +106,170 @@ type GeminiMessage struct {
 	ToolCalls []GeminiToolCall `json:"toolCalls,omitempty"`
 }
 
-// GeminiToolCall represents a tool call in a message
-type GeminiToolCall struct {
-	ID          string             `json:"id"`
-	Name        string             `json:"name"`
-	Args        json.RawMessage    `json:"args,omitempty"`
-	Result      []GeminiToolResult `json:"result,omitempty"`
-	Status      string             `json:"status,omitempty"`
-	Timestamp   string             `json:"timestamp,omitempty"`
-	DisplayName string             `json:"displayName,omitempty"`
+// UnmarshalJSON reads a message. Gemini CLI declares its content as a
+// PartListUnion (packages/core/src/services/chatRecordingService.ts,
+// BaseMessageRecord.content): a string, a Part, or a list of strings and
+// Parts. Version 0.24 records strings only, but its readers accept all of
+// them (partListUnionToString). Content is the text of the parts, joined
+// like partListUnionToString joins them, without thought parts (recorded in
+// the message's thoughts); function calls and responses among the parts
+// become tool calls unless the message lists them already.
+func (m *GeminiMessage) UnmarshalJSON(data []byte) error {
+	type plain GeminiMessage
+	var aux struct {
+		plain
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	parts, err := geminiParts(aux.Content)
+	if err != nil {
+		return fmt.Errorf("message content: %w", err)
+	}
+	*m = GeminiMessage(aux.plain)
+	m.Content = geminiPartsText(parts)
+	for _, part := range parts {
+		if fc := part.FunctionCall; fc != nil && m.toolCall(fc.ID, fc.Name, false) == nil {
+			m.ToolCalls = append(m.ToolCalls, GeminiToolCall{ID: fc.ID, Name: fc.Name, Args: fc.Args})
+		}
+		if fr := part.FunctionResponse; fr != nil {
+			result := GeminiToolResults{{FunctionResponse: fr}}
+			if call := m.toolCall(fr.ID, fr.Name, true); call != nil {
+				if len(call.Result) == 0 {
+					call.Result = result
+				}
+				continue
+			}
+			m.ToolCalls = append(m.ToolCalls, GeminiToolCall{ID: fr.ID, Name: fr.Name, Result: result})
+		}
+	}
+	return nil
 }
 
-// GeminiToolResult represents the result of a tool call
+// toolCall returns the message's tool call of a call ID, or without one,
+// the first of the name (one without result, when forResult)
+func (m *GeminiMessage) toolCall(id, name string, forResult bool) *GeminiToolCall {
+	for i := range m.ToolCalls {
+		call := &m.ToolCalls[i]
+		if id != "" && call.ID == id {
+			return call
+		}
+		if id == "" && call.Name == name && (!forResult || len(call.Result) == 0) {
+			return call
+		}
+	}
+	return nil
+}
+
+// geminiPart is a Part of Gemini's API as Gemini CLI records it
+type geminiPart struct {
+	Text             *string                 `json:"text,omitempty"`
+	Thought          bool                    `json:"thought,omitempty"`
+	FunctionCall     *geminiFunctionCall     `json:"functionCall,omitempty"`
+	FunctionResponse *GeminiFunctionResponse `json:"functionResponse,omitempty"`
+}
+
+type geminiFunctionCall struct {
+	ID   string          `json:"id,omitempty"`
+	Name string          `json:"name"`
+	Args json.RawMessage `json:"args,omitempty"`
+}
+
+// geminiParts decodes a PartListUnion: null, a string, a Part, or a list of
+// strings and Parts (a string is a text part)
+func geminiParts(raw json.RawMessage) ([]geminiPart, error) {
+	raw = json.RawMessage(strings.TrimSpace(string(raw)))
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var items []json.RawMessage
+	if raw[0] == '[' {
+		if err := json.Unmarshal(raw, &items); err != nil {
+			return nil, err
+		}
+	} else {
+		items = []json.RawMessage{raw}
+	}
+	parts := make([]geminiPart, 0, len(items))
+	for _, item := range items {
+		var part geminiPart
+		var text string
+		if err := json.Unmarshal(item, &text); err == nil {
+			part.Text = &text
+		} else if err := json.Unmarshal(item, &part); err != nil {
+			return nil, err
+		}
+		parts = append(parts, part)
+	}
+	return parts, nil
+}
+
+// geminiPartsText joins the text of parts, without thoughts
+func geminiPartsText(parts []geminiPart) string {
+	var b strings.Builder
+	for _, part := range parts {
+		if part.Text != nil && !part.Thought {
+			b.WriteString(*part.Text)
+		}
+	}
+	return b.String()
+}
+
+// GeminiToolCall represents a tool call in a message
+type GeminiToolCall struct {
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Args        json.RawMessage   `json:"args,omitempty"`
+	Result      GeminiToolResults `json:"result,omitempty"`
+	Status      string            `json:"status,omitempty"`
+	Timestamp   string            `json:"timestamp,omitempty"`
+	DisplayName string            `json:"displayName,omitempty"`
+}
+
+// output returns the tool's output: the first function response's, else
+// the text of the result; false without a result
+func (c GeminiToolCall) output() (string, bool) {
+	for _, r := range c.Result {
+		if r.FunctionResponse != nil {
+			if r.FunctionResponse.Response == nil {
+				return "", true
+			}
+			return r.FunctionResponse.Response.Output, true
+		}
+	}
+	var b strings.Builder
+	for _, r := range c.Result {
+		b.WriteString(r.Text)
+	}
+	return b.String(), b.Len() > 0
+}
+
+// GeminiToolResults is a tool call's result, a PartListUnion
+// (ToolCallRecord.result): Gemini CLI 0.24 records a list of function
+// response parts, or null
+type GeminiToolResults []GeminiToolResult
+
+func (r *GeminiToolResults) UnmarshalJSON(data []byte) error {
+	parts, err := geminiParts(data)
+	if err != nil {
+		return fmt.Errorf("tool call result: %w", err)
+	}
+	*r = nil
+	for _, part := range parts {
+		result := GeminiToolResult{FunctionResponse: part.FunctionResponse}
+		if part.Text != nil && !part.Thought {
+			result.Text = *part.Text
+		}
+		*r = append(*r, result)
+	}
+	return nil
+}
+
+// GeminiToolResult represents a part of the result of a tool call
 type GeminiToolResult struct {
 	FunctionResponse *GeminiFunctionResponse `json:"functionResponse,omitempty"`
+	Text             string                  `json:"text,omitempty"`
 }
 
 // GeminiFunctionResponse represents the function response
@@ -132,6 +282,33 @@ type GeminiFunctionResponse struct {
 // GeminiFunctionResponseData contains the actual response data
 type GeminiFunctionResponseData struct {
 	Output string `json:"output,omitempty"`
+}
+
+// UnmarshalJSON reads a function response, a free-form object: Gemini CLI
+// sends {output} for results and {error} for failures; Output is that text,
+// else the response's JSON
+func (d *GeminiFunctionResponseData) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
+		d.Output = strings.TrimSpace(string(data))
+		return nil
+	}
+	*d = GeminiFunctionResponseData{}
+	for _, key := range []string{"output", "error"} {
+		if raw, ok := fields[key]; ok {
+			var text string
+			if err := json.Unmarshal(raw, &text); err == nil {
+				d.Output = text
+			} else {
+				d.Output = string(raw)
+			}
+			return nil
+		}
+	}
+	if len(fields) > 0 {
+		d.Output = string(data)
+	}
+	return nil
 }
 
 // GeminiTokens represents token counts for a message
@@ -164,6 +341,17 @@ func (p *GeminiParser) ParseFile(ctx context.Context, path string) (*ImportResul
 		ParsedBytes:  int64(len(data)),
 		MessageCount: len(session.Messages),
 	}
+	// Watch continues from here, including what Gemini CLI adds to the
+	// last message later
+	watchState, err := NewGeminiWatchState(ctx, &session)
+	if err != nil {
+		return nil, err
+	}
+	stateJSON, err := json.Marshal(watchState)
+	if err != nil {
+		return nil, fmt.Errorf("encoding watch state: %w", err)
+	}
+	result.ParserState = string(stateJSON)
 
 	// Parse start time
 	if session.StartTime != "" {
@@ -195,6 +383,51 @@ func (p *GeminiParser) ParseFile(ctx context.Context, path string) (*ImportResul
 	}
 
 	return result, nil
+}
+
+// GeminiWatchState is what watch keeps of a Gemini CLI session file
+// (import_state.parser_state); imports record it too
+type GeminiWatchState struct {
+	MessageCount int `json:"messageCount"`
+	// Last describes what was stored of the last message read: Gemini CLI
+	// rewrites its session file and adds to its last message later (the
+	// tool calls of a response once they ran, the response's tokens when
+	// they arrive after its text). nil when unknown (the start of watching
+	// without importing, or imports of earlier versions, which recorded only
+	// the message count): its records are then taken as complete.
+	Last *GeminiLastMessage `json:"last,omitempty"`
+}
+
+// GeminiLastMessage is what was stored of a session file's last message
+type GeminiLastMessage struct {
+	// Logs is the number of its logs (the message and its tool calls'
+	// use and result)
+	Logs int `json:"logs"`
+	// Tokens tells whether its usage was stored
+	Tokens bool `json:"tokens"`
+}
+
+// NewGeminiWatchState returns the watch state after all messages of session
+// were stored
+func NewGeminiWatchState(ctx context.Context, session *GeminiSession) (GeminiWatchState, error) {
+	state := GeminiWatchState{MessageCount: len(session.Messages)}
+	if len(session.Messages) == 0 {
+		return state, nil
+	}
+	last, err := GeminiMessageRecords(ctx, session, len(session.Messages)-1, "")
+	if err != nil {
+		return state, err
+	}
+	state.Last = &GeminiLastMessage{Logs: len(last.Logs), Tokens: len(last.Metrics) > 0}
+	return state, nil
+}
+
+// GeminiMessageRecords returns the records of message i of session, as
+// import and watch store them (indexed by the records of the messages before)
+func GeminiMessageRecords(ctx context.Context, session *GeminiSession, i int, importSource string) (*GeminiRecords, error) {
+	head := *session
+	head.Messages = session.Messages[:i+1]
+	return ConvertGeminiMessages(ctx, &head, i, importSource)
 }
 
 // GeminiRecords are the records converted from Gemini session messages
@@ -236,7 +469,7 @@ func ConvertGeminiMessages(ctx context.Context, session *GeminiSession, start in
 		}
 		records.Logs = append(records.Logs, logs...)
 		if msg.Type == "gemini" && msg.Tokens != nil {
-			records.Metrics = append(records.Metrics, geminiMessageMetrics(ts, msg.Model, msg.Tokens)...)
+			records.Metrics = append(records.Metrics, geminiMessageMetrics(ts, session.SessionID, msg.Model, msg.Tokens)...)
 		}
 	}
 	return records, nil
@@ -270,6 +503,11 @@ func geminiMessageLogs(session *GeminiSession, msg GeminiMessage, ts time.Time, 
 		if msg.Tokens.Cached > 0 {
 			attrs["cache_read_input_tokens"] = fmt.Sprintf("%d", msg.Tokens.Cached)
 		}
+		// The response's other token counts, named as its OTLP
+		// api_response event names them: with the above, they identify the
+		// response the event records (internal/msgmerge)
+		attrs["thoughts_token_count"] = fmt.Sprintf("%d", msg.Tokens.Thoughts)
+		attrs["tool_token_count"] = fmt.Sprintf("%d", msg.Tokens.Tool)
 	}
 	logs := []api.LogRecord{{
 		Timestamp:      ts,
@@ -296,6 +534,9 @@ func geminiMessageLogs(session *GeminiSession, msg GeminiMessage, ts time.Time, 
 			"tool.name":     toolCall.Name,
 			"import_source": importSource,
 		}
+		if toolCall.ID != "" {
+			toolUseAttrs["tool.call_id"] = toolCall.ID
+		}
 		if len(toolCall.Args) > 0 {
 			toolUseAttrs["tool.input"] = string(toolCall.Args)
 		}
@@ -308,13 +549,9 @@ func geminiMessageLogs(session *GeminiSession, msg GeminiMessage, ts time.Time, 
 			LogAttributes:  toolUseAttrs,
 		})
 
-		if len(toolCall.Result) == 0 || toolCall.Result[0].FunctionResponse == nil {
+		toolOutput, ok := toolCall.output()
+		if !ok {
 			continue
-		}
-		fr := toolCall.Result[0].FunctionResponse
-		toolOutput := ""
-		if fr.Response != nil {
-			toolOutput = fr.Response.Output
 		}
 		toolResultAttrs := map[string]string{
 			"event.name":    "transcript.message",
@@ -323,6 +560,9 @@ func geminiMessageLogs(session *GeminiSession, msg GeminiMessage, ts time.Time, 
 			"message.role":  "tool_result",
 			"tool.name":     toolCall.Name,
 			"import_source": importSource,
+		}
+		if toolCall.ID != "" {
+			toolResultAttrs["tool.call_id"] = toolCall.ID
 		}
 		if toolCall.Status != "" {
 			toolResultAttrs["success"] = fmt.Sprintf("%v", toolCall.Status == "success")
@@ -344,8 +584,11 @@ func geminiMessageLogs(session *GeminiSession, msg GeminiMessage, ts time.Time, 
 
 // geminiMessageMetrics returns the token usage and cost metrics of one
 // response. Token types are named like Gemini CLI's own telemetry (input,
-// output, cache, thought, tool), so imported and live data form the same series.
-func geminiMessageMetrics(ts time.Time, model string, tokens *GeminiTokens) []api.MetricDataPoint {
+// output, cache, thought, tool), so imported and live data form the same
+// series; session.id is the session's, as on Gemini CLI's own points, so a
+// response recorded over OTLP as well is counted once
+// (storage/usage_overlap.go).
+func geminiMessageMetrics(ts time.Time, sessionID, model string, tokens *GeminiTokens) []api.MetricDataPoint {
 	var metrics []api.MetricDataPoint
 	for _, t := range []struct {
 		tokenType string
@@ -358,15 +601,23 @@ func geminiMessageMetrics(ts time.Time, model string, tokens *GeminiTokens) []ap
 		{pricing.GeminiTokenTypeTool, tokens.Tool},
 	} {
 		if t.count > 0 {
-			metrics = append(metrics, CreateGeminiTokenMetric(ts, model, t.tokenType, float64(t.count)))
+			metrics = append(metrics, withSession(CreateGeminiTokenMetric(ts, model, t.tokenType, float64(t.count)), sessionID))
 		}
 	}
 
 	cost := pricing.CalculateGeminiCost(model, int64(tokens.Input), int64(tokens.Cached), int64(tokens.Output), int64(tokens.Thoughts))
 	if cost != nil && *cost > 0 {
-		metrics = append(metrics, CreateGeminiCostMetric(ts, model, *cost))
+		metrics = append(metrics, withSession(CreateGeminiCostMetric(ts, model, *cost), sessionID))
 	}
 	return metrics
+}
+
+// withSession returns point with the session.id attribute of sessionID
+func withSession(point api.MetricDataPoint, sessionID string) api.MetricDataPoint {
+	if sessionID != "" {
+		point.Attributes["session.id"] = sessionID
+	}
+	return point
 }
 
 // ParseGeminiTime parses various time formats used by Gemini

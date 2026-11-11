@@ -1,8 +1,27 @@
 import type { TracesResponse, SpansResponse, TraceKind } from '@/types/traces'
-import type { MetricsResponse, TimeSeriesResponse, MetricNamesResponse, TimeSeries } from '@/types/metrics'
+import type {
+  MetricsResponse,
+  TimeSeriesResponse,
+  MetricNamesResponse,
+  MetricAttributeKeysResponse,
+  BreakdownValuesResponse,
+  MetricQuery,
+  BatchMetricSeriesRequest,
+  BatchMetricSeriesResponse,
+  HistogramStat,
+} from '@/types/metrics'
 import type { LogsResponse, LogLevelsResponse } from '@/types/logs'
 import type { SessionsResponse, TranscriptResponse } from '@/types/sessions'
-import { isAbortError } from '@/lib/errors'
+import type {
+  AdminBackupRequest,
+  AdminBackupResponse,
+  AdminCheckpointResponse,
+  AdminDeleteRequest,
+  AdminDeleteResponse,
+  StatusResponse,
+} from '@/types/status'
+import type { StatsResponse, Provider, ProvidersResponse, ServicesResponse } from '@/types/api.gen'
+import { TimeoutError, httpError, isAbortError, isHTTPError } from '@/lib/errors'
 import type {
   Dashboard,
   DashboardWithWidgets,
@@ -12,214 +31,54 @@ import type {
   UpdateDashboardRequest,
   CreateWidgetRequest,
   UpdateWidgetRequest,
+  UpdateWidgetPositionsRequest,
   WidgetPosition,
 } from '@/types/dashboard'
 
+// The API client only sends requests. Retrying failed reads and coalescing
+// identical ones is TanStack Query's job (lib/queryClient.ts, lib/queries.ts),
+// so there is a single retry policy.
+
+export { HTTPError } from '@/lib/errors'
+
 const API_BASE = '/api'
 
-// Retry configuration
-const RETRY_CONFIG = {
-  maxRetries: 5,
-  baseDelayMs: 100,
-  maxDelayMs: 1600,
-  jitterFactor: 0.1, // 10% jitter
-}
+// Every request, including reading its body, gives up after this long and
+// fails with a TimeoutError
+export const REQUEST_TIMEOUT_MS = 30_000
 
-// Request timeout configuration
-const REQUEST_TIMEOUT_MS = 30000 // 30 seconds
-
-// Request deduplication cache for coalescing concurrent identical requests.
-// The shared request has its own signal: it is only aborted when every caller
-// that passed a signal has aborted, never because the first caller did.
-interface PendingRequest<T> {
-  promise: Promise<T>
-  timestamp: number
-  controller: AbortController
-  waiting: number // callers that have not aborted
-}
-
-const pendingRequests = new Map<string, PendingRequest<unknown>>()
-const CACHE_TTL_MS = 100 // 100ms TTL to coalesce same-frame requests
-
-// Calculate exponential backoff delay with jitter
-function calculateBackoffDelay(attempt: number): number {
-  const exponentialDelay = Math.min(
-    RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt),
-    RETRY_CONFIG.maxDelayMs
-  )
-  // Add jitter to prevent thundering herd
-  const jitter = exponentialDelay * RETRY_CONFIG.jitterFactor * (Math.random() * 2 - 1)
-  return Math.max(0, exponentialDelay + jitter)
-}
-
-// Sleep helper
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-// Check if error is retryable (network errors, 5xx errors)
-function isRetryableError(error: unknown, status?: number): boolean {
-  // Network errors are retryable. fetch rejects with a TypeError whose
-  // message differs by browser ("Failed to fetch", "Load failed", ...).
-  if (error instanceof TypeError) {
-    return true
-  }
-  // A query that hit the server's timeout would time out again
-  if (status === 503 || status === 504) {
-    return false
-  }
-  // 5xx server errors are retryable
-  if (status && status >= 500) {
-    return true
-  }
-  // 429 Too Many Requests is retryable
-  if (status === 429) {
-    return true
-  }
-  return false
-}
-
-function getCacheKey(endpoint: string, params: Record<string, unknown>): string {
-  return `${endpoint}:${JSON.stringify(params)}`
-}
-
-function abortError(): Error {
-  const error = new Error('The operation was aborted')
-  error.name = 'AbortError'
-  return error
-}
-
-function dedupedFetch<T>(key: string, fetchFn: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
-  const now = Date.now()
-  let entry = pendingRequests.get(key) as PendingRequest<T> | undefined
-
-  if (!entry || now - entry.timestamp >= CACHE_TTL_MS || entry.controller.signal.aborted) {
-    const controller = new AbortController()
-    const promise = fetchFn(controller.signal).finally(() => {
-      // Clean up after TTL expires
-      setTimeout(() => {
-        const current = pendingRequests.get(key)
-        if (current?.promise === promise) {
-          pendingRequests.delete(key)
-        }
-      }, CACHE_TTL_MS)
-    })
-    entry = { promise, timestamp: now, controller, waiting: 0 }
-    pendingRequests.set(key, entry as PendingRequest<unknown>)
-  }
-
-  // A caller without a signal never aborts, so the request is never aborted
-  entry.waiting++
-  if (!signal) {
-    return entry.promise
-  }
-
-  const shared = entry
-  return new Promise<T>((resolve, reject) => {
-    const leave = () => {
-      shared.waiting--
-      if (shared.waiting === 0) {
-        shared.controller.abort()
-      }
-      reject(abortError())
-    }
-    if (signal.aborted) {
-      leave()
-      return
-    }
-    signal.addEventListener('abort', leave, { once: true })
-    shared.promise.then(
-      (value) => {
-        signal.removeEventListener('abort', leave)
-        resolve(value)
-      },
-      (error) => {
-        signal.removeEventListener('abort', leave)
-        reject(error)
-      },
-    )
-  })
-}
-
-// Batch metric series types
-export interface MetricQuery {
-  id: string
-  name: string
-  service?: string
-  aggregate?: boolean
-}
-
-export interface MetricQueryResult {
-  id: string
-  success: boolean
-  error?: string
-  series?: TimeSeries[]
-}
-
-export interface BatchMetricSeriesResponse {
-  results: MetricQueryResult[]
-}
-
-interface StatsResponse {
-  traceCount: number
-  spanCount: number
-  logCount: number
-  metricCount: number
-  serviceCount: number
-  services: string[]
-  errorRate: number
-}
-
-// A supported AI coding tool (GET /api/providers)
-export interface Provider {
-  tool: string
-  serviceName: string
-  displayName: string
-  sessionFiles: boolean
-  // Further service names the tool sends (Codex: codex-app-server, codex-exec-server)
-  otherServices?: { serviceName: string; displayName: string }[]
-}
-
-interface ProvidersResponse {
-  providers: Provider[]
-}
-
-interface ServicesResponse {
-  services: string[]
-}
+// Types of requests and responses, generated from the Go types of the API
+// (types/api.gen.ts); re-exported where callers import them from here
+export type {
+  MetricQuery,
+  MetricQueryErrorCode,
+  MetricQueryResult,
+  BatchMetricSeriesResponse,
+} from '@/types/metrics'
+export type { StatsResponse, Provider, ProvidersResponse, ServicesResponse }
 
 interface QueryParams {
   service?: string
   from?: string
   to?: string
   limit?: number
-  // Deprecated by cursor, which keeps pages stable while data arrives
+  // Deprecated by cursor, which keeps pages stable while data arrives; only
+  // sent when given
   offset?: number
   // nextCursor of the previous page
   cursor?: string
 }
 
-interface FetchOptions {
+export interface FetchOptions {
+  // Aborts the request (TanStack Query passes one to every queryFn)
   signal?: AbortSignal
-  retry?: boolean // Disable retry for specific requests
+  // Overrides REQUEST_TIMEOUT_MS, for operations that take long
+  timeoutMs?: number
 }
 
-// Custom error class for HTTP errors
-class HTTPError extends Error {
-  status: number
-  constructor(status: number, message: string) {
-    super(message)
-    this.name = 'HTTPError'
-    this.status = status
-  }
-}
-
-function httpError(status: number, message?: string): HTTPError {
-  if (status === 401) {
-    return new HTTPError(status, 'Authentication required: open AI Observer once with ?token=<AI_OBSERVER_AUTH_TOKEN>')
-  }
-  return new HTTPError(status, `HTTP error! status: ${status}${message ? `: ${message}` : ''}`)
-}
+// Admin operations (backup, deletion) can take minutes on a large database;
+// a client that gives up cancels them on the server
+export const ADMIN_TIMEOUT_MS = 30 * 60_000
 
 // The message of an API error response ({"error", "message"}), if any
 async function errorMessage(response: Response): Promise<string | undefined> {
@@ -228,89 +87,6 @@ async function errorMessage(response: Response): Promise<string | undefined> {
     return typeof body?.message === 'string' ? body.message : undefined
   } catch {
     return undefined
-  }
-}
-
-async function fetchJSON<T>(url: string, options?: FetchOptions): Promise<T> {
-  const shouldRetry = options?.retry !== false
-  let lastError: Error | null = null
-  let lastStatus: number | undefined
-
-  for (let attempt = 0; attempt <= (shouldRetry ? RETRY_CONFIG.maxRetries : 0); attempt++) {
-    // Abort when the request, including reading its body, takes too long
-    const timeoutController = new AbortController()
-    const timeoutId = setTimeout(() => timeoutController.abort(), REQUEST_TIMEOUT_MS)
-    const combined = options?.signal
-      ? combineSignals(options.signal, timeoutController.signal)
-      : { signal: timeoutController.signal, cleanup: () => {} }
-
-    try {
-      const response = await fetch(url, { signal: combined.signal })
-
-      if (!response.ok) {
-        lastStatus = response.status
-        const error = httpError(response.status)
-
-        // Only retry on retryable errors
-        if (shouldRetry && attempt < RETRY_CONFIG.maxRetries && isRetryableError(error, response.status)) {
-          lastError = error
-          const delay = calculateBackoffDelay(attempt)
-          await sleep(delay)
-          continue
-        }
-        // The server's explanation, e.g. of an invalid parameter
-        throw httpError(response.status, await errorMessage(response))
-      }
-
-      return await response.json()
-    } catch (error) {
-      // Don't retry if aborted by user. A timeout is an error the page
-      // shows, not an abort it ignores.
-      if (isAbortError(error)) {
-        if (timeoutController.signal.aborted && !options?.signal?.aborted) {
-          throw new Error(`Request timed out after ${REQUEST_TIMEOUT_MS / 1000} seconds`, { cause: error })
-        }
-        throw error
-      }
-
-      lastError = error instanceof Error ? error : new Error(String(error))
-
-      // Check if we should retry
-      if (shouldRetry && attempt < RETRY_CONFIG.maxRetries && isRetryableError(error, lastStatus)) {
-        const delay = calculateBackoffDelay(attempt)
-        await sleep(delay)
-        continue
-      }
-
-      throw lastError
-    } finally {
-      clearTimeout(timeoutId)
-      combined.cleanup()
-    }
-  }
-
-  throw lastError || new Error('Request failed after retries')
-}
-
-// Sends a request that changes data. It is not retried: the server may have
-// applied it before failing.
-async function sendRequest(url: string, init: RequestInit): Promise<Response> {
-  const response = await fetch(url, init)
-  if (!response.ok) {
-    throw httpError(response.status, await errorMessage(response))
-  }
-  return response
-}
-
-async function sendJSON<T>(url: string, init: RequestInit): Promise<T> {
-  return (await sendRequest(url, init)).json()
-}
-
-function jsonBody(method: string, body: unknown): RequestInit {
-  return {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
   }
 }
 
@@ -336,6 +112,65 @@ function combineSignals(...signals: AbortSignal[]): { signal: AbortSignal; clean
   }
 
   return { signal: controller.signal, cleanup }
+}
+
+/**
+ * Sends a request and reads its response with read, within
+ * REQUEST_TIMEOUT_MS. An error status throws an HTTPError carrying the
+ * server's message; the timeout throws a TimeoutError, an abort by the
+ * caller's signal the AbortError fetch raised.
+ */
+async function request<T>(
+  url: string,
+  init: RequestInit | undefined,
+  options: FetchOptions | undefined,
+  read: (response: Response) => Promise<T>,
+): Promise<T> {
+  const timeoutController = new AbortController()
+  const timeoutMs = options?.timeoutMs ?? REQUEST_TIMEOUT_MS
+  const timeoutId = setTimeout(() => timeoutController.abort(), timeoutMs)
+  const combined = options?.signal
+    ? combineSignals(options.signal, timeoutController.signal)
+    : { signal: timeoutController.signal, cleanup: () => {} }
+
+  try {
+    const response = await fetch(url, { ...init, signal: combined.signal })
+    if (!response.ok) {
+      throw httpError(response.status, await errorMessage(response))
+    }
+    return await read(response)
+  } catch (error) {
+    // A timeout is an error the page shows, not an abort it ignores
+    if (isAbortError(error) && timeoutController.signal.aborted && !options?.signal?.aborted) {
+      throw new TimeoutError(`Request timed out after ${timeoutMs / 1000} seconds`, { cause: error })
+    }
+    throw error
+  } finally {
+    clearTimeout(timeoutId)
+    combined.cleanup()
+  }
+}
+
+function fetchJSON<T>(url: string, options?: FetchOptions): Promise<T> {
+  return request(url, undefined, options, (response) => response.json())
+}
+
+// Sends a request that changes data. It is never retried: the server may
+// have applied it before failing.
+async function sendRequest(url: string, init: RequestInit): Promise<void> {
+  await request(url, init, undefined, async () => undefined)
+}
+
+function sendJSON<T>(url: string, init: RequestInit, options?: FetchOptions): Promise<T> {
+  return request(url, init, options, (response) => response.json())
+}
+
+function jsonBody(method: string, body: unknown): RequestInit {
+  return {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }
 }
 
 // An optional time range (RFC 3339); an unset side is open
@@ -367,8 +202,8 @@ export const api = {
     return fetchJSON(`${API_BASE}/providers`, options)
   },
 
-  async getServices(): Promise<ServicesResponse> {
-    return fetchJSON(`${API_BASE}/services`)
+  async getServices(options?: FetchOptions): Promise<ServicesResponse> {
+    return fetchJSON(`${API_BASE}/services`, options)
   },
 
   // Traces
@@ -383,7 +218,7 @@ export const api = {
       from: params.from,
       to: params.to,
       limit: params.limit ?? 10,
-      offset: params.offset ?? 0,
+      offset: params.offset,
       cursor: params.cursor,
     })
     return fetchJSON(`${API_BASE}/traces${query}`, options)
@@ -418,7 +253,7 @@ export const api = {
       from: params.from,
       to: params.to,
       limit: params.limit ?? 10,
-      offset: params.offset ?? 0,
+      offset: params.offset,
       cursor: params.cursor,
     })
     return fetchJSON(`${API_BASE}/metrics${query}`, options)
@@ -436,7 +271,16 @@ export const api = {
     to?: string
     intervalSeconds?: number
     aggregate?: boolean
+    groupBy?: string[]
+    filters?: Record<string, string>
+    stat?: HistogramStat
+    merge?: boolean
+    timeZone?: string
   }, options?: FetchOptions): Promise<TimeSeriesResponse> {
+    const filters: Record<string, string> = {}
+    for (const [key, value] of Object.entries(params.filters ?? {})) {
+      filters[`attr.${key}`] = value
+    }
     const query = buildQueryString({
       name: params.name,
       service: params.service,
@@ -444,21 +288,27 @@ export const api = {
       to: params.to,
       interval: params.intervalSeconds?.toString(),
       aggregate: params.aggregate ? 'true' : undefined,
+      groupBy: params.groupBy?.length ? params.groupBy.join(',') : undefined,
+      stat: params.stat || undefined,
+      merge: params.merge ? 'true' : undefined,
+      tz: params.timeZone,
+      ...filters,
     })
+    return fetchJSON(`${API_BASE}/metrics/series${query}`, options)
+  },
 
-    // Use deduplication to coalesce concurrent identical requests
-    const cacheKey = getCacheKey(`${API_BASE}/metrics/series`, params)
-    return dedupedFetch(cacheKey, (signal) =>
-      fetchJSON<TimeSeriesResponse>(`${API_BASE}/metrics/series${query}`, { ...options, signal }),
-      options?.signal,
-    )
+  // The attribute keys of a metric's points, which series can be grouped
+  // and filtered by
+  async getMetricAttributeKeys(params: { name: string; service?: string }, options?: FetchOptions): Promise<MetricAttributeKeysResponse> {
+    const query = buildQueryString({ name: params.name, service: params.service })
+    return fetchJSON(`${API_BASE}/metrics/attribute-keys${query}`, options)
   },
 
   async getBreakdownValues(params: {
     name: string
     attribute: string
     service?: string
-  }, options?: FetchOptions): Promise<{ values: string[] }> {
+  }, options?: FetchOptions): Promise<BreakdownValuesResponse> {
     const query = buildQueryString({
       name: params.name,
       attribute: params.attribute,
@@ -467,22 +317,22 @@ export const api = {
     return fetchJSON(`${API_BASE}/metrics/breakdown-values${query}`, options)
   },
 
-  // Batch metrics
+  // Batch metrics: a read sent as POST (the queries do not fit a URL)
   async getBatchMetricSeries(params: {
     from: string
     to: string
     intervalSeconds?: number
+    timeZone?: string
     queries: MetricQuery[]
   }, options?: FetchOptions): Promise<BatchMetricSeriesResponse> {
-    return sendJSON(`${API_BASE}/metrics/batch-series`, {
-      ...jsonBody('POST', {
-        from: params.from,
-        to: params.to,
-        interval: params.intervalSeconds,
-        queries: params.queries,
-      }),
-      signal: options?.signal,
-    })
+    const body: BatchMetricSeriesRequest = {
+      from: params.from,
+      to: params.to,
+      interval: params.intervalSeconds,
+      timeZone: params.timeZone,
+      queries: params.queries,
+    }
+    return sendJSON(`${API_BASE}/metrics/batch-series`, jsonBody('POST', body), options)
   },
 
   // Logs
@@ -499,7 +349,7 @@ export const api = {
       from: params.from,
       to: params.to,
       limit: params.limit ?? 10,
-      offset: params.offset ?? 0,
+      offset: params.offset,
       cursor: params.cursor,
     })
     return fetchJSON(`${API_BASE}/logs${query}`, options)
@@ -510,47 +360,57 @@ export const api = {
   },
 
   // Sessions
-  async getSessions(params: QueryParams = {}, options?: FetchOptions): Promise<SessionsResponse> {
+  // search: words and "quoted phrases" that one record of the session must
+  // all contain; results are ordered by newest match and carry a snippet
+  async getSessions(params: QueryParams & { search?: string } = {}, options?: FetchOptions): Promise<SessionsResponse> {
     const query = buildQueryString({
       service: params.service,
+      search: params.search,
       from: params.from,
       to: params.to,
       limit: params.limit ?? 50,
-      offset: params.offset ?? 0,
+      offset: params.offset,
       cursor: params.cursor,
     })
     return fetchJSON(`${API_BASE}/sessions${query}`, options)
   },
 
   // A page of a session's transcript; cursor is the previous page's nextCursor
-  async getSessionTranscript(sessionId: string, options?: FetchOptions, cursor?: string): Promise<TranscriptResponse> {
-    const query = buildQueryString({ cursor })
+  // (the number of messages before the page). With search, the response's
+  // search lists the positions of all matching messages of the session.
+  async getSessionTranscript(
+    sessionId: string,
+    options?: FetchOptions,
+    cursor?: string,
+    params: { search?: string; limit?: number } = {},
+  ): Promise<TranscriptResponse> {
+    const query = buildQueryString({ cursor, limit: params.limit, search: params.search || undefined })
     return fetchJSON(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/transcript${query}`, options)
   },
 
   // Dashboards
-  async getDashboards(): Promise<DashboardsResponse> {
-    return fetchJSON(`${API_BASE}/dashboards`)
+  async getDashboards(options?: FetchOptions): Promise<DashboardsResponse> {
+    return fetchJSON(`${API_BASE}/dashboards`, options)
   },
 
   async createDashboard(req: CreateDashboardRequest): Promise<Dashboard> {
     return sendJSON(`${API_BASE}/dashboards`, jsonBody('POST', req))
   },
 
-  async getDefaultDashboard(): Promise<DashboardWithWidgets | null> {
-    const response = await fetch(`${API_BASE}/dashboards/default`)
-    if (response.status === 404) {
-      // No default dashboard exists yet
-      return null
+  // null when no default dashboard exists yet (404)
+  async getDefaultDashboard(options?: FetchOptions): Promise<DashboardWithWidgets | null> {
+    try {
+      return await fetchJSON<DashboardWithWidgets>(`${API_BASE}/dashboards/default`, options)
+    } catch (error) {
+      if (isHTTPError(error, 404)) {
+        return null
+      }
+      throw error
     }
-    if (!response.ok) {
-      throw httpError(response.status, await errorMessage(response))
-    }
-    return response.json()
   },
 
-  async getDashboard(id: string): Promise<DashboardWithWidgets> {
-    return fetchJSON(`${API_BASE}/dashboards/${id}`)
+  async getDashboard(id: string, options?: FetchOptions): Promise<DashboardWithWidgets> {
+    return fetchJSON(`${API_BASE}/dashboards/${encodeURIComponent(id)}`, options)
   },
 
   async updateDashboard(id: string, req: UpdateDashboardRequest): Promise<Dashboard> {
@@ -570,7 +430,8 @@ export const api = {
   },
 
   async updateWidgetPositions(dashboardId: string, positions: WidgetPosition[]): Promise<void> {
-    await sendRequest(`${API_BASE}/dashboards/${dashboardId}/widgets/positions`, jsonBody('PUT', { positions }))
+    const body: UpdateWidgetPositionsRequest = { positions }
+    await sendRequest(`${API_BASE}/dashboards/${dashboardId}/widgets/positions`, jsonBody('PUT', body))
   },
 
   async updateWidget(dashboardId: string, widgetId: string, req: UpdateWidgetRequest): Promise<DashboardWidget> {
@@ -580,6 +441,25 @@ export const api = {
   async deleteWidget(dashboardId: string, widgetId: string): Promise<void> {
     await sendRequest(`${API_BASE}/dashboards/${dashboardId}/widgets/${widgetId}`, { method: 'DELETE' })
   },
+
+  // Server status: version, mode, endpoints, database, settings, pricing, imports
+  async getStatus(options?: FetchOptions): Promise<StatusResponse> {
+    return fetchJSON(`${API_BASE}/status`, options)
+  },
+
+  // Admin API (AI_OBSERVER_ADMIN_API=true): maintenance while the server runs
+  async adminDelete(req: AdminDeleteRequest): Promise<AdminDeleteResponse> {
+    return sendJSON(`${API_BASE}/admin/delete`, jsonBody('POST', req), { timeoutMs: ADMIN_TIMEOUT_MS })
+  },
+
+  async adminCheckpoint(): Promise<AdminCheckpointResponse> {
+    return sendJSON(`${API_BASE}/admin/checkpoint`, { method: 'POST' }, { timeoutMs: ADMIN_TIMEOUT_MS })
+  },
+
+  // Writes a backup to the server's backup directory; name defaults to one with the time
+  async adminBackup(name?: string): Promise<AdminBackupResponse> {
+    const body: AdminBackupRequest = name ? { name } : {}
+    return sendJSON(`${API_BASE}/admin/backup`, jsonBody('POST', body), { timeoutMs: ADMIN_TIMEOUT_MS })
+  },
 }
 
-export type { StatsResponse, ServicesResponse }

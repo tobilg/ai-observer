@@ -538,7 +538,7 @@ func TestHandleTraces_WithAttributes(t *testing.T) {
 		t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	// OTLP/JSON sends IDs as hex: they are stored as sent
-	spans, err := h.store.TraceSpans(context.Background(), "0102030405060708090a0b0c0d0e0f10")
+	spans, err := h.db().TraceSpans(context.Background(), "0102030405060708090a0b0c0d0e0f10")
 	if err != nil {
 		t.Fatal(err)
 	}

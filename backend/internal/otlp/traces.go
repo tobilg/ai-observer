@@ -154,10 +154,10 @@ func spanKindToString(kind tracepb.Span_SpanKind) string {
 func statusCodeToString(code tracepb.Status_StatusCode) string {
 	switch code {
 	case tracepb.Status_STATUS_CODE_OK:
-		return "OK"
+		return api.TraceStatusOK
 	case tracepb.Status_STATUS_CODE_ERROR:
-		return "ERROR"
+		return api.TraceStatusError
 	default:
-		return "UNSET"
+		return api.TraceStatusUnset
 	}
 }

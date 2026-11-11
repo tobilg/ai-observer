@@ -60,4 +60,34 @@ describe('usePagination', () => {
     const { result: reloaded } = renderHook(() => usePagination({ storageKey: 'page-size' }))
     expect(reloaded.current.pageSize).toBe(50)
   })
+
+  it('moves forward with a cursor passed to nextPage', () => {
+    const { result } = renderHook(() => usePagination())
+
+    act(() => result.current.nextPage('c2'))
+    expect(result.current.page).toBe(2)
+    expect(result.current.cursor).toBe('c2')
+
+    act(() => result.current.nextPage(undefined))
+    expect(result.current.page).toBe(2)
+  })
+
+  it('goes back to the first page when resetOn changes', () => {
+    const { result, rerender } = renderHook(({ filters }) => usePagination({ resetOn: filters }), {
+      initialProps: { filters: 'service=a' },
+    })
+    act(() => result.current.nextPage('c2'))
+    act(() => result.current.nextPage('c3'))
+    expect(result.current.page).toBe(3)
+
+    // Same value: the page stays
+    rerender({ filters: 'service=a' })
+    expect(result.current.page).toBe(3)
+
+    // The list the cursors were taken from changed (also by URL navigation)
+    rerender({ filters: 'service=b' })
+    expect(result.current.page).toBe(1)
+    expect(result.current.cursor).toBeUndefined()
+    expect(result.current.hasNext).toBe(false)
+  })
 })

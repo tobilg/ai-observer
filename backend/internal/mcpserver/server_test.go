@@ -3,7 +3,6 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -174,35 +173,6 @@ func TestSearchConversations(t *testing.T) {
 	}
 	if call(t, cs, "search_conversations", map[string]any{"query": `"test flaky"`}, &out); len(out.Sessions) != 0 || strings.Join(out.Terms, "|") != "test flaky" {
 		t.Errorf(`"test flaky" = %+v`, out)
-	}
-}
-
-func TestSearchTerms(t *testing.T) {
-	cases := map[string]string{
-		"flaky parser test":            "flaky|parser|test",
-		"  retry\tbackoff  ":           "retry|backoff",
-		`"not found" timeout`:          "not found|timeout",
-		`timeout "  context deadline `: "timeout|context deadline",
-		"Retry retry RETRY":            "Retry",
-		`a""b`:                         "a|b",
-	}
-	for query, want := range cases {
-		if terms, err := searchTerms(query); err != nil || strings.Join(terms, "|") != want {
-			t.Errorf("searchTerms(%q) = %q, %v; want %q", query, terms, err, want)
-		}
-	}
-	var words []string
-	for i := range maxSearchTerms {
-		words = append(words, fmt.Sprintf("w%d", i))
-	}
-	if terms, err := searchTerms(strings.Join(words, " ")); err != nil || len(terms) != maxSearchTerms {
-		t.Errorf("%d terms = %v, %v", maxSearchTerms, terms, err)
-	}
-	tooMany := strings.Join(words, " ") + " more"
-	for _, bad := range []string{"", "   ", `""`, tooMany} {
-		if _, err := searchTerms(bad); err == nil {
-			t.Errorf("searchTerms(%q) succeeded", bad)
-		}
 	}
 }
 

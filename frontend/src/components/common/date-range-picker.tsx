@@ -7,22 +7,27 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Calendar } from '@/components/ui/calendar'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { Select } from '@/components/ui/select'
+import { NativeSelect, NativeSelectOption, NativeSelectOptGroup } from '@/components/ui/native-select'
 import {
   TIMEFRAME_OPTIONS,
   getTimeSelectionLabel,
 } from '@/types/dashboard'
 import type { TimeSelection } from '@/types/dashboard'
-import { calculateInterval, calculateTickInterval, isRangeExceeding } from '@/lib/timeUtils'
+import { absoluteTimeSelection, isRangeExceeding } from '@/lib/timeUtils'
 
 interface DateRangePickerProps {
   value: TimeSelection
   onChange: (selection: TimeSelection) => void
   className?: string
   align?: 'start' | 'center' | 'end'
+  // id of the trigger button, for a <Label htmlFor>
+  id?: string
+  // Accessible name of the trigger, e.g. "Time range"; the selected range is
+  // appended ("Time range: Last 7 days")
+  label?: string
 }
 
-export function DateRangePicker({ value, onChange, className, align = 'start' }: DateRangePickerProps) {
+export function DateRangePicker({ value, onChange, className, align = 'start', id, label }: DateRangePickerProps) {
   const [open, setOpen] = React.useState(false)
   const [dateRange, setDateRange] = React.useState<DateRange | undefined>(
     value.type === 'absolute' ? { from: value.range.from, to: value.range.to } : undefined
@@ -74,25 +79,12 @@ export function DateRangePicker({ value, onChange, className, align = 'start' }:
         })
       }
 
-      const intervalSeconds = calculateInterval(from, to)
-      const rangeDays = (to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24)
-      const bucketCount = Math.ceil((rangeDays * 86400) / intervalSeconds)
-      const tickInterval = calculateTickInterval(bucketCount)
-
       // Show static data toast
       toast.info('Fixed date range', {
         description: 'Data will not auto-refresh. Select a relative range for live updates.',
       })
 
-      onChange({
-        type: 'absolute',
-        range: {
-          from,
-          to,
-          intervalSeconds,
-          tickInterval,
-        },
-      })
+      onChange(absoluteTimeSelection(from, to))
       setOpen(false)
     }
   }
@@ -103,7 +95,9 @@ export function DateRangePicker({ value, onChange, className, align = 'start' }:
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
+          id={id}
           variant="outline"
+          aria-label={label ? `${label}: ${getTimeSelectionLabel(value)}` : undefined}
           className={cn(
             'justify-start text-left font-normal min-w-[180px]',
             !value && 'text-muted-foreground',
@@ -115,24 +109,23 @@ export function DateRangePicker({ value, onChange, className, align = 'start' }:
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-auto p-0" align={align}>
-        <div className="p-3 border-b">
-          <Select
+        <div className="p-3 border-b *:w-full">
+          <NativeSelect
             size="sm"
             value={currentValue}
             onChange={handlePresetChange}
-            className="w-full"
           >
-            <optgroup label="Relative Time Ranges">
+            <NativeSelectOptGroup label="Relative Time Ranges">
               {TIMEFRAME_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
+                <NativeSelectOption key={option.value} value={option.value}>
                   {option.label}
-                </option>
+                </NativeSelectOption>
               ))}
-            </optgroup>
-            <optgroup label="Custom">
-              <option value="custom">Custom date range...</option>
-            </optgroup>
-          </Select>
+            </NativeSelectOptGroup>
+            <NativeSelectOptGroup label="Custom">
+              <NativeSelectOption value="custom">Custom date range...</NativeSelectOption>
+            </NativeSelectOptGroup>
+          </NativeSelect>
         </div>
         <Calendar
           mode="range"

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tobilg/ai-observer/internal/redact"
 	"github.com/tobilg/ai-observer/internal/tools"
 )
 
@@ -34,6 +35,10 @@ type Options struct {
 	DryRun      bool       // Preview without exporting
 	SkipConfirm bool       // Skip confirmation prompt
 	Verbose     bool       // Show detailed progress
+
+	// Redactor redacts the records read from session files (FromFiles), as
+	// an import does; nil stores them as read
+	Redactor *redact.Redactor
 
 	// Out receives progress, previews and prompts and In the confirmation
 	// answer; nil means stdout and stdin
@@ -65,6 +70,16 @@ func (o *Options) ServiceName() string {
 	return tools.Tool(o.Source).ServiceName()
 }
 
+// ServiceFilter returns the service filter of this source: the tool name,
+// which selects all of the tool's services (codex: codex_cli_rs,
+// codex-app-server, codex-exec-server), or "" for SourceAll
+func (o *Options) ServiceFilter() string {
+	if o.Source == SourceAll {
+		return ""
+	}
+	return string(o.Source)
+}
+
 // DateRangeString returns a formatted string for the date range
 // Returns "all" if no date filter is set
 func (o *Options) DateRangeString() string {
@@ -82,11 +97,19 @@ func (o *Options) DateRangeString() string {
 
 // Summary contains export statistics
 type Summary struct {
-	TracesCount  int64    // Number of trace spans exported
-	LogsCount    int64    // Number of log records exported
-	MetricsCount int64    // Number of metric data points exported
-	OutputFiles  []string // List of output file paths
-	TotalSize    int64    // Total size of exported files in bytes
+	TracesCount  int64 // Number of trace spans exported
+	LogsCount    int64 // Number of log records exported
+	MetricsCount int64 // Number of metric data points exported
+	// BaselinesCount is the number of metric baselines exported (the
+	// previous points of cumulative series), DashboardsCount that of
+	// dashboards
+	BaselinesCount  int64
+	DashboardsCount int
+	// ImportStateCount is the number of session files whose import state
+	// is exported (import_state.parquet)
+	ImportStateCount int64
+	OutputFiles      []string // List of output file paths
+	TotalSize        int64    // Total size of exported files in bytes
 }
 
 // IsEmpty returns true if there's nothing to export

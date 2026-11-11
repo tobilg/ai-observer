@@ -40,23 +40,3 @@ export function useLocalStorage<T>(
 
   return [storedValue, setValue]
 }
-
-/**
- * Helper to read a value from localStorage synchronously.
- * Useful for initializing state outside of React components.
- *
- * @param key - The localStorage key
- * @param defaultValue - Default value if key doesn't exist or parsing fails
- * @returns The stored value or defaultValue
- */
-export function getLocalStorageValue<T>(key: string, defaultValue: T): T {
-  try {
-    const item = localStorage.getItem(key)
-    if (item !== null) {
-      return JSON.parse(item)
-    }
-  } catch {
-    // Ignore errors, return default
-  }
-  return defaultValue
-}

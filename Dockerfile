@@ -65,7 +65,14 @@ ENV AI_OBSERVER_DATABASE_PATH=/app/data/ai-observer.duckdb
 # Listen on all interfaces inside the container so published ports are reachable
 ENV AI_OBSERVER_HOST=0.0.0.0
 
-EXPOSE 8080 4318
+# API and dashboard, OTLP/HTTP, OTLP/gRPC
+EXPOSE 8080 4318 4317
+
+# Ready when the database answers (GET /ready on the API port); the image has
+# no shell or HTTP client, so the binary asks. A container started with
+# another command than the server (import, export) reports unhealthy.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD ["/app/ai-observer", "healthcheck"]
 
 ENTRYPOINT ["/app/ai-observer"]
 CMD []

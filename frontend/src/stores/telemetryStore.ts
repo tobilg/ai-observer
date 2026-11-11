@@ -1,12 +1,9 @@
 import { create } from 'zustand'
+import type { StoredNotification } from '@/types/api.gen'
 
 // Payload of a real-time message: the server announces stored records without
 // their content, and pages re-query the API for the data
-export interface StoredNotification {
-  count: number
-  services: string[]
-  timestamps: number[] // Unix milliseconds of each record
-}
+export type { StoredNotification }
 
 interface TelemetryState {
   // Timestamps (Unix ms) of records received in real time, newest first, used
@@ -27,7 +24,6 @@ interface TelemetryState {
   addSpans: (notification: StoredNotification) => void
   addMetrics: (notification: StoredNotification) => void
   addLogs: (notification: StoredNotification) => void
-  clearRecentData: () => void
   clearRecentLogs: () => void
   clearRecentSpans: () => void
 }
@@ -65,13 +61,6 @@ export const useTelemetryStore = create<TelemetryState>((set) => ({
       recentLogTimes: prependTimes(state.recentLogTimes, notification),
       logsUpdateCount: state.logsUpdateCount + 1,
     })),
-
-  clearRecentData: () =>
-    set({
-      recentSpanTimes: [],
-      recentLogTimes: [],
-      metricsReceivedCount: 0,
-    }),
 
   clearRecentLogs: () =>
     set({

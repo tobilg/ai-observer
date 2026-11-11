@@ -107,12 +107,15 @@ func (p *ClaudeParser) FindSessionFiles(ctx context.Context) ([]string, error) {
 
 // ClaudeJSONLEntry represents a single line in Claude Code JSONL files
 type ClaudeJSONLEntry struct {
-	Type          string          `json:"type,omitempty"` // Root type: "assistant", "user", "pr-link", "system", etc.
-	Timestamp     string          `json:"timestamp"`
-	SessionID     string          `json:"sessionId,omitempty"`
-	Version       string          `json:"version,omitempty"`
-	Cwd           string          `json:"cwd,omitempty"`
-	RequestID     string          `json:"requestId,omitempty"`
+	Type      string `json:"type,omitempty"` // Root type: "assistant", "user", "pr-link", "system", etc.
+	Timestamp string `json:"timestamp"`
+	SessionID string `json:"sessionId,omitempty"`
+	Version   string `json:"version,omitempty"`
+	Cwd       string `json:"cwd,omitempty"`
+	RequestID string `json:"requestId,omitempty"`
+	// UUID identifies the entry; Claude Code's OTLP user_prompt and
+	// assistant_response events carry it as message.uuid
+	UUID          string          `json:"uuid,omitempty"`
 	CostUSD       *float64        `json:"costUSD,omitempty"`
 	Message       *ClaudeMessage  `json:"message,omitempty"`
 	ToolUseResult json.RawMessage `json:"toolUseResult,omitempty"`
@@ -135,6 +138,33 @@ type ClaudeMessage struct {
 	Type    string          `json:"type,omitempty"`
 	Content []ClaudeContent `json:"content,omitempty"`
 	Usage   *ClaudeUsage    `json:"usage,omitempty"`
+}
+
+// UnmarshalJSON reads a message whose content is a string, as Claude Code
+// writes typed prompts, as one text block: decoding it as a list failed, so
+// the whole entry, and every typed prompt, was skipped
+func (m *ClaudeMessage) UnmarshalJSON(data []byte) error {
+	type plain ClaudeMessage
+	var raw struct {
+		*plain
+		Content json.RawMessage `json:"content,omitempty"`
+	}
+	*m = ClaudeMessage{}
+	raw.plain = (*plain)(m)
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if len(raw.Content) == 0 || string(raw.Content) == "null" {
+		return nil
+	}
+	var text string
+	if err := json.Unmarshal(raw.Content, &text); err == nil {
+		if text != "" {
+			m.Content = []ClaudeContent{{Type: "text", Text: text}}
+		}
+		return nil
+	}
+	return json.Unmarshal(raw.Content, &m.Content)
 }
 
 type ClaudeContent struct {
@@ -501,6 +531,14 @@ func (p *ClaudeParser) createTranscriptLogs(entry ClaudeJSONLEntry, ts time.Time
 		if entry.Message.ID != "" {
 			attrs["message.id"] = entry.Message.ID
 		}
+		// The identities OTLP events share with the entry, so a transcript
+		// shows a message recorded both ways once (internal/transcript)
+		if entry.UUID != "" {
+			attrs["message.uuid"] = entry.UUID
+		}
+		if entry.RequestID != "" {
+			attrs["request_id"] = entry.RequestID
+		}
 		if meta.GitBranch != "" {
 			attrs["git_branch"] = meta.GitBranch
 		}
@@ -516,6 +554,9 @@ func (p *ClaudeParser) createTranscriptLogs(entry ClaudeJSONLEntry, ts time.Time
 			role = "tool_use"
 			attrs["message.role"] = role
 			attrs["tool.name"] = content.Name
+			if content.ID != "" {
+				attrs["tool.use_id"] = content.ID
+			}
 			if content.Input != nil {
 				if inputBytes, err := json.Marshal(content.Input); err == nil {
 					attrs["tool.input"] = string(inputBytes)

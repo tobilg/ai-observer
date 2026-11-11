@@ -54,3 +54,33 @@ describe('agent access documentation', () => {
     }
   })
 })
+
+describe('documentation structure', () => {
+  it('has a heading for every entry of the table of contents', () => {
+    for (const section of DOCUMENTATION_SECTIONS) {
+      const headings = section.content.filter((c) => c.type === 'heading').map((c) => c.text)
+      for (const subsection of section.subsections ?? []) {
+        // "Claude Code" heads "Claude Code Metrics"
+        expect(headings.some((h) => h?.startsWith(subsection.title)), `${section.id}: ${subsection.title}`).toBe(true)
+      }
+    }
+  })
+
+  it('documents the REST API the dashboard uses', () => {
+    const section = DOCUMENTATION_SECTIONS.find((s) => s.id === 'api')
+    const endpoints = section?.content
+      .filter((c) => c.type === 'table')
+      .flatMap((c) => c.table?.rows.map((r) => r.cells[0]) ?? [])
+    expect(endpoints).toEqual(expect.arrayContaining([
+      'GET /api/status', 'GET /api/sessions', 'GET /api/sessions/{id}/transcript', 'GET /api/metrics',
+    ]))
+    const text = JSON.stringify(section)
+    for (const term of ['search', 'totals', 'title', 'sessionId', 'creates the Default Dashboard', 'replaces the stored configuration']) {
+      expect(text).toContain(term)
+    }
+  })
+
+  it('describes the status page', () => {
+    expect(DOCUMENTATION_SECTIONS.map((s) => s.id)).toContain('status')
+  })
+})

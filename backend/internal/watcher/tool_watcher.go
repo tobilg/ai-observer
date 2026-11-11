@@ -14,8 +14,13 @@ type ToolWatcher struct {
 	watchDirs   []string
 	missingDirs []string
 	fileMatch   func(string) bool
-	parser      IncrementalParser
-	debounceMs  int
+	// compressed maps a compressed session file found by the startup scan to
+	// the plain path that identifies it (nil: the tool has none). Live events
+	// of compressed files are ignored: Codex compresses only files it no
+	// longer writes, with the content already read.
+	compressed func(string) (string, bool)
+	parser     IncrementalParser
+	debounceMs int
 }
 
 // DetectionResult reports what was found for a tool
@@ -86,6 +91,7 @@ func newCodexToolWatcher() *ToolWatcher {
 		source:     importer.SourceCodex,
 		watchDirs:  paths,
 		fileMatch:  func(path string) bool { return strings.HasSuffix(path, ".jsonl") },
+		compressed: importer.CompressedSessionFile,
 		parser:     &codexIncrementalParser{},
 		debounceMs: 200,
 	}

@@ -145,8 +145,12 @@ func TestLocalURL(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := localURL(tcp, "/mcp"); got != want {
+		if got := localURL("http", tcp, "/mcp"); got != want {
 			t.Errorf("localURL(%s) = %s, want %s", addr, got, want)
 		}
+	}
+	tcp, _ := net.ResolveTCPAddr("tcp", "0.0.0.0:8443")
+	if got := localURL("https", tcp, "/"); got != "https://localhost:8443/" {
+		t.Errorf("https URL = %s", got)
 	}
 }

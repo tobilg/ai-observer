@@ -15,7 +15,7 @@ import (
 func TestOTLPStoreFailureIsRetryable(t *testing.T) {
 	h, cleanup := setupTestHandlers(t)
 	defer cleanup()
-	if _, err := h.store.DB().Exec("DROP TABLE otel_logs"); err != nil {
+	if _, err := h.db().DB().Exec("DROP TABLE otel_logs"); err != nil {
 		t.Fatal(err)
 	}
 

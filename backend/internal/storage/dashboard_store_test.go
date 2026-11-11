@@ -608,7 +608,7 @@ func TestUpdateWidget(t *testing.T) {
 
 	// Update config
 	updated, err = store.UpdateWidget(ctx, dashboard.ID, widget.ID, &api.UpdateWidgetRequest{
-		Config: api.WidgetConfig{
+		Config: &api.WidgetConfig{
 			Service:    "new-service",
 			MetricName: "new-metric",
 		},
@@ -1036,5 +1036,73 @@ func TestScanWidgetConfig(t *testing.T) {
 				t.Errorf("expected metricName %q, got %q", tt.expect.MetricName, result.MetricName)
 			}
 		})
+	}
+}
+
+func TestGetOrCreateDefaultDashboard(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	created, isNew, err := store.GetOrCreateDefaultDashboard(ctx)
+	if err != nil || !isNew || created == nil || !created.IsDefault || created.Name != DefaultDashboardName {
+		t.Fatalf("first call = %+v, %v, %v", created, isNew, err)
+	}
+	if len(created.Widgets) != len(DefaultDashboardWidgets()) {
+		t.Errorf("widgets = %d, want %d", len(created.Widgets), len(DefaultDashboardWidgets()))
+	}
+	again, isNew, err := store.GetOrCreateDefaultDashboard(ctx)
+	if err != nil || isNew || again.ID != created.ID {
+		t.Errorf("second call = %s, created %v, %v; want the same dashboard", again.ID, isNew, err)
+	}
+
+	// Deleting the default makes the next call create a new one
+	if err := store.DeleteDashboard(ctx, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	other, err := store.CreateDashboard(ctx, &api.CreateDashboardRequest{Name: "Kept, not default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recreated, isNew, err := store.GetOrCreateDefaultDashboard(ctx)
+	if err != nil || !isNew || recreated.ID == created.ID || recreated.ID == other.ID {
+		t.Errorf("after deleting the default = %+v, %v, %v", recreated, isNew, err)
+	}
+	if dashboards, _ := store.GetDashboards(ctx); len(dashboards) != 2 {
+		t.Errorf("dashboards = %d, want the kept one and the new default", len(dashboards))
+	}
+}
+
+// Updating a widget's title keeps its config; a config replaces it whole
+func TestUpdateWidget_KeepsConfigWithoutOne(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	dashboard, err := store.CreateDashboard(ctx, &api.CreateDashboardRequest{Name: "D"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	widget, err := store.CreateWidget(ctx, dashboard.ID, &api.CreateWidgetRequest{
+		WidgetType: "metric_chart", Title: "Cost", GridColumn: 1, GridRow: 1,
+		Config: api.WidgetConfig{MetricName: "claude_code.cost.usage", Service: "claude-code"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := store.UpdateWidget(ctx, dashboard.ID, widget.ID, &api.UpdateWidgetRequest{Title: "Spend", RowSpan: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Title != "Spend" || updated.RowSpan != 2 || updated.ColSpan != 1 ||
+		updated.Config.MetricName != "claude_code.cost.usage" || updated.Config.Service != "claude-code" {
+		t.Errorf("updated = %+v", updated)
+	}
+	updated, err = store.UpdateWidget(ctx, dashboard.ID, widget.ID, &api.UpdateWidgetRequest{Config: &api.WidgetConfig{MetricName: "other"}})
+	if err != nil || updated.Config != (api.WidgetConfig{MetricName: "other"}) || updated.Title != "Spend" {
+		t.Errorf("after config update = %+v, %v", updated, err)
+	}
+	if _, err := store.UpdateWidget(ctx, dashboard.ID, "missing", &api.UpdateWidgetRequest{Title: "x"}); !errors.Is(err, ErrWidgetNotFound) {
+		t.Errorf("missing widget: %v", err)
 	}
 }

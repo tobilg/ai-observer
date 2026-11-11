@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/tobilg/ai-observer/internal/api"
 )
@@ -68,28 +69,53 @@ func (s *DuckDBStore) TraceSpansPage(ctx context.Context, traceID string, page P
 // traceOverview returns the overview of all spans of a trace, as trace lists
 // show it, or nil when the trace has no spans
 func (s *DuckDBStore) traceOverview(ctx context.Context, traceID string) (*api.TraceOverview, error) {
-	o := api.TraceOverview{ID: traceID, Kind: api.TraceKindOTelTrace, TraceID: traceID}
-	var start sql.NullTime
-	var duration sql.NullInt64
-	var rootSpanID, rootSpan, service sql.NullString
-	var failed, ok int
-	err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*), MIN(Timestamp),
+	overviews, err := s.traceOverviews(ctx, []string{traceID})
+	if err != nil {
+		return nil, err
+	}
+	return overviews[traceID], nil
+}
+
+// traceOverviews returns the overviews of the traces with the given IDs,
+// each over all of its spans (looked up by idx_traces_trace_id_v2), by trace
+// ID; traces without spans are missing
+func (s *DuckDBStore) traceOverviews(ctx context.Context, traceIDs []string) (map[string]*api.TraceOverview, error) {
+	overviews := make(map[string]*api.TraceOverview, len(traceIDs))
+	if len(traceIDs) == 0 {
+		return overviews, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT TraceId, COUNT(*), MIN(Timestamp),
 			MAX(epoch_ns(Timestamp) + COALESCE(Duration, 0)) - MIN(epoch_ns(Timestamp)),
 			COUNT(*) FILTER (WHERE StatusCode = 'ERROR'), COUNT(*) FILTER (WHERE StatusCode = 'OK'),
-			arg_min(SpanId, Timestamp), arg_min(SpanName, Timestamp), arg_min(ServiceName, Timestamp)
+			arg_min(SpanId, Timestamp), arg_min(SpanName, Timestamp), arg_min(ServiceName, Timestamp),
+			`+traceSessionExpr("SessionId")+`
 		FROM otel_traces
-		WHERE TraceId = ?`, traceID).Scan(&o.SpanCount, &start, &duration, &failed, &ok, &rootSpanID, &rootSpan, &service)
+		WHERE TraceId IN (?`+strings.Repeat(", ?", len(traceIDs)-1)+`)
+		GROUP BY TraceId`, stringArgs(traceIDs)...)
 	if err != nil {
-		return nil, fmt.Errorf("querying trace overview: %w", err)
+		return nil, fmt.Errorf("querying trace overviews: %w", err)
 	}
-	if o.SpanCount == 0 {
-		return nil, nil
+	defer rows.Close()
+	for rows.Next() {
+		o := api.TraceOverview{Kind: api.TraceKindOTelTrace}
+		var duration sql.NullInt64
+		var rootSpanID, rootSpan, service, sessionID sql.NullString
+		var failed, ok int
+		if err := rows.Scan(&o.TraceID, &o.SpanCount, &o.StartTime, &duration, &failed, &ok,
+			&rootSpanID, &rootSpan, &service, &sessionID); err != nil {
+			return nil, fmt.Errorf("scanning trace overview: %w", err)
+		}
+		o.ID, o.Duration = o.TraceID, duration.Int64
+		o.RootSpanID, o.RootSpan, o.ServiceName = rootSpanID.String, rootSpan.String, service.String
+		o.SessionID = sessionID.String
+		o.Status = TraceStatus(failed, ok)
+		overviews[o.TraceID] = &o
 	}
-	o.StartTime, o.Duration = start.Time, duration.Int64
-	o.RootSpanID, o.RootSpan, o.ServiceName = rootSpanID.String, rootSpan.String, service.String
-	o.Status = TraceStatus(failed, ok)
-	return &o, nil
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating trace overviews: %w", err)
+	}
+	return overviews, nil
 }
 
 // TraceStatus returns the status of a trace with this many failed and
@@ -97,11 +123,11 @@ func (s *DuckDBStore) traceOverview(ctx context.Context, traceID string) (*api.T
 func TraceStatus(failed, ok int) string {
 	switch {
 	case failed > 0:
-		return "ERROR"
+		return api.TraceStatusError
 	case ok > 0:
-		return "OK"
+		return api.TraceStatusOK
 	default:
-		return "UNSET"
+		return api.TraceStatusUnset
 	}
 }
 

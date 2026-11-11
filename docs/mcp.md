@@ -84,19 +84,25 @@ All tools are read-only. Time arguments (`from`, `to`) accept an RFC 3339 time (
 
 | Tool | What it returns | Main arguments (defaults) |
 |------|-----------------|---------------------------|
-| `search_conversations` | Sessions with a prompt, reply or tool call that contains all words of the query, in any order, newest match first, with a snippet around the match | `query`, `tool`, `from` (30 days before `to`), `to` (now), `limit` (10, max 50) |
-| `list_sessions` | Sessions with activity in a range, most recently active first: tool, model, start, last activity, message count | `tool`, `from` (7 days), `to`, `limit` (20, max 100), `cursor` |
-| `get_transcript` | A session's messages in order: role, content, model, tool name, input and output, tokens, cost | `session_id`, `roles` (all), `limit` (50, max 200), `cursor`, `max_chars` per text (2000, max 20000) |
-| `usage_summary` | Tokens by type and cost in USD; `unpriced_models` lists models with tokens but no price (no cost) | `from` (7 days), `to`, `group_by`: `tool`, `model`, `day` (UTC) or `repository`, `tool` |
+| `search_conversations` | Sessions with a prompt, reply or tool call that contains all words of the query, in any order, newest match first, with a snippet around the match, and each session's title, repository, branch, cost and tokens where known | `query`, `tool`, `from` (30 days before `to`), `to` (now), `limit` (10, max 50) |
+| `list_sessions` | Sessions with activity in a range, most recently active first: tool, model, start, last activity, message count (as in the transcript), title (the first prompt), repository, branch, cost and tokens where known | `tool`, `from` (7 days), `to`, `limit` (20, max 100), `cursor` |
+| `get_transcript` | A session's messages in order: role, content, model, tool name, input and output, tokens, cost; the session's `title` and `totals` over all of its messages (cost, input, output and cache tokens, user and assistant messages, tool calls and errors) | `session_id`, `roles` (all), `search` (words and "quoted phrases"), `limit` (50, max 200), `cursor`, `max_chars` per text (2000, max 20000) |
+| `usage_summary` | Tokens by type and cost in USD; `unpriced_models` lists models with tokens but no price (no cost) | `from` (7 days), `to`, `group_by`: `tool`, `model`, `day` or `repository`, `tool`, `timezone` (days of `group_by` `day`; default: the server's time zone) |
 | `search_logs` | Log records, newest first | `query`, `tool`, `severity`, `trace_id`, `from` (24 hours), `to`, `limit` (20, max 100), `cursor` |
 | `list_traces` | Traces, newest first: root span, duration, span count, status. Leaves out Codex's background traces (internal requests outside a conversation, automatic approval reviews) | `query`, `tool`, `from` (24 hours), `to`, `limit`, `cursor`, `include_background` (false) |
 | `get_trace` | A trace's spans as a tree (depth first): name, start, duration, status, attributes. Of traces with more than 1,000 spans, the tree of the first 1,000 by start time | `id`, `kind` (`otel_trace` or `codex_operation`), `max_spans` (200), `max_chars` per attribute (300) |
 | `list_metric_names` | Stored metric names | `tool` |
-| `query_metrics` | A metric as time buckets or totals per series (service, type, model); cumulative counters become increases | `name`, `tool`, `from` (24 hours), `to`, `aggregate`, `interval` (about 50 buckets) |
+| `query_metrics` | A metric as time buckets or totals per series (service and token type, and model for totals; or the `group_by` attributes); cumulative counters become increases; histograms (durations, sizes) show their average or the `stat` asked for | `name`, `tool`, `from` (24 hours), `to`, `aggregate`, `interval` (`5m`, `1h`, `1d`, `1w`; about 50 buckets), `group_by` (up to 2 attributes, such as `["model"]`), `filters` (exact attribute values, such as `{"model": "claude-sonnet-5-5"}`), `stat` (`avg`, `sum`, `count`, `min`, `max`, `p50`, `p90`, `p95`, `p99`), `timezone` (default: the server's) |
 
 Results are JSON (also as structured content with an output schema). Long text is cut and marked (`… [1234 more characters]`, `"truncated": true`), so a single result does not fill the agent's context. Invalid arguments return a tool error that explains what to pass instead.
 
-`usage_summary` reports what AI Observer recorded: sessions that were both imported from files and sent over OTLP count twice, and `repository` is known for imported and watched Claude Code and Codex sessions only (others show `unknown`). `tokens` lists every token type; `total_tokens` counts each token once, so it leaves out the types that another one includes: cached input of Codex, Gemini and GitHub Copilot and Codex's cache writes (part of their input), and Codex reasoning tokens (part of its output).
+`usage_summary` reports what AI Observer recorded: a Claude Code, Codex or Gemini CLI request recorded both over OTLP and in its session file counts once (see [Sessions also sent over OTLP](import.md#sessions-also-sent-over-otlp)), and `repository` is known for imported and watched Claude Code and Codex sessions only (others show `unknown`). `tokens` lists every token type; `total_tokens` counts each token once, so it leaves out the types that another one includes: cached input of Codex, Gemini and GitHub Copilot and Codex's cache writes (part of their input), and Codex reasoning tokens (part of its output).
+
+`get_transcript` shows a message recorded both over OTLP and in the session file once (Claude Code, Codex and Gemini CLI). With `search`, it returns only the messages that contain all terms (combinable with `roles`), each with its `position` in the whole transcript; passing a position as `cursor`, without `roles` or `search`, reads the messages from there, around a match.
+
+`search_logs` and `list_traces` find `query` as a case-insensitive substring of log bodies, span names and attribute values; a query with quotes, backslashes, line breaks, `<`, `>` or `&` reads every attribute value in the range and takes 1.4 to 2.4 times as long as one with plain words.
+
+`query_metrics` reports the `timezone`, `metric_type`, `stat` and the bucket `interval` it used; buckets of a histogram average, extreme or percentile, or of a gauge, that have no points are left out. Percentiles are estimated from the histogram buckets.
 
 ### Searching conversations
 
@@ -129,7 +135,7 @@ Hosts that render [MCP Apps](https://modelcontextprotocol.io/docs/extensions/app
 | `usage_summary` | Total cost and tokens; bars per tool, model or repository, or daily bars stacked by tool. Switch between cost and tokens, and between groupings (this calls the tool again for the same range) |
 | `query_metrics` | The metric over time (bars for counters, lines for other metrics), or bars of the totals with `aggregate` |
 | `get_trace` | The trace page's waterfall; click a span for its attributes and error |
-| `list_sessions` | Sessions per tool and a table of them; *Load more* reads the next page |
+| `list_sessions` | Sessions per tool, the total cost, and a table of them with their title, repository and branch, and cost; *Load more* reads the next page |
 
 **Which agents show it:** hosts that support MCP Apps and run on your machine, such as the Codex app (with `apps = true` and `enable_mcp_apps = true` under `[features]` in `~/.codex/config.toml`), VS Code with GitHub Copilot (turn on the experimental setting `chat.mcp.apps.enabled`), Cursor and Goose; see the [client matrix](https://modelcontextprotocol.io/extensions/client-matrix). The host must reach the endpoint: one that connects from the cloud cannot reach `127.0.0.1`. Claude Code, Codex CLI, Gemini CLI and OpenCode don't render MCP Apps; they get the same results as before, and nothing of the view enters their context.
 

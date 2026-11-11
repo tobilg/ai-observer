@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from 'react'
+import { useState } from 'react'
 import { toast } from 'sonner'
 import {
   Sheet,
@@ -10,133 +10,123 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Button } from '@/components/ui/button'
-import { Select } from '@/components/ui/select'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
-import { Badge } from '@/components/ui/badge'
-import { Plus, Layers, BarChart3 } from 'lucide-react'
+import { Plus, Save } from 'lucide-react'
 import { useDashboardStore } from '@/stores/dashboardStore'
 import { useShallow } from 'zustand/react/shallow'
-import { api } from '@/lib/api'
+import { useAddWidget, useUpdateWidget } from '@/hooks/useDashboardMutations'
 import {
   WIDGET_DEFINITIONS,
+  WIDGET_TYPES,
   type CreateWidgetRequest,
+  type DashboardWidget,
+  type UpdateWidgetRequest,
   type WidgetDefinition,
 } from '@/types/dashboard'
-import { getMetricMetadata, serviceFilterOptions } from '@/lib/metricMetadata'
-import { groupMetricsBySource } from '@/lib/metricGroups'
-import { nextFreePosition, widgetFitError } from '@/lib/dashboardGrid'
-import { MetricOptions } from '@/components/common/metric-options'
+import { getMetricMetadata } from '@/lib/metricMetadata'
+import { GRID_COLUMNS, nextFreePosition, widgetFitError, type GridPosition } from '@/lib/dashboardGrid'
+import { errorText } from '@/lib/errors'
+import { cn } from '@/lib/utils'
+import { MetricWidgetFields } from './MetricWidgetFields'
+import {
+  metricFieldsFromConfig,
+  metricWidgetConfig,
+  useResolvedMetric,
+  type MetricFieldsValue,
+} from './metricWidgetConfig'
 
-export function AddWidgetPanel() {
-  const {
-    isAddPanelOpen,
-    setAddPanelOpen,
-    widgets,
-    addWidget,
-    targetPosition,
-    setTargetPosition,
-  } = useDashboardStore(
+// The server limits titles to 255 characters
+const MAX_TITLE_LENGTH = 255
+const SIZE_OPTIONS = [1, 2, 3, 4]
+
+function isMetricWidget(widgetType: string): boolean {
+  return widgetType === WIDGET_TYPES.METRIC_VALUE || widgetType === WIDGET_TYPES.METRIC_CHART
+}
+
+function metricTitle(metric: string): string {
+  return getMetricMetadata(metric)?.displayName || metric
+}
+
+function columnsLabel(n: number): string {
+  return `${n} column${n > 1 ? 's' : ''} wide`
+}
+
+interface AddWidgetPanelProps {
+  dashboardId: string
+  widgets: DashboardWidget[]
+}
+
+/**
+ * The widget panel of edit mode: adds a widget (at the clicked empty cell or
+ * the next free position), or changes one (title, metric settings, size).
+ */
+export function AddWidgetPanel({ dashboardId, widgets }: AddWidgetPanelProps) {
+  const { isAddPanelOpen, targetPosition, editingWidgetId, closePanel } = useDashboardStore(
     useShallow((s) => ({
       isAddPanelOpen: s.isAddPanelOpen,
-      setAddPanelOpen: s.setAddPanelOpen,
-      widgets: s.widgets,
-      addWidget: s.addWidget,
       targetPosition: s.targetPosition,
-      setTargetPosition: s.setTargetPosition,
+      editingWidgetId: s.editingWidgetId,
+      closePanel: s.closePanel,
     }))
   )
-  const [services, setServices] = useState<string[]>([])
-  const [metricNames, setMetricNames] = useState<string[]>([])
-  const [selectedService, setSelectedService] = useState<string>('')
-  const [selectedMetric, setSelectedMetric] = useState<string>('')
-  const [selectedWidgetType, setSelectedWidgetType] = useState<string>('')
-  const [selectedBreakdown, setSelectedBreakdown] = useState<string>('')
-  const [selectedBreakdownValue, setSelectedBreakdownValue] = useState<string>('')
-  const [breakdownValues, setBreakdownValues] = useState<string[]>([])
-  const [loadingBreakdownValues, setLoadingBreakdownValues] = useState(false)
-  const [chartStacked, setChartStacked] = useState(true)
-  const [adding, setAdding] = useState(false)
+  const editing = editingWidgetId ? widgets.find((w) => w.id === editingWidgetId) : undefined
+  // Owned here, not by the form: the form closes before the request ends,
+  // and the callbacks of an unmounted caller do not run
+  const updateWidget = useUpdateWidget(dashboardId)
+  const saveWidget = (widgetId: string, changes: UpdateWidgetRequest) =>
+    updateWidget.mutate(
+      { widgetId, changes },
+      { onError: (error) => toast.error("Couldn't save the widget", { description: errorText(error) }) }
+    )
 
-  // Get metadata for the selected metric
-  const selectedMetadata = useMemo(
-    () => (selectedMetric ? getMetricMetadata(selectedMetric) : null),
-    [selectedMetric]
+  return (
+    <Sheet open={isAddPanelOpen} onOpenChange={(open) => !open && closePanel()}>
+      <SheetContent className="w-full sm:w-135 sm:max-w-[calc(100vw-2rem)] p-6 flex flex-col">
+        <SheetHeader className="px-0 pb-4">
+          <SheetTitle>{editingWidgetId ? 'Edit Widget' : 'Add Widget'}</SheetTitle>
+          <SheetDescription>
+            {editingWidgetId ? 'Change the title, data and size of this widget' : 'Choose a widget to add to your dashboard'}
+          </SheetDescription>
+        </SheetHeader>
+
+        {editing ? (
+          // Keyed: the form starts from the widget's stored settings
+          <EditWidgetForm key={editing.id} widget={editing} widgets={widgets} onSave={saveWidget} onDone={closePanel} />
+        ) : editingWidgetId ? (
+          <p className="text-sm text-muted-foreground">This widget no longer exists.</p>
+        ) : (
+          <AddWidgetForm
+            dashboardId={dashboardId}
+            widgets={widgets}
+            targetPosition={targetPosition}
+            onDone={closePanel}
+          />
+        )}
+      </SheetContent>
+    </Sheet>
   )
+}
 
-  // Group metric names by source
-  const groupedMetrics = useMemo(
-    () => groupMetricsBySource(metricNames, selectedService),
-    [metricNames, selectedService]
-  )
+// ============================================================================
+// Adding
+// ============================================================================
 
-  const handleMetricChange = useCallback((metricName: string) => {
-    setSelectedMetric(metricName)
-    setSelectedBreakdown('')
-    setSelectedBreakdownValue('')
-    setBreakdownValues([])
-  }, [])
+interface AddWidgetFormProps {
+  dashboardId: string
+  widgets: DashboardWidget[]
+  targetPosition: GridPosition | null
+  onDone: () => void
+}
 
-  const handleBreakdownChange = useCallback((breakdown: string) => {
-    setSelectedBreakdown(breakdown)
-    setSelectedBreakdownValue('')
-    setBreakdownValues([])
-  }, [])
-
-  // Fetch breakdown values when attribute is selected
-  useEffect(() => {
-    if (!selectedMetric || !selectedBreakdown) {
-      return
-    }
-
-    const fetchBreakdownValues = async () => {
-      setLoadingBreakdownValues(true)
-      try {
-        const response = await api.getBreakdownValues({
-          name: selectedMetric,
-          attribute: selectedBreakdown,
-          service: selectedService || undefined,
-        })
-        setBreakdownValues(response.values || [])
-      } catch (error) {
-        console.error('Failed to fetch breakdown values:', error)
-        setBreakdownValues([])
-      } finally {
-        setLoadingBreakdownValues(false)
-      }
-    }
-
-    fetchBreakdownValues()
-  }, [selectedMetric, selectedBreakdown, selectedService])
-
-  // Fetch services on mount
-  useEffect(() => {
-    const fetchServices = async () => {
-      try {
-        const data = await api.getServices()
-        setServices(data.services ?? [])
-      } catch (error) {
-        console.error('Failed to fetch services:', error)
-      }
-    }
-    fetchServices()
-  }, [])
-
-  // Fetch metric names when service changes
-  useEffect(() => {
-    const fetchMetricNames = async () => {
-      try {
-        const data = await api.getMetricNames(selectedService || undefined)
-        setMetricNames(data.names ?? [])
-        if (data.names?.length > 0 && !selectedMetric) {
-          handleMetricChange(data.names[0])
-        }
-      } catch (error) {
-        console.error('Failed to fetch metric names:', error)
-      }
-    }
-    fetchMetricNames()
-  }, [selectedService, selectedMetric, handleMetricChange])
+function AddWidgetForm({ dashboardId, widgets, targetPosition, onDone }: AddWidgetFormProps) {
+  const addWidget = useAddWidget(dashboardId)
+  const [fields, setFields] = useState<MetricFieldsValue>(() => metricFieldsFromConfig(undefined))
+  const [widgetType, setWidgetType] = useState<string>('')
+  const { metric } = useResolvedMetric(fields)
 
   // The position of a new widget, or null (after telling why) when the chosen
   // position has too few free columns
@@ -152,319 +142,255 @@ export function AddWidgetPanel() {
     return targetPosition
   }
 
-  const handleAddBuiltinWidget = async (definition: WidgetDefinition) => {
-    const position = placeWidget(definition.defaultColSpan)
-    if (!position) return
-
-    setAdding(true)
-    try {
-      const req: CreateWidgetRequest = {
-        widgetType: definition.type,
-        title: definition.label,
-        gridColumn: position.gridColumn,
-        gridRow: position.gridRow,
-        colSpan: definition.defaultColSpan,
-        rowSpan: definition.defaultRowSpan,
-      }
-      await addWidget(req)
-      setTargetPosition(null)
-      setAddPanelOpen(false)
-    } catch (error) {
-      console.error('Failed to add widget:', error)
-      toast.error('Failed to add widget')
-    } finally {
-      setAdding(false)
-    }
+  const add = (req: CreateWidgetRequest) => {
+    addWidget.mutate(req, {
+      onSuccess: onDone,
+      onError: (error) => toast.error('Failed to add widget', { description: errorText(error) }),
+    })
   }
 
-  const handleAddMetricWidget = async () => {
-    if (!selectedMetric || !selectedWidgetType) return
-
-    const definition = WIDGET_DEFINITIONS.find((d) => d.type === selectedWidgetType)
-    if (!definition) return
-
+  const handleAddBuiltinWidget = (definition: WidgetDefinition) => {
     const position = placeWidget(definition.defaultColSpan)
     if (!position) return
+    add({
+      widgetType: definition.type,
+      title: definition.label,
+      gridColumn: position.gridColumn,
+      gridRow: position.gridRow,
+      colSpan: definition.defaultColSpan,
+      rowSpan: definition.defaultRowSpan,
+    })
+  }
 
-    setAdding(true)
-    try {
-      // Use display name as title if available
-      const title = selectedMetadata?.displayName || selectedMetric
-      const req: CreateWidgetRequest = {
-        widgetType: selectedWidgetType,
-        title,
-        gridColumn: position.gridColumn,
-        gridRow: position.gridRow,
-        colSpan: definition.defaultColSpan,
-        rowSpan: definition.defaultRowSpan,
-        config: {
-          service: selectedService || undefined,
-          metricName: selectedMetric,
-          breakdownAttribute: selectedBreakdown || undefined,
-          breakdownValue: selectedWidgetType === 'metric_value' && selectedBreakdownValue
-            ? selectedBreakdownValue
-            : undefined,
-          chartStacked: selectedWidgetType === 'metric_chart' ? chartStacked : undefined,
-        },
-      }
-      await addWidget(req)
-      setTargetPosition(null)
-      setAddPanelOpen(false)
-      // Reset selections
-      setSelectedWidgetType('')
-      setSelectedBreakdown('')
-      setSelectedBreakdownValue('')
-      setBreakdownValues([])
-      setChartStacked(true)
-    } catch (error) {
-      console.error('Failed to add widget:', error)
-      toast.error('Failed to add widget')
-    } finally {
-      setAdding(false)
-    }
+  const handleAddMetricWidget = () => {
+    const definition = WIDGET_DEFINITIONS.find((d) => d.type === widgetType)
+    if (!metric || !definition) return
+    const position = placeWidget(definition.defaultColSpan)
+    if (!position) return
+    add({
+      widgetType,
+      title: metricTitle(metric),
+      gridColumn: position.gridColumn,
+      gridRow: position.gridRow,
+      colSpan: definition.defaultColSpan,
+      rowSpan: definition.defaultRowSpan,
+      config: metricWidgetConfig(widgetType, fields, metric),
+    })
   }
 
   const builtinWidgets = WIDGET_DEFINITIONS.filter((d) => d.category === 'builtin')
   const metricWidgets = WIDGET_DEFINITIONS.filter((d) => d.category === 'metrics')
+  const adding = addWidget.isPending
 
-  const handleOpenChange = (open: boolean) => {
-    setAddPanelOpen(open)
-    if (!open) {
-      setTargetPosition(null)
-    }
+  return (
+    <Tabs defaultValue="metrics" className="flex-1 flex flex-col overflow-hidden">
+      <TabsList className="grid w-full grid-cols-2">
+        <TabsTrigger value="metrics">Metrics</TabsTrigger>
+        <TabsTrigger value="builtin">Built-in</TabsTrigger>
+      </TabsList>
+
+      <TabsContent value="builtin" className="flex-1 mt-4 overflow-hidden">
+        <ScrollArea className="h-full">
+          <div className="space-y-3 pr-4">
+            {builtinWidgets.map((definition) => (
+              <Card key={definition.type} className="hover:bg-accent/50 transition-colors">
+                <CardHeader className="p-4 pb-2">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-base">{definition.label}</CardTitle>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={adding}
+                      onClick={() => handleAddBuiltinWidget(definition)}
+                      aria-label={`Add ${definition.label}`}
+                    >
+                      <Plus className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <CardDescription className="text-xs">{definition.description}</CardDescription>
+                </CardHeader>
+                <CardContent className="p-4 pt-0">
+                  <p className="text-xs text-muted-foreground">{columnsLabel(definition.defaultColSpan)}</p>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </ScrollArea>
+      </TabsContent>
+
+      <TabsContent value="metrics" className="flex-1 mt-4 overflow-auto px-1">
+        <div className="space-y-4">
+          <MetricWidgetFields idPrefix="add-widget" widgetType={widgetType} value={fields} onChange={setFields} />
+
+          <Separator />
+
+          <div className="space-y-3">
+            <span id="add-widget-display-type" className="text-sm font-medium">
+              Display Type
+            </span>
+            <div role="group" aria-labelledby="add-widget-display-type" className="space-y-3">
+              {metricWidgets.map((definition) => (
+                <button
+                  key={definition.type}
+                  type="button"
+                  aria-pressed={widgetType === definition.type}
+                  className={cn(
+                    'block w-full text-left cursor-pointer rounded-lg border-2 p-4 transition-colors',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    widgetType === definition.type ? 'border-primary bg-accent/50' : 'border-border hover:bg-accent/30'
+                  )}
+                  onClick={() => setWidgetType(definition.type)}
+                >
+                  <span className="block font-medium">{definition.label}</span>
+                  <span className="block text-xs text-muted-foreground mt-1">{definition.description}</span>
+                  <span className="block text-xs text-muted-foreground mt-1">{columnsLabel(definition.defaultColSpan)}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <Button className="w-full" disabled={!metric || !widgetType || adding} onClick={handleAddMetricWidget}>
+            <Plus className="h-4 w-4 mr-2" />
+            Add Widget
+          </Button>
+        </div>
+      </TabsContent>
+    </Tabs>
+  )
+}
+
+// ============================================================================
+// Editing
+// ============================================================================
+
+interface EditWidgetFormProps {
+  widget: DashboardWidget
+  widgets: DashboardWidget[]
+  // Stores the changes (shown at once, rolled back if the server refuses them)
+  onSave: (widgetId: string, changes: UpdateWidgetRequest) => void
+  onDone: () => void
+}
+
+function EditWidgetForm({ widget, widgets, onSave, onDone }: EditWidgetFormProps) {
+  const metricWidget = isMetricWidget(widget.widgetType)
+  const [title, setTitle] = useState(widget.title)
+  const [titleEdited, setTitleEdited] = useState(false)
+  const [fields, setFields] = useState<MetricFieldsValue>(() => metricFieldsFromConfig(widget.config))
+  const [colSpan, setColSpan] = useState(widget.colSpan)
+  const [rowSpan, setRowSpan] = useState(widget.rowSpan)
+  const { metric } = useResolvedMetric(fields)
+
+  // A title not typed by hand follows the chosen metric
+  const metricChanged = metricWidget && metric !== (widget.config?.metricName ?? '')
+  const shownTitle = metricChanged && !titleEdited && metric ? metricTitle(metric) : title
+
+  // The widget stays where it is; the other widgets must leave room
+  const others = widgets.filter((w) => w.id !== widget.id)
+  const fitError = widgetFitError(others, { gridRow: widget.gridRow, gridColumn: widget.gridColumn }, colSpan, rowSpan)
+  const titleError = !shownTitle.trim()
+    ? 'Enter a title'
+    : shownTitle.length > MAX_TITLE_LENGTH
+      ? `Use at most ${MAX_TITLE_LENGTH} characters`
+      : null
+  const canSave = !fitError && !titleError && (!metricWidget || Boolean(metric))
+
+  const save = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!canSave) return
+    onSave(widget.id, {
+      title: shownTitle.trim(),
+      colSpan,
+      rowSpan,
+      // The whole configuration: a sent config replaces the stored one
+      config: metricWidget ? metricWidgetConfig(widget.widgetType, fields, metric) : (widget.config ?? {}),
+    })
+    onDone()
   }
 
   return (
-    <Sheet open={isAddPanelOpen} onOpenChange={handleOpenChange}>
-      <SheetContent className="w-100 sm:w-135 p-6 flex flex-col">
-        <SheetHeader className="px-0 pb-4">
-          <SheetTitle>Add Widget</SheetTitle>
-          <SheetDescription>
-            Choose a widget to add to your dashboard
-          </SheetDescription>
-        </SheetHeader>
+    <form onSubmit={save} className="flex-1 overflow-auto px-1 space-y-4">
+      <div className="space-y-2">
+        <Label htmlFor="edit-widget-title">Title</Label>
+        <Input
+          id="edit-widget-title"
+          value={shownTitle}
+          maxLength={MAX_TITLE_LENGTH}
+          onChange={(e) => {
+            setTitle(e.target.value)
+            setTitleEdited(true)
+          }}
+          aria-invalid={Boolean(titleError)}
+          aria-describedby={titleError ? 'edit-widget-title-error' : undefined}
+        />
+        {titleError && (
+          <p id="edit-widget-title-error" className="text-xs text-destructive">
+            {titleError}
+          </p>
+        )}
+      </div>
 
-        <Tabs defaultValue="metrics" className="flex-1 flex flex-col overflow-hidden">
-          <TabsList className="grid w-full grid-cols-2">
-            <TabsTrigger value="metrics">Metrics</TabsTrigger>
-            <TabsTrigger value="builtin">Built-in</TabsTrigger>
-          </TabsList>
+      {metricWidget && (
+        <MetricWidgetFields idPrefix="edit-widget" widgetType={widget.widgetType} value={fields} onChange={setFields} />
+      )}
 
-          <TabsContent value="builtin" className="flex-1 mt-4 overflow-hidden">
-            <ScrollArea className="h-full">
-              <div className="space-y-3 pr-4">
-                {builtinWidgets.map((definition) => (
-                  <Card key={definition.type} className="cursor-pointer hover:bg-accent/50 transition-colors">
-                    <CardHeader className="p-4 pb-2">
-                      <div className="flex items-center justify-between">
-                        <CardTitle className="text-base">{definition.label}</CardTitle>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          disabled={adding}
-                          onClick={() => handleAddBuiltinWidget(definition)}
-                        >
-                          <Plus className="h-4 w-4" />
-                        </Button>
-                      </div>
-                      <CardDescription className="text-xs">
-                        {definition.description}
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent className="p-4 pt-0">
-                      <p className="text-xs text-muted-foreground">
-                        {definition.defaultColSpan} column{definition.defaultColSpan > 1 ? 's' : ''} wide
-                      </p>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            </ScrollArea>
-          </TabsContent>
+      <Separator />
 
-          <TabsContent value="metrics" className="flex-1 mt-4 overflow-auto px-1">
-            <div className="space-y-4">
-              {/* Service Filter */}
-              <div>
-                <label className="text-sm font-medium mb-2 block">Service (optional)</label>
-                <Select
-                  value={selectedService}
-                  onChange={(e) => setSelectedService(e.target.value)}
-                >
-                  <option value="">All Services</option>
-                  {serviceFilterOptions(services).map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </Select>
-              </div>
+      <fieldset className="space-y-2">
+        <legend className="text-sm font-medium">Size</legend>
+        <div className="flex flex-wrap gap-4">
+          <div className="space-y-1">
+            <Label htmlFor="edit-widget-width" className="text-xs text-muted-foreground">
+              Width
+            </Label>
+            <NativeSelect
+              id="edit-widget-width"
+              className="h-10"
+              value={String(colSpan)}
+              onChange={(e) => setColSpan(Number(e.target.value))}
+              aria-invalid={Boolean(fitError)}
+              aria-describedby={fitError ? 'edit-widget-size-error' : undefined}
+            >
+              {SIZE_OPTIONS.filter((n) => n <= GRID_COLUMNS).map((n) => (
+                <NativeSelectOption key={n} value={n}>
+                  {n} column{n > 1 ? 's' : ''}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="edit-widget-height" className="text-xs text-muted-foreground">
+              Height
+            </Label>
+            <NativeSelect
+              id="edit-widget-height"
+              className="h-10"
+              value={String(rowSpan)}
+              onChange={(e) => setRowSpan(Number(e.target.value))}
+              aria-invalid={Boolean(fitError)}
+              aria-describedby={fitError ? 'edit-widget-size-error' : undefined}
+            >
+              {SIZE_OPTIONS.map((n) => (
+                <NativeSelectOption key={n} value={n}>
+                  {n} row{n > 1 ? 's' : ''}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+          </div>
+        </div>
+        <p id="edit-widget-size-error" role={fitError ? 'alert' : undefined} className={cn('text-xs', fitError ? 'text-destructive' : 'text-muted-foreground')}>
+          {fitError ?? 'The widget keeps its position; it grows to the right and down.'}
+        </p>
+      </fieldset>
 
-              {/* Metric Name */}
-              <div>
-                <label className="text-sm font-medium mb-2 block">Metric</label>
-                <Select
-                  value={selectedMetric}
-                  onChange={(e) => handleMetricChange(e.target.value)}
-                >
-                  <option value="">Select a metric</option>
-                  <MetricOptions groups={groupedMetrics} />
-                </Select>
-              </div>
-
-              {/* Metric Info */}
-              {selectedMetadata && (
-                <Card className="bg-muted/50">
-                  <CardContent className="p-3 space-y-2">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium text-sm">{selectedMetadata.displayName}</span>
-                      {selectedMetadata.unit.displayUnit && (
-                        <Badge variant="outline" className="text-xs">
-                          {selectedMetadata.unit.displayUnit}
-                        </Badge>
-                      )}
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      {selectedMetadata.description}
-                    </p>
-                  </CardContent>
-                </Card>
-              )}
-
-              {/* Breakdown Attribute (for metric widgets with breakdowns) */}
-              {selectedMetadata?.breakdowns && selectedMetadata.breakdowns.length > 0 &&
-               (selectedWidgetType === 'metric_chart' || selectedWidgetType === 'metric_value') && (
-                <>
-                  <div>
-                    <label className="text-sm font-medium mb-2 block">
-                      Breakdown By {selectedWidgetType === 'metric_value' ? '' : '(optional)'}
-                    </label>
-                    <Select
-                      value={selectedBreakdown}
-                      onChange={(e) => handleBreakdownChange(e.target.value)}
-                    >
-                      <option value="">
-                        {selectedWidgetType === 'metric_value' ? 'Total (all values)' : 'Default (type)'}
-                      </option>
-                      {selectedMetadata.breakdowns.map((breakdown) => (
-                        <option key={breakdown.attributeKey} value={breakdown.attributeKey}>
-                          {breakdown.displayName}
-                        </option>
-                      ))}
-                    </Select>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {selectedWidgetType === 'metric_value'
-                        ? 'Select an attribute to filter by a specific value'
-                        : 'Choose which attribute to use for multi-series breakdown'}
-                    </p>
-                  </div>
-
-                  {/* Breakdown Value dropdown - only for metric_value when attribute is selected */}
-                  {selectedWidgetType === 'metric_value' && selectedBreakdown && (
-                    <div>
-                      <label className="text-sm font-medium mb-2 block">Value</label>
-                      <Select
-                        value={selectedBreakdownValue}
-                        onChange={(e) => setSelectedBreakdownValue(e.target.value)}
-                        disabled={loadingBreakdownValues}
-                      >
-                        <option value="">
-                          {loadingBreakdownValues ? 'Loading...' : 'Select a value'}
-                        </option>
-                        {breakdownValues.map((value) => {
-                          // Use knownValues mapping if available
-                          const breakdown = selectedMetadata.breakdowns?.find(
-                            (b) => b.attributeKey === selectedBreakdown
-                          )
-                          const displayValue = breakdown?.knownValues?.[value] || value
-                          return (
-                            <option key={value} value={value}>
-                              {displayValue}
-                            </option>
-                          )
-                        })}
-                      </Select>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Show only this specific value
-                      </p>
-                    </div>
-                  )}
-                </>
-              )}
-
-              {/* Chart Mode (only for chart widgets) */}
-              {selectedWidgetType === 'metric_chart' && (
-                <div>
-                  <label className="text-sm font-medium mb-2 block">Chart Mode</label>
-                  <div className="flex border rounded-md w-fit">
-                    <Button
-                      type="button"
-                      variant={chartStacked ? "secondary" : "ghost"}
-                      size="sm"
-                      className="h-8 px-3 rounded-r-none gap-2"
-                      onClick={() => setChartStacked(true)}
-                    >
-                      <Layers className="h-4 w-4" />
-                      Stacked
-                    </Button>
-                    <Button
-                      type="button"
-                      variant={!chartStacked ? "secondary" : "ghost"}
-                      size="sm"
-                      className="h-8 px-3 rounded-l-none gap-2"
-                      onClick={() => setChartStacked(false)}
-                    >
-                      <BarChart3 className="h-4 w-4" />
-                      Grouped
-                    </Button>
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Choose how to display multiple series
-                  </p>
-                </div>
-              )}
-
-              <Separator />
-
-              {/* Widget Type Selection */}
-              <div className="space-y-4">
-                <label className="text-sm font-medium">Display Type</label>
-                <div className="space-y-3">
-                  {metricWidgets.map((definition) => (
-                    <div
-                      key={definition.type}
-                      className={`cursor-pointer rounded-lg border-2 p-4 transition-colors ${
-                        selectedWidgetType === definition.type
-                          ? 'border-primary bg-accent/50'
-                          : 'border-border hover:bg-accent/30'
-                      }`}
-                      onClick={() => setSelectedWidgetType(definition.type)}
-                    >
-                      <p className="font-medium">{definition.label}</p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        {definition.description}
-                      </p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        {definition.defaultColSpan} column{definition.defaultColSpan > 1 ? 's' : ''} wide
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Add Button */}
-              <Button
-                className="w-full"
-                disabled={!selectedMetric || !selectedWidgetType || adding}
-                onClick={handleAddMetricWidget}
-              >
-                <Plus className="h-4 w-4 mr-2" />
-                Add Widget
-              </Button>
-            </div>
-          </TabsContent>
-        </Tabs>
-      </SheetContent>
-    </Sheet>
+      <div className="flex gap-2 pt-2">
+        <Button type="button" variant="outline" className="flex-1" onClick={onDone}>
+          Cancel
+        </Button>
+        <Button type="submit" className="flex-1" disabled={!canSave}>
+          <Save className="h-4 w-4 mr-2" />
+          Save
+        </Button>
+      </div>
+    </form>
   )
 }

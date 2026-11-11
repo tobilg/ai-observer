@@ -7,6 +7,8 @@ import {
   metricLabel,
   metricTotals,
   sessionCounts,
+  sessionPlace,
+  sessionsCost,
   structuredOf,
   traceSpans,
   usageBars,
@@ -144,6 +146,21 @@ describe('metrics', () => {
     expect(chart.data.map((row) => row[input])).toEqual([1, 2])
   })
 
+  it('labels day buckets with their date in the zone of the result', () => {
+    // Midnight in Kolkata is 18:30 UTC the day before
+    const daily: MetricsResult = {
+      name: 'claude_code.cost.usage',
+      from: '2026-11-01T00:00:00Z',
+      to: '2026-11-04T00:00:00Z',
+      interval: '24h0m0s',
+      timezone: 'Asia/Kolkata',
+      series: [{ labels: { service: 'claude-code' }, points: [{ time: '2026-11-02T00:00:00+05:30', value: 3 }] }],
+    }
+    const expected = new Date('2026-11-02T00:00:00+05:30').toLocaleDateString([], { month: 'short', day: 'numeric', timeZone: 'Asia/Kolkata' })
+    expect(metricChart(daily).data[0].time).toBe(expected)
+    expect(expected).toBe(new Date('2026-11-02T12:00:00Z').toLocaleDateString([], { month: 'short', day: 'numeric', timeZone: 'UTC' }))
+  })
+
   it('ranks totals', () => {
     const totals: MetricsResult = {
       name: 'claude_code.cost.usage',
@@ -207,5 +224,32 @@ describe('sessionCounts', () => {
       { tool: 'codex', count: 2 },
       { tool: 'claude-code', count: 1 },
     ])
+  })
+})
+
+describe('sessionsCost', () => {
+  const session = (cost?: number): SessionRow => ({
+    session_id: 's',
+    tool: 'claude-code',
+    start_time: '',
+    last_time: '',
+    messages: 1,
+    cost_usd: cost,
+  })
+  it('sums the sessions that record a cost', () => {
+    expect(sessionsCost([session(1.5), session(), session(0.25)])).toBe(1.75)
+  })
+  it('is undefined when no session records one', () => {
+    expect(sessionsCost([session(), session()])).toBeUndefined()
+    expect(sessionsCost([session(0)])).toBe(0)
+  })
+})
+
+describe('sessionPlace', () => {
+  const base: SessionRow = { session_id: 's', tool: 'codex', start_time: '', last_time: '', messages: 1 }
+  it('names repository and branch when known', () => {
+    expect(sessionPlace({ ...base, repository: 'acme/api', branch: 'main' })).toBe('acme/api @ main')
+    expect(sessionPlace({ ...base, repository: 'acme/api' })).toBe('acme/api')
+    expect(sessionPlace(base)).toBeUndefined()
   })
 })

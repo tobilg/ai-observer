@@ -27,14 +27,17 @@ export function formatTickLabel(timestamp: number, durationSeconds: number, inte
 
 export interface ChartData {
   // One row per bucket: timestamp, time label and a value per series key
-  data: Record<string, number | string>[]
+  // (null where the bucket has none, drawn as a gap)
+  data: Record<string, number | string | null>[]
   // The series by key, sorted so bars stack in the same order on every refresh
   series: ChartSeries[]
   colorMap: Map<string, string>
 }
 
 // Turns time series into bar chart rows. Series with the same key are added
-// up; a series without a point in a bucket counts 0 there.
+// up; a series without a point in a bucket counts 0 there, while a null
+// value (no average or percentile without values) stays null unless another
+// series of the key has a value there.
 export function buildChartData(
   timeSeries: TimeSeries[],
   keyOf: (labels?: Record<string, string>) => string,
@@ -42,7 +45,7 @@ export function buildChartData(
   formatTime: (timestamp: number) => string
 ): ChartData {
   const labels = new Map<string, string>()
-  const values = new Map<string, Map<number, number>>()
+  const values = new Map<string, Map<number, number | null>>()
   const timestamps = new Set<number>()
   for (const s of timeSeries) {
     const key = keyOf(s.labels)
@@ -53,7 +56,8 @@ export function buildChartData(
     const byTime = values.get(key)!
     for (const [timestamp, value] of s.datapoints) {
       timestamps.add(timestamp)
-      byTime.set(timestamp, (byTime.get(timestamp) ?? 0) + value)
+      const current = byTime.get(timestamp) ?? null
+      byTime.set(timestamp, value === null ? current : (current ?? 0) + value)
     }
   }
 
@@ -61,9 +65,10 @@ export function buildChartData(
   const data = Array.from(timestamps)
     .sort((a, b) => a - b)
     .map((timestamp) => {
-      const row: Record<string, number | string> = { timestamp, time: formatTime(timestamp) }
+      const row: Record<string, number | string | null> = { timestamp, time: formatTime(timestamp) }
       for (const key of keys) {
-        row[key] = values.get(key)!.get(timestamp) ?? 0
+        const byTime = values.get(key)!
+        row[key] = byTime.has(timestamp) ? (byTime.get(timestamp) ?? null) : 0
       }
       return row
     })

@@ -124,6 +124,71 @@ func (s *DuckDBStore) GetDefaultDashboard(ctx context.Context) (*api.DashboardWi
 	}, nil
 }
 
+// The dashboard GetOrCreateDefaultDashboard creates
+const (
+	DefaultDashboardName        = "Default Dashboard"
+	DefaultDashboardDescription = "AI Observer default dashboard"
+)
+
+// DefaultDashboardWidgets are the widgets of the dashboard
+// GetOrCreateDefaultDashboard creates
+func DefaultDashboardWidgets() []api.CreateWidgetRequest {
+	return []api.CreateWidgetRequest{
+		{WidgetType: "stats_traces", Title: "Total Traces", GridColumn: 1, GridRow: 1, ColSpan: 1, RowSpan: 1},
+		{WidgetType: "stats_metrics", Title: "Metrics", GridColumn: 2, GridRow: 1, ColSpan: 1, RowSpan: 1},
+		{WidgetType: "stats_logs", Title: "Logs", GridColumn: 3, GridRow: 1, ColSpan: 1, RowSpan: 1},
+		{WidgetType: "stats_error_rate", Title: "Error Rate", GridColumn: 4, GridRow: 1, ColSpan: 1, RowSpan: 1},
+		{WidgetType: "active_services", Title: "Active Services", GridColumn: 1, GridRow: 2, ColSpan: 2, RowSpan: 1},
+		{WidgetType: "recent_activity", Title: "Recent Traces", GridColumn: 1, GridRow: 3, ColSpan: 4, RowSpan: 1},
+	}
+}
+
+// GetOrCreateDefaultDashboard returns the default dashboard with its
+// widgets. When there is none, it creates one with DefaultDashboardWidgets
+// in one transaction, and reports that it did. Writes are serialized and
+// the transaction checks again for a default, so concurrent first requests
+// (two dashboard tabs) create a single one.
+func (s *DuckDBStore) GetOrCreateDefaultDashboard(ctx context.Context) (*api.DashboardWithWidgets, bool, error) {
+	dashboard, err := s.GetDefaultDashboard(ctx)
+	if err != nil || dashboard != nil {
+		return dashboard, false, err
+	}
+
+	created := false
+	err = s.inWriteTx(ctx, func(w *writeTx) error {
+		var exists bool
+		if err := w.tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM dashboards WHERE is_default = TRUE)").Scan(&exists); err != nil {
+			return fmt.Errorf("checking default dashboard: %w", err)
+		}
+		if exists {
+			return nil // created by a concurrent request
+		}
+		id, now := uuid.New().String(), time.Now()
+		if _, err := w.tx.ExecContext(ctx, `
+			INSERT INTO dashboards (id, name, description, is_default, created_at, updated_at)
+			VALUES (?, ?, ?, TRUE, ?, ?)
+		`, id, DefaultDashboardName, DefaultDashboardDescription, now, now); err != nil {
+			return fmt.Errorf("inserting default dashboard: %w", err)
+		}
+		for _, widget := range DefaultDashboardWidgets() {
+			if _, err := w.tx.ExecContext(ctx, `
+				INSERT INTO dashboard_widgets (id, dashboard_id, widget_type, title, grid_column, grid_row, col_span, row_span, config, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)
+			`, uuid.New().String(), id, widget.WidgetType, widget.Title, widget.GridColumn, widget.GridRow,
+				widget.ColSpan, widget.RowSpan, now, now); err != nil {
+				return fmt.Errorf("inserting default widget: %w", err)
+			}
+		}
+		created = true
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	dashboard, err = s.GetDefaultDashboard(ctx)
+	return dashboard, created, err
+}
+
 func (s *DuckDBStore) GetDashboardWithWidgets(ctx context.Context, id string) (*api.DashboardWithWidgets, error) {
 	var d api.Dashboard
 	var desc sql.NullString
@@ -310,47 +375,59 @@ func (s *DuckDBStore) GetWidgetsForDashboard(ctx context.Context, dashboardID st
 	return widgets, nil
 }
 
+// UpdateWidget changes the fields of a widget that req sets: a non-empty
+// title, positions and spans above 0, and the config when req has one
+// (replacing the stored config whole; an empty config clears it). It returns
+// the updated widget, or ErrWidgetNotFound when the dashboard has no such
+// widget.
 func (s *DuckDBStore) UpdateWidget(ctx context.Context, dashboardID, widgetID string, req *api.UpdateWidgetRequest) (*api.DashboardWidget, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	now := time.Now()
-
-	// Build update query dynamically based on provided fields
-	configJSON, err := json.Marshal(req.Config)
-	if err != nil {
-		return nil, fmt.Errorf("marshaling config: %w", err)
+	var config any // NULL keeps the stored config
+	if req.Config != nil {
+		configJSON, err := json.Marshal(req.Config)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling config: %w", err)
+		}
+		config = string(configJSON)
 	}
 
-	_, err = s.db.ExecContext(ctx, `
-		UPDATE dashboard_widgets
-		SET title = CASE WHEN ? != '' THEN ? ELSE title END,
-		    grid_column = CASE WHEN ? > 0 THEN ? ELSE grid_column END,
-		    grid_row = CASE WHEN ? > 0 THEN ? ELSE grid_row END,
-		    col_span = CASE WHEN ? > 0 THEN ? ELSE col_span END,
-		    row_span = CASE WHEN ? > 0 THEN ? ELSE row_span END,
-		    config = ?,
-		    updated_at = ?
-		WHERE id = ? AND dashboard_id = ?
-	`, req.Title, req.Title, req.GridColumn, req.GridColumn, req.GridRow, req.GridRow, req.ColSpan, req.ColSpan, req.RowSpan, req.RowSpan, string(configJSON), now, widgetID, dashboardID)
-	if err != nil {
-		return nil, fmt.Errorf("updating widget: %w", err)
-	}
-
-	// Fetch updated widget
 	var w api.DashboardWidget
-	var configData interface{}
-	err = s.db.QueryRowContext(ctx, `
-		SELECT id, dashboard_id, widget_type, title, grid_column, grid_row, col_span, row_span, config, created_at, updated_at
-		FROM dashboard_widgets WHERE id = ? AND dashboard_id = ?
-	`, widgetID, dashboardID).Scan(&w.ID, &w.DashboardID, &w.WidgetType, &w.Title, &w.GridColumn, &w.GridRow, &w.ColSpan, &w.RowSpan, &configData, &w.CreatedAt, &w.UpdatedAt)
-	if err == sql.ErrNoRows {
-		return nil, ErrWidgetNotFound
-	}
+	err := s.inWriteTx(ctx, func(tx *writeTx) error {
+		result, err := tx.tx.ExecContext(ctx, `
+			UPDATE dashboard_widgets
+			SET title = CASE WHEN ? != '' THEN ? ELSE title END,
+			    grid_column = CASE WHEN ? > 0 THEN ? ELSE grid_column END,
+			    grid_row = CASE WHEN ? > 0 THEN ? ELSE grid_row END,
+			    col_span = CASE WHEN ? > 0 THEN ? ELSE col_span END,
+			    row_span = CASE WHEN ? > 0 THEN ? ELSE row_span END,
+			    config = COALESCE(CAST(? AS JSON), config),
+			    updated_at = ?
+			WHERE id = ? AND dashboard_id = ?
+		`, req.Title, req.Title, req.GridColumn, req.GridColumn, req.GridRow, req.GridRow, req.ColSpan, req.ColSpan,
+			req.RowSpan, req.RowSpan, config, time.Now(), widgetID, dashboardID)
+		if err != nil {
+			return fmt.Errorf("updating widget: %w", err)
+		}
+		if rows, err := result.RowsAffected(); err == nil && rows == 0 {
+			return ErrWidgetNotFound
+		}
+
+		var configData interface{}
+		err = tx.tx.QueryRowContext(ctx, `
+			SELECT id, dashboard_id, widget_type, title, grid_column, grid_row, col_span, row_span, config, created_at, updated_at
+			FROM dashboard_widgets WHERE id = ? AND dashboard_id = ?
+		`, widgetID, dashboardID).Scan(&w.ID, &w.DashboardID, &w.WidgetType, &w.Title, &w.GridColumn, &w.GridRow, &w.ColSpan, &w.RowSpan, &configData, &w.CreatedAt, &w.UpdatedAt)
+		if err == sql.ErrNoRows {
+			return ErrWidgetNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("fetching updated widget: %w", err)
+		}
+		w.Config = scanWidgetConfig(configData)
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("fetching updated widget: %w", err)
+		return nil, err
 	}
-	w.Config = scanWidgetConfig(configData)
 	return &w, nil
 }
 
@@ -426,6 +503,9 @@ func scanWidgetConfig(v interface{}) api.WidgetConfig {
 		}
 		if cs, ok := val["chartStacked"].(bool); ok {
 			config.ChartStacked = &cs
+		}
+		if st, ok := val["stat"].(string); ok {
+			config.Stat = st
 		}
 	case string:
 		if val == "" || val == "{}" {

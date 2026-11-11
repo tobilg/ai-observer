@@ -1,0 +1,11 @@
+{
+  // Type-checks the tests (tsc -b): they run in vitest with jsdom, its
+  // globals and jest-dom's matchers, and use Node APIs in some setups
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
+    "types": ["vite/client", "vitest/globals", "node", "@testing-library/jest-dom"]
+  },
+  "include": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/test"],
+  "exclude": []
+}

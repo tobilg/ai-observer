@@ -52,11 +52,17 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
         type: 'list',
         items: [
           'Dashboards - Customizable overview with widgets showing key metrics',
-          'Metrics - Time-series charts for detailed metric analysis',
+          'Metrics - Time-series charts for detailed metric analysis, and the data points behind them',
           'Logs - Searchable log records with severity filtering',
           'Traces - Distributed trace visualization with waterfall view',
+          'Sessions - Conversations of your AI tools and their transcripts',
+          'Status - Version, endpoints, database and settings of the running server',
           'Documentation - This help page',
         ],
+      },
+      {
+        type: 'paragraph',
+        text: 'Pages keep their filters and time range in the address, so a reload or a shared link shows the same view. The current page is highlighted in the sidebar; the server version is shown at its bottom.',
       },
       {
         type: 'heading',
@@ -92,7 +98,7 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       },
       {
         type: 'paragraph',
-        text: 'To create a new dashboard, click the "New Dashboard" button in the sidebar under the Dashboards section. A new dashboard will be created with a default name that you can customize.',
+        text: 'The server creates the Default Dashboard, with counts of traces, metrics, logs and the error rate, the active services and the recent traces, the first time it is opened. To create another dashboard, click "New Dashboard" in the sidebar under the Dashboards section, enter a name and optionally a description, and click Create. The new dashboard starts empty: click Edit to add widgets.',
       },
       {
         type: 'heading',
@@ -107,14 +113,13 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
         type: 'list',
         items: [
           'Rename - Change the dashboard name',
-          'Duplicate - Create a copy of the dashboard with all its widgets',
           'Set as Default - Mark this dashboard as the default, shown when you visit the root URL',
-          'Delete - Remove the dashboard permanently',
+          'Delete - Remove the dashboard permanently (not available for the default dashboard)',
         ],
       },
       {
         type: 'paragraph',
-        text: 'The default dashboard is marked with a star icon in the sidebar.',
+        text: 'The default dashboard is marked with a star icon in the sidebar. A link to a dashboard that no longer exists shows "Dashboard not found" with a link to the default dashboard.',
       },
       {
         type: 'heading',
@@ -132,12 +137,12 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       {
         type: 'list',
         items: [
-          'Total Traces - Count of trace spans received',
-          'Metrics Count - Number of metric data points',
-          'Log Count - Total log records',
-          'Error Rate - Percentage of spans with error status',
-          'Active Services - List of services sending telemetry',
-          'Recent Traces - Table of the most recent traces with details',
+          'Total Traces - Number of traces (and their spans) in the dashboard\'s time range',
+          'Metrics Count - Number of metric data points in the time range',
+          'Log Count - Number of log records in the time range',
+          'Error Rate - Percentage of spans with error status in the time range',
+          'Active Services - All services that have sent telemetry',
+          'Recent Traces - The newest traces in the time range; click one to open it (Cmd/Ctrl-click opens it in a new tab)',
         ],
       },
       {
@@ -153,7 +158,15 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       },
       {
         type: 'paragraph',
-        text: 'Metric widgets can be configured to show data from specific services and metrics. For chart widgets, you can optionally select a breakdown attribute to see the metric split by different values (e.g., token usage by type).',
+        text: 'Metric widgets can be configured to show data from specific services and metrics. For chart widgets, you can optionally select a breakdown attribute to see the metric split by different values (e.g., token usage by type or model), and whether the bars are stacked or grouped; value widgets show the total of one breakdown value. The breakdowns offered are the catalog\'s and the attributes the metric\'s points have.',
+      },
+      {
+        type: 'paragraph',
+        text: 'Histogram metrics (durations, sizes) have a Statistic: the average (default), sum, count, minimum, maximum or a percentile (p50, p90, p95, p99, estimated from the histogram buckets); token histograms default to the sum. Averages, extremes and percentiles do not add up, so they are never stacked. Bars follow your browser\'s time zone, so a daily bar is a local day.',
+      },
+      {
+        type: 'paragraph',
+        text: 'A widget whose data cannot be loaded says why, with a Retry button, instead of showing an empty value. Widgets keep their data while they refresh.',
       },
       {
         type: 'heading',
@@ -167,15 +180,21 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       {
         type: 'list',
         items: [
-          'Add widgets using the "Add Widget" button',
+          'Add widgets using the "Add Widget" button, or by clicking an empty cell to place it there',
+          'Change a widget with its pencil button: title, service, metric, breakdown, statistic (histograms), chart mode, and size (width in columns, height in rows)',
           'Remove widgets by clicking the X button on each widget',
-          'Rearrange widgets by dragging them to new positions',
+          'Rearrange widgets by dragging them by their handle to new positions (with the keyboard: focus the handle, press Space, move with the arrow keys, press Space again)',
           'Swap widget positions by dropping one widget onto another',
+          'Insert an empty row with the "Add row" control between rows',
         ],
       },
       {
         type: 'paragraph',
-        text: 'The dashboard uses a 4-column grid layout. Widgets occupy different column widths: stat widgets take 1 column, charts take 2 columns, and the recent activity table spans all 4 columns.',
+        text: 'A widget keeps its position when it is resized and grows to the right and down; a size that would overlap another widget or leave the grid is refused with an explanation. Changes are shown at once and undone again if the server refuses them. Click Done to leave edit mode: rows left empty are closed. Edit mode ends when you open another dashboard, and is not available on small screens.',
+      },
+      {
+        type: 'paragraph',
+        text: 'The dashboard uses a 4-column grid layout. By default, stat widgets take 1 column, charts 2 columns, and the recent traces table all 4 columns; edit a widget to change its size.',
       },
       {
         type: 'heading',
@@ -184,7 +203,7 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       },
       {
         type: 'paragraph',
-        text: 'The dashboard toolbar includes a date range picker that controls the time period for all widgets. You can choose from preset ranges or define a custom date range.',
+        text: 'The dashboard toolbar includes a date range picker that controls the time period for all widgets. You can choose from preset ranges or define a custom date range. The selection is part of the page address (timeframe, or from and to), so a link to the dashboard shows the same range; the last preset range is also remembered for the next visit.',
       },
       {
         type: 'note',
@@ -208,7 +227,7 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       },
       {
         type: 'paragraph',
-        text: 'Select "Custom date range" from the dropdown and use the calendar to pick specific start and end dates. Custom ranges are fixed in time and do not auto-refresh like relative ranges. When selecting a custom range:',
+        text: 'Select "Custom date range" from the dropdown and use the calendar to pick specific start and end dates. Custom ranges are fixed in time and do not auto-refresh like relative ranges. They are kept in the page address only: opening the page again without them returns to the last preset range. When selecting a custom range:',
       },
       {
         type: 'list',
@@ -300,12 +319,13 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
         items: [
           'Timeframe - Select a time range from 1 minute to 30 days (default: 7 days)',
           'Service - Filter by a specific service name, or show all services',
-          'Search - Full-text search across span names, errors, and attributes',
+          'Search - Text in span names, errors, and attribute values (case ignored)',
+          'Background requests - Also list Codex\'s internal requests outside a conversation',
         ],
       },
       {
         type: 'paragraph',
-        text: 'When new traces arrive via WebSocket, a badge appears showing the count of new traces. Click the refresh button to load the latest data.',
+        text: 'All filters are kept in the page address, so a link or the browser\'s Back button shows the same list. When new traces matching the filters arrive, a button shows their count; click it to load them. Rows never move while you read. Each row has an Open link to the trace\'s own page and, when the trace belongs to a session, a link to its transcript.',
       },
       {
         type: 'heading',
@@ -330,6 +350,10 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
         text: 'Spans with children can be expanded or collapsed by clicking the chevron icon. This helps navigate complex traces with many nested operations.',
       },
       {
+        type: 'paragraph',
+        text: 'The trace page adds a time axis above the bars and a filter that matches span names, IDs and attribute keys and values among the loaded spans: matching spans are highlighted and their parents stay visible. Errors only shows failed spans, and Expand all / Collapse all open or close the tree. View logs opens the Logs page filtered to the trace, and Open session its transcript.',
+      },
+      {
         type: 'heading',
         level: 3,
         text: 'Span Details',
@@ -341,10 +365,17 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       {
         type: 'list',
         items: [
-          'Attributes - Key-value metadata attached to the span (e.g., model name, token counts)',
-          'Events - Timestamped events that occurred during the span execution',
+          'Overview - IDs, service, kind, scope, start (with its offset from the trace start), duration and status',
+          'Attributes - Key-value metadata attached to the span (e.g., model name, token counts), shown in full: long values wrap, JSON is formatted, and very long values open with Show all',
+          'Resource - The attributes of the tool that sent the span',
+          'Events - Timestamped events that occurred during the span execution, with their attributes',
+          'Links - Other spans the span refers to',
           'Status - Error messages and status codes for failed spans',
         ],
+      },
+      {
+        type: 'paragraph',
+        text: 'Every value and ID has a copy button.',
       },
       {
         type: 'note',
@@ -358,6 +389,8 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
     subsections: [
       { id: 'metrics-selection', title: 'Metric Selection' },
       { id: 'metrics-charts', title: 'Chart Visualization' },
+      { id: 'metrics-breakdown', title: 'Breakdown and Statistic' },
+      { id: 'metrics-points', title: 'Data Points' },
       { id: 'metrics-timerange', title: 'Time Range' },
     ],
     content: [
@@ -403,7 +436,7 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       },
       {
         type: 'paragraph',
-        text: 'When you select a metric, its metadata is displayed below the selection: the metric name, unit of measurement, and description.',
+        text: 'When you select a metric, its metadata is displayed below the selection: the metric name, unit of measurement, and description. Service, metric, breakdown, statistic, time range and chart mode are kept in the page address, so a reload or a shared link shows the same chart.',
       },
       {
         type: 'heading',
@@ -428,23 +461,50 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       {
         type: 'heading',
         level: 3,
+        text: 'Breakdown and Statistic',
+      },
+      {
+        type: 'paragraph',
+        text: 'Choose a Breakdown to split the chart by model, repository or any other attribute the metric records: the list offers the catalog\'s breakdowns and the attribute keys of the metric\'s points. Without one, counters are split by token type. A chart shows at most 100 series.',
+      },
+      {
+        type: 'paragraph',
+        text: 'Histogram metrics (durations, sizes) show their average per bucket; the Statistic selector switches to a percentile (p50, p90, p95, p99, estimated from the histogram buckets by linear interpolation), the minimum or maximum, the sum or the count. Averages, extremes and percentiles are shown side by side, not stacked, and buckets without values are left empty instead of showing 0. Token histograms show their sum by default.',
+      },
+      {
+        type: 'paragraph',
+        text: 'Buckets follow your browser\'s time zone: a daily bar runs from local midnight to midnight, also on days when daylight saving time starts or ends.',
+      },
+      {
+        type: 'heading',
+        level: 3,
+        text: 'Data Points',
+      },
+      {
+        type: 'paragraph',
+        text: 'The Data points tab next to Chart lists the stored data points of the selected metric in the time range, newest first, a page at a time: time, service, metric type (with "cumulative" or "delta" for counters), value (count and sum for histograms) and attributes. It shows what the chart is made of. Cumulative counters, such as Gemini CLI\'s, are stored as running totals; the chart shows their increase per interval.',
+      },
+      {
+        type: 'heading',
+        level: 3,
         text: 'Time Range',
       },
       {
         type: 'paragraph',
-        text: 'Select a time range from the dropdown to adjust the displayed period. Available ranges span from 1 minute to 30 days. The chart automatically adjusts its aggregation interval based on the selected timeframe:',
+        text: 'Select a time range from the dropdown to adjust the displayed period: presets from 1 minute to 1 year, or a custom date range. The chart automatically adjusts its aggregation interval based on the selected timeframe:',
       },
       {
         type: 'list',
         items: [
-          'Short ranges (1-15 minutes) - Per-minute aggregation',
-          'Medium ranges (1-24 hours) - 5-minute to hourly aggregation',
-          'Long ranges (7-30 days) - Daily aggregation',
+          'Short ranges (1-30 minutes) - 1- to 30-second buckets',
+          'Medium ranges (1-24 hours) - 1-minute to hourly buckets',
+          'Long ranges (3-45 days) - 3-hour to daily buckets',
+          'Very long ranges (60 days to 1 year) - 2-day to 2-week buckets',
         ],
       },
       {
         type: 'paragraph',
-        text: 'The chart auto-refreshes periodically based on the selected timeframe. A badge shows when new data has arrived.',
+        text: 'The chart refreshes when new metrics arrive and as the time window moves, keeping the shown chart while it loads. The badge next to the page title says "Live" while it follows new data, and "Paused (fixed range)" for a custom date range, which shows fixed historical data. A failed request is shown in place of the chart, with a Retry button.',
       },
     ],
   },
@@ -473,10 +533,15 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       {
         type: 'list',
         items: [
+          'Timeframe - A relative range (default: 7 days) or fixed dates',
           'Service - Filter by a specific service name',
-          'Severity - Filter by log level (TRACE, DEBUG, INFO, WARN, ERROR, FATAL)',
-          'Search - Full-text search in log messages',
+          'Level - The levels that occur in the selected range, with their number of logs',
+          'Search - Text in log messages and attribute values, such as tool output (case ignored)',
         ],
+      },
+      {
+        type: 'paragraph',
+        text: 'All filters are kept in the page address, so a link or the browser\'s Back button shows the same list.',
       },
       {
         type: 'paragraph',
@@ -507,8 +572,10 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       {
         type: 'list',
         items: [
-          'Full message - Complete log body text',
+          'Full message - Complete log body text, with a copy button',
           'Attributes - Structured metadata (key-value pairs) attached to the log',
+          'Resource and scope - The attributes of the tool that sent the log',
+          'Session - A link to the transcript of the log\'s session',
         ],
       },
       {
@@ -523,13 +590,123 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       {
         type: 'list',
         items: [
-          'Trace ID - Links the log to a distributed trace',
+          'Trace ID - A link to the trace\'s page',
           'Span ID - Identifies the specific span within the trace',
         ],
       },
       {
+        type: 'paragraph',
+        text: 'In the other direction, View logs on a trace\'s page lists the logs of that trace.',
+      },
+      {
         type: 'note',
-        text: 'Real-time updates: When new logs arrive, a badge shows the count. Click the refresh button to load the latest entries.',
+        text: 'Real-time updates: When new logs matching the filters arrive, a button shows their count. Click it to load them; rows never move while you read.',
+      },
+    ],
+  },
+  {
+    id: 'sessions',
+    title: 'Sessions',
+    subsections: [
+      { id: 'sessions-list', title: 'Session List' },
+      { id: 'sessions-search', title: 'Searching Sessions' },
+      { id: 'sessions-transcript', title: 'Transcripts' },
+    ],
+    content: [
+      {
+        type: 'paragraph',
+        text: 'The Sessions page lists the conversations of your AI coding tools, and each session opens as a transcript of its prompts, responses and tool calls.',
+      },
+      {
+        type: 'heading',
+        level: 3,
+        text: 'Session List',
+      },
+      {
+        type: 'paragraph',
+        text: 'Sessions with activity in the selected range are listed, most recently active first. A row shows the first prompt as title, the session ID (with a copy button), tool, model, duration and message count, and where they are known the repository and branch (imported and watched Claude Code and Codex sessions) and cost and tokens (sessions whose events carry them, such as Claude Code over OTLP). The first page refreshes as sessions gain messages.',
+      },
+      {
+        type: 'heading',
+        level: 3,
+        text: 'Searching Sessions',
+      },
+      {
+        type: 'paragraph',
+        text: 'Search takes words and "quoted phrases"; a session matches when one of its records in the range contains all of them. Results come newest match first and show the text around the match with the terms highlighted, the number of matching records and the time of the newest one.',
+      },
+      {
+        type: 'heading',
+        level: 3,
+        text: 'Transcripts',
+      },
+      {
+        type: 'list',
+        items: [
+          'Header - The first prompt, the session ID, and totals for the whole session: cost, tokens, prompts, responses, tool calls and tool errors',
+          'Views - Chat or Timeline; long sessions load 500 messages at a time and render only the messages near the view',
+          'Filters - Show or hide prompts, responses, tool calls and tool results, and responses without content',
+          'Search - Finds messages in the whole session, also those not loaded yet; Previous and Next (Enter, Shift+Enter) move between matches and load further messages as needed',
+          'Copy - Buttons on messages, tool input and output, and code blocks',
+          'Live - New messages of an open session appear as they arrive',
+        ],
+      },
+      {
+        type: 'paragraph',
+        text: 'A session that arrived both over OTLP and from its session file (import, watch or serve --watch) shows each message once, filled in with what the other records add (tool name, usage, duration): Claude Code messages are matched by entry, request and tool call IDs, Codex messages by tool call ID and prompts by time and text, Gemini CLI messages by prompt text and time, response token counts and tool arguments. The session list counts messages and usage the same way. Claude Code replies sent over OTLP (assistant_response, with content logging) appear with the usage of their request.',
+      },
+    ],
+  },
+  {
+    id: 'status',
+    title: 'Status',
+    content: [
+      {
+        type: 'paragraph',
+        text: 'The Status page (System → Status in the sidebar) shows the running server, read from GET /api/status. It refreshes when telemetry arrives.',
+      },
+      {
+        type: 'list',
+        items: [
+          'Server - Version, commit, build date, mode (serve: OTLP and dashboard; watch: session files and dashboard; serve+watch: both, with the watched tools) and uptime',
+          'Endpoints - The OTLP/HTTP and OTLP/gRPC endpoints to configure in your AI tools (with copy buttons), the dashboard and API address, and the MCP endpoint when enabled. In watch mode OTLP ingestion is off, and gRPC can be turned off with AI_OBSERVER_OTLP_GRPC_PORT=off, which the page says',
+          'Database - Path of the DuckDB file (with a copy button), its size, the data in it and the free space inside the file, the size of its write-ahead log, growth per day and, with a size limit, the days until it is reached, and the memory limit and threads (AI_OBSERVER_DB_MEMORY_LIMIT, AI_OBSERVER_DB_THREADS). It suggests ai-observer compact when much of the file is free, and a retention or size limit when nothing bounds the database',
+          'Telemetry - Stored traces, spans, logs and metric points, the oldest and newest record, and the services',
+          'Settings - Retention, size limit, redaction, authentication, TLS, the MCP endpoint, the admin API, whether noise spans are stored, the log level and format and the dashboard origin, with the environment variable of each. Values of secrets are never shown: only whether a token is required',
+          'Maintenance - With AI_OBSERVER_ADMIN_API=true: count and delete the telemetry of a range (all, traces, logs or metric points, optionally of one tool), run a checkpoint, and write a backup into AI_OBSERVER_BACKUP_DIR. Compaction needs the server stopped: run ai-observer compact',
+          'Pricing - The price files costs are calculated with: models, when they were last updated, and overrides from AI_OBSERVER_PRICING_DIR',
+          'Imported session files - Files, records, last import and partly read files per tool, for import and watch',
+        ],
+      },
+      {
+        type: 'note',
+        text: 'Prices older than 7 days are marked: costs of models released since may be missing. Run ai-observer pricing update to fetch current prices into AI_OBSERVER_PRICING_DIR (see docs/pricing.md).',
+      },
+    ],
+  },
+  {
+    id: 'maintenance',
+    title: 'Maintenance',
+    content: [
+      {
+        type: 'paragraph',
+        text: 'AI Observer keeps all telemetry unless told otherwise. The Status page shows the database size, the free space inside the file and its growth per day, and the server logs them at startup.',
+      },
+      {
+        type: 'list',
+        items: [
+          'Bounding growth - AI_OBSERVER_RETENTION_DAYS deletes telemetry older than that many days; AI_OBSERVER_MAX_DB_SIZE (such as 20GB) deletes the oldest days while the stored data exceeds the size, never the last 24 hours. Both run at startup and then hourly.',
+          'Free space - Deleted data leaves free space inside the database file, which new data reuses, but the file keeps its size. Stop AI Observer and run ai-observer compact to write the database into a new file without it; the copy is checked before it replaces the database.',
+          'Backups - ai-observer backup --output <file> writes a checked copy of the database; restore it by copying it over the database file with AI Observer stopped. Before migrating a database to a new version, AI Observer copies it to <database>.pre-migration-v<N> (AI_OBSERVER_SKIP_MIGRATION_BACKUP=true skips it).',
+          'Exports - ai-observer export writes Parquet files with the metric baselines, dashboards, the import state of session files and a manifest, from one snapshot of the database. Records keep the paths of their session files, so an export contains local file paths. ai-observer restore loads them back, refusing to duplicate the records of the export\'s range unless --replace is given, and redacts the text again (AI_OBSERVER_REDACT).',
+          'Restored sessions are not imported twice: importing or watching the same session files afterwards skips unchanged files and replaces the records of grown ones. When the files moved (another computer or home directory), pass restore --map-path OLD=NEW. Exports of earlier versions carry no paths: rebuild their sessions with import --purge.',
+          'While the server runs - With AI_OBSERVER_ADMIN_API=true, the Maintenance section of the Status page deletes a range, runs a checkpoint and writes a backup (POST /api/admin/delete, /checkpoint, /backup; /export writes an export), into AI_OBSERVER_BACKUP_DIR (default: backups next to the database). Protect it with AI_OBSERVER_AUTH_TOKEN beyond localhost.',
+        ],
+      },
+      {
+        type: 'code',
+        text: 'Maintenance commands (AI Observer stopped)',
+        code: 'ai-observer compact --dry-run\nai-observer backup --output ./ai-observer-backup.duckdb\nai-observer restore ./export --replace',
       },
     ],
   },
@@ -540,6 +717,31 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       {
         type: 'paragraph',
         text: 'Use ai-observer import to load historical Claude Code, Codex CLI, and Gemini CLI session files, or ai-observer watch to ingest new file content as it arrives. Both modes provide transcripts and token/cost metrics. Full Claude Code imports also reconstruct selected activity metrics described in the Telemetry Reference. GitHub Copilot and OpenCode use OTLP ingestion only.',
+      },
+      {
+        type: 'paragraph',
+        text: 'watch receives no OTLP. ai-observer serve --watch [tool] [--backfill] receives OTLP and reads session files in one process; the Status page then shows the mode serve+watch.',
+      },
+      {
+        type: 'heading',
+        level: 3,
+        text: 'Sessions Sent Both Ways',
+      },
+      {
+        type: 'paragraph',
+        text: 'A request recorded both over OTLP and in its session file is counted once, from OTLP: Claude Code requests are matched by their request ID, Codex responses by equal token counts of the same session within 30 seconds, Gemini CLI responses by equal token counts of the same session within an hour (neither sends a shared ID). Usage only one side recorded is kept. Transcripts show such messages once (see Sessions).',
+      },
+      {
+        type: 'note',
+        text: 'After upgrading, re-import once with --force (stop watch or serve --watch first; watch does not repair stored sessions): ai-observer import claude-code --force adds the prompts typed as plain text, which imports and watch dropped since v0.3.0; ai-observer import codex --force adds the missing Codex tool calls and removes Codex usage stored twice; ai-observer import gemini --force removes Gemini CLI usage stored twice. Claude Code usage stored twice is removed when the database is migrated.',
+      },
+      {
+        type: 'paragraph',
+        text: 'Codex sessions are imported with every tool call (commands, patches, MCP and web tools, image views, also from code mode), with input, output (at most 16 KiB, stored in the tool.output attribute; the log body is a summary line), exit code and duration. Codex compresses sessions older than 7 days to .jsonl.zst; these are imported and watched too, as the same file as the .jsonl they replaced. A plain import codex after upgrading picks up the compressed sessions but keeps the old records of the others, hence the --force above.',
+      },
+      {
+        type: 'note',
+        text: 'Large imports take time, disk space and memory: 714 Codex session files (about 4.4 GB) took 285 seconds and gave a 2.87 GB database, while DuckDB cached about 3 GB. Set AI_OBSERVER_DB_MEMORY_LIMIT=512MB for the import to keep it below 1 GB.',
       },
       {
         type: 'heading',
@@ -673,15 +875,15 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
         table: {
           headers: ['Tool', 'What it returns', 'Main arguments (defaults)'],
           rows: [
-            { cells: ['search_conversations', 'Sessions with a prompt, reply or tool call that contains all words of the query, in any order, newest match first, with a snippet around the match', 'query, tool, from (30 days before to), to (now), limit (10, max 50)'] },
-            { cells: ['list_sessions', 'Sessions with activity in a range, most recently active first: tool, model, start, last activity, message count', 'tool, from (7 days), to, limit (20, max 100), cursor'] },
-            { cells: ['get_transcript', 'A session\'s messages in order: role, content, model, tool name, input and output, tokens, cost', 'session_id, roles (all), limit (50, max 200), cursor, max_chars per text (2000, max 20000)'] },
-            { cells: ['usage_summary', 'Tokens by type and cost in USD; unpriced_models lists models with tokens but no price (no cost)', 'from (7 days), to, group_by: tool, model, day (UTC) or repository, tool'] },
+            { cells: ['search_conversations', 'Sessions with a prompt, reply or tool call that contains all words of the query, in any order, newest match first, with a snippet around the match, and each session\'s title, repository, branch, cost and tokens where known', 'query, tool, from (30 days before to), to (now), limit (10, max 50)'] },
+            { cells: ['list_sessions', 'Sessions with activity in a range, most recently active first: tool, model, start, last activity, message count (as in the transcript), title, repository, branch, cost and tokens where known', 'tool, from (7 days), to, limit (20, max 100), cursor'] },
+            { cells: ['get_transcript', 'A session\'s messages in order: role, content, model, tool name, input and output, tokens, cost; the session\'s title and totals over all of its messages. Messages recorded over OTLP and in the session file appear once. With search, only the matching messages, each with its position, which can be passed as cursor to read around it', 'session_id, roles (all), search, limit (50, max 200), cursor, max_chars per text (2000, max 20000)'] },
+            { cells: ['usage_summary', 'Tokens by type and cost in USD; unpriced_models lists models with tokens but no price (no cost)', 'from (7 days), to, group_by: tool, model, day or repository, tool, timezone (days of group_by day; default: the server\'s time zone)'] },
             { cells: ['search_logs', 'Log records, newest first', 'query, tool, severity, trace_id, from (24 hours), to, limit (20, max 100), cursor'] },
             { cells: ['list_traces', 'Traces, newest first: root span, duration, span count, status. Leaves out Codex\'s background traces (internal requests outside a conversation, automatic approval reviews)', 'query, tool, from (24 hours), to, limit, cursor, include_background (false)'] },
             { cells: ['get_trace', 'A trace\'s spans as a tree (depth first): name, start, duration, status, attributes. Of traces with more than 1,000 spans, the tree of the first 1,000 by start time', 'id, kind (otel_trace or codex_operation), max_spans (200), max_chars per attribute (300)'] },
             { cells: ['list_metric_names', 'Stored metric names', 'tool'] },
-            { cells: ['query_metrics', 'A metric as time buckets or totals per series (service, type, model); cumulative counters become increases', 'name, tool, from (24 hours), to, aggregate, interval (about 50 buckets)'] },
+            { cells: ['query_metrics', 'A metric as time buckets or totals per series (service and token type, and model for totals; or the group_by attributes); cumulative counters become increases; histograms (durations, sizes) show their average or the stat asked for, percentiles estimated from their buckets', 'name, tool, from (24 hours), to, aggregate, interval (5m, 1h, 1d, 1w; about 50 buckets), group_by (up to 2 attributes), filters (exact attribute values), stat (avg, sum, count, min, max, p50, p90, p95, p99), timezone (default: the server\'s)'] },
           ],
         },
       },
@@ -691,7 +893,7 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       },
       {
         type: 'paragraph',
-        text: 'usage_summary reports what AI Observer recorded: sessions that were both imported from files and sent over OTLP count twice, and repository is known for imported and watched Claude Code and Codex sessions only (others show unknown). tokens lists every token type; total_tokens counts each token once, so it leaves out the types that another one includes: cached input of Codex, Gemini and GitHub Copilot and Codex\'s cache writes (part of their input), and Codex reasoning tokens (part of its output).',
+        text: 'usage_summary reports what AI Observer recorded: a Claude Code, Codex or Gemini CLI request recorded both over OTLP and in its session file counts once, and repository is known for imported and watched Claude Code and Codex sessions only (others show unknown). tokens lists every token type; total_tokens counts each token once, so it leaves out the types that another one includes: cached input of Codex, Gemini and GitHub Copilot and Codex\'s cache writes (part of their input), and Codex reasoning tokens (part of its output).',
       },
       {
         type: 'heading',
@@ -751,7 +953,7 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
             { cells: ['usage_summary', 'Total cost and tokens; bars per tool, model or repository, or daily bars stacked by tool. Switch between cost and tokens, and between groupings (this calls the tool again for the same range)'] },
             { cells: ['query_metrics', 'The metric over time (bars for counters, lines for other metrics), or bars of the totals with aggregate'] },
             { cells: ['get_trace', 'The trace page\'s waterfall; click a span for its attributes and error'] },
-            { cells: ['list_sessions', 'Sessions per tool and a table of them; Load more reads the next page'] },
+            { cells: ['list_sessions', 'Sessions per tool, the total cost, and a table of them with their title, repository and branch, and cost; Load more reads the next page'] },
           ],
         },
       },
@@ -795,6 +997,111 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
     ],
   },
   {
+    id: 'api',
+    title: 'REST API',
+    subsections: [
+      { id: 'api-endpoints', title: 'Endpoints' },
+      { id: 'api-metrics', title: 'Metric Series' },
+      { id: 'api-sessions', title: 'Sessions and Transcripts' },
+      { id: 'api-dashboards', title: 'Dashboards and Widgets' },
+      { id: 'api-operations', title: 'Health, Monitoring and Maintenance' },
+    ],
+    content: [
+      {
+        type: 'paragraph',
+        text: 'The dashboard reads everything through the REST API on the API port (http://localhost:8080/api); scripts can use it too. With AI_OBSERVER_AUTH_TOKEN set, send Authorization: Bearer <token>. Times are RFC 3339; to defaults to now and from to 24 hours before to. Lists return total, hasMore and, when there are more, nextCursor: pass it as cursor for the next page; empty lists are []. Invalid parameters answer 400 with a message naming them; limit must be a positive number, and values above an endpoint\'s maximum are reduced to it. docs/openapi.json in the repository describes every endpoint, parameter and response type (OpenAPI 3.1, generated from the server\'s types).',
+      },
+      {
+        type: 'heading',
+        level: 3,
+        text: 'Endpoints',
+      },
+      {
+        type: 'table',
+        table: {
+          headers: ['Endpoint', 'Returns', 'Parameters'],
+          rows: [
+            { cells: ['GET /api/status', 'Version, commit, build date, mode (serve, watch or serve+watch, with watchedTools), start time; listen address and ports (otlpEnabled is false in watch mode; otlpGrpcPort, otlpGrpcEnabled); database path, size, WAL size, usedBytes, freeBytes, compactRecommended, growthBytesPerDay, memory limit, threads; stored telemetry counts with oldest and newest record; settings (retentionDays, maxDbSizeBytes, redaction, authEnabled, tlsEnabled, mcpEnabled, adminApiEnabled, backupDir, storeAllSpans, logLevel, logFormat, corsOrigin, allowedHosts, skipMigrationBackup); pricing files with lastUpdated and overrides; imported files per tool', '—'] },
+            { cells: ['GET /api/sessions', 'Sessions with logs in the range, most recently active first, each with its whole extent: start, last activity, message count, model, title (the first prompt), repository and branch (imported Claude Code and Codex sessions), cost and tokens when recorded', 'service, from, to, search, limit (50, max 1,000), cursor'] },
+            { cells: ['GET /api/sessions/{id}/transcript', 'A page of the session\'s messages, oldest first, with title and totals over all messages', 'limit (500, max 1,000), cursor, search'] },
+            { cells: ['GET /api/logs', 'Log records, newest first; sessionId names the session of a record', 'service, severity, traceId, search, from, to, limit, cursor'] },
+            { cells: ['GET /api/traces, /api/traces/recent', 'Trace rows, each describing the whole trace (all of its spans), ordered by the trace\'s first span in the range; sessionId is set when all spans with a session share one', 'service, search, background, from, to, limit, cursor'] },
+            { cells: ['GET /api/traces/{id}/spans', 'A page of a trace\'s spans (1,000 at most), each with its sessionId', 'kind, limit, cursor'] },
+            { cells: ['GET /api/metrics', 'Stored metric data points, newest first (what the Data points tab shows)', 'service, name, type, from, to, limit, cursor'] },
+            { cells: ['GET /api/metrics/series', 'A metric as time buckets per series; cumulative counters become increases', 'name, service, from, to, interval (seconds), aggregate, groupBy, attr.<key>, stat, merge, tz'] },
+            { cells: ['POST /api/metrics/batch-series', 'Several series over one range; each query succeeds or fails on its own (error and code)', 'body: from, to, interval, timeZone, queries [{id, name, service, aggregate, groupBy, filters, stat, merge}] (at most 50)'] },
+            { cells: ['GET /api/metrics/attribute-keys', 'The attribute keys of a metric\'s points, which series can be grouped and filtered by', 'name, service'] },
+          ],
+        },
+      },
+      {
+        type: 'paragraph',
+        text: 'A sessionId from logs, spans or traces can be opened as /sessions/{sessionId} in the dashboard and read with the transcript endpoint, which also accepts the other IDs of a session.',
+      },
+      {
+        type: 'heading',
+        level: 3,
+        text: 'Metric Series',
+      },
+      {
+        type: 'list',
+        items: [
+          'interval: the bucket size in whole seconds, 1 to 2,678,400 (31 days), default 60; other values answer 400. Ranges that would need more than about 2,000 buckets get a coarser interval, which the response names.',
+          'groupBy: up to two attribute keys, comma-separated (model, or model,repository): one series per service and value instead of per token type. A bucketed query returns at most 100 series.',
+          'attr.<key>=<value>: keep only points whose attribute has the value, such as attr.model=claude-sonnet-5-5 (at most 10; filters in batch queries). merge=true: one series of all matching points.',
+          'stat: the statistic of a histogram metric, avg (default), sum, count, min, max, p50, p90, p95 or p99 (percentiles estimated from the buckets). Buckets without points are null for gauges and for a histogram\'s average, extremes and percentiles.',
+          'tz: the IANA time zone buckets follow, such as Europe/Berlin (default UTC); the dashboard sends the browser\'s, so a daily bucket is a local day.',
+        ],
+      },
+      {
+        type: 'heading',
+        level: 3,
+        text: 'Sessions and Transcripts',
+      },
+      {
+        type: 'list',
+        items: [
+          'Session search: search takes words and "quoted phrases", up to 10 terms. A session matches when one of its log or span records in the range contains all terms (in its text or attribute values, case ignored, also inside longer words). Results come newest match first, with snippet (the text around the terms in the newest matching record), matches (matching records in the range) and matchedAt; total counts the matching sessions. A query of only quotes or with more than 10 terms answers 400 with an explanation.',
+          'Title: the first prompt of the session, one line of at most 200 characters, redacted. Sessions known from spans only (GitHub Copilot) have none.',
+          'Totals: every transcript page carries totals over all messages of the session, not only the page: costUsd, inputTokens, outputTokens, cacheRead, cacheWrite, userMessages, assistantMessages, toolCalls and toolErrors (tool results that failed).',
+          'Transcript search: with search, a message matches when every term is in its content, tool name, tool input or tool output. search.matches lists the positions of all matching messages in the whole transcript (0-based); with page size L, position p is on page p / L (rounded down). Load pages in order until that page has loaded.',
+          'Unknown sessions answer 404; known sessions without content return an empty transcript.',
+        ],
+      },
+      {
+        type: 'heading',
+        level: 3,
+        text: 'Dashboards and Widgets',
+      },
+      {
+        type: 'list',
+        items: [
+          'GET /api/dashboards/default always returns a dashboard: when there is none, the server creates the Default Dashboard with its six widgets, once, also when several browser tabs ask at the same time.',
+          'PUT /api/dashboards/{id}/widgets/{widgetId} changes a widget and returns it whole. The body may hold title, gridColumn, gridRow, colSpan, rowSpan and config. A config replaces the stored configuration whole (send all of it; {} clears it), an omitted config keeps it. Omitted or 0 numbers and an empty title keep the stored values.',
+          'The server refuses colSpan above 4, negative sizes or positions, and titles over 255 characters (400), and a widget that is not on the dashboard (404). It does not check for overlapping widgets: the dashboard does before it saves.',
+          'PUT /api/dashboards/{id}/widgets/positions moves several widgets at once ({"positions": [{"id", "gridColumn", "gridRow"}]}).',
+        ],
+      },
+      {
+        type: 'heading',
+        level: 3,
+        text: 'Health, Monitoring and Maintenance',
+      },
+      {
+        type: 'table',
+        table: {
+          headers: ['Endpoint', 'Returns', 'Notes'],
+          rows: [
+            { cells: ['GET /health', 'Liveness: 200 while the server runs', 'API and OTLP ports, no token'] },
+            { cells: ['GET /ready', 'Readiness: 200, or 503 when the database does not answer within 2 seconds', 'API and OTLP ports, no token; the Docker health check uses it'] },
+            { cells: ['GET /metrics, GET /api/internal/metrics', 'AI Observer\'s own metrics (Prometheus text format, or JSON): OTLP requests, records stored and rejected, write times, API durations and timeouts, WebSocket clients, watcher files, retention, failed authentication', 'API port, behind the token'] },
+            { cells: ['POST /api/admin/delete, /export, /backup, /checkpoint', 'Maintenance while the server runs (see Maintenance)', 'Only with AI_OBSERVER_ADMIN_API=true'] },
+          ],
+        },
+      },
+    ],
+  },
+  {
     id: 'redaction',
     title: 'Redaction',
     content: [
@@ -812,7 +1119,7 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       },
       {
         type: 'note',
-        text: 'Redaction applies to telemetry stored from then on, from OTLP, import and watch. The MCP tools also redact what they return, which covers telemetry stored earlier.',
+        text: 'Redaction applies to telemetry stored from then on, from OTLP, import, watch, export --from-files and restore (which redacts restored text again). The MCP tools also redact what they return, which covers telemetry stored earlier.',
       },
     ],
   },

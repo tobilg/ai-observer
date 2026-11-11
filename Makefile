@@ -1,4 +1,4 @@
-.PHONY: all backend frontend backend-dev backend-test backend-lint backend-coverage frontend-dev frontend-test frontend-lint frontend-coverage dev clean test lint coverage setup help release-notes pricing-update check-pricing
+.PHONY: all backend frontend backend-dev backend-test backend-lint backend-coverage frontend-dev frontend-test frontend-lint frontend-coverage dev clean test lint coverage setup help release-notes pricing-update check-pricing api-types
 
 # Version information
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -49,6 +49,12 @@ GOLANGCI_LINT_VERSION ?= v2.5.0
 backend-lint:
 	@echo "Linting backend..."
 	cd backend && go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run
+
+# TypeScript types (frontend/src/types/api.gen.ts, mcp.gen.ts) and docs/openapi.json
+# from the Go types of the API (backend/internal/apigen/spec); go test fails when they are stale
+api-types:
+	@echo "Generating API types..."
+	cd backend && go run ./cmd/apigen
 
 # Frontend targets
 frontend:
@@ -141,4 +147,5 @@ help:
 	@echo "  release-notes     - Generate release notes with Claude (TAG=vX.X.X)"
 	@echo "  pricing-update    - Refresh the built-in prices from models.dev"
 	@echo "  check-pricing     - Fail when pricing data is more than 7 days old"
+	@echo "  api-types         - Generate the frontend's API types and docs/openapi.json from the Go types"
 	@echo "  help              - Show this help message"

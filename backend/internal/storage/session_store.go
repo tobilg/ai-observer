@@ -40,7 +40,9 @@ type SessionLog struct {
 	Attrs       map[string]string
 }
 
-// SessionLogs returns the logs of a session, oldest first
+// SessionLogs returns the logs of a session, oldest first, logs of the same
+// time in the order they were stored, as session lists merge them
+// (mergeSessionMessages)
 func (s *DuckDBStore) SessionLogs(ctx context.Context, sessionID string) ([]SessionLog, error) {
 	query := `
 		SELECT
@@ -52,7 +54,7 @@ func (s *DuckDBStore) SessionLogs(ctx context.Context, sessionID string) ([]Sess
 			LogAttributes
 		FROM otel_logs
 		WHERE list_contains(SessionIds, ?)
-		ORDER BY Timestamp ASC
+		ORDER BY Timestamp ASC, rowid ASC
 	`
 
 	rows, err := s.db.QueryContext(ctx, query, sessionID)
@@ -106,7 +108,7 @@ func (s *DuckDBStore) SessionSpans(ctx context.Context, sessionID string) ([]api
 			t.Timestamp, t.TraceId, t.SpanId, t.ParentSpanId, t.TraceState,
 			t.SpanName, t.SpanKind, t.ServiceName, t.ResourceAttributes,
 			t.ScopeName, t.ScopeVersion, t.SpanAttributes, t.Duration,
-			t.StatusCode, t.StatusMessage
+			t.StatusCode, t.StatusMessage, t.SessionId
 		FROM otel_traces t
 		JOIN matching_traces m ON t.ServiceName = m.ServiceName AND t.TraceId = m.TraceId
 		LEFT JOIN genai_traces g ON t.ServiceName = g.ServiceName AND t.TraceId = g.TraceId

@@ -2,11 +2,13 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -19,12 +21,16 @@ import (
 	"github.com/tobilg/ai-observer/internal/logger"
 	"github.com/tobilg/ai-observer/internal/mcpserver"
 	appMiddleware "github.com/tobilg/ai-observer/internal/middleware"
+	"github.com/tobilg/ai-observer/internal/otlpgrpc"
+	"github.com/tobilg/ai-observer/internal/redact"
+	"github.com/tobilg/ai-observer/internal/selfmetrics"
 	"github.com/tobilg/ai-observer/internal/storage"
+	"github.com/tobilg/ai-observer/internal/tools"
+	"github.com/tobilg/ai-observer/internal/transcript"
 	"github.com/tobilg/ai-observer/internal/watcher"
 	"github.com/tobilg/ai-observer/internal/websocket"
 	"github.com/tobilg/ai-observer/pkg/compression"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
+	"google.golang.org/grpc"
 )
 
 // apiMaxPayloadBytes bounds API request bodies
@@ -40,18 +46,38 @@ type Server struct {
 	// HTTP servers for graceful shutdown
 	otlpServer    *http.Server
 	apiServer     *http.Server
-	fileWatcher   *watcher.Watcher // nil if watch mode not enabled
-	stopRetention func()           // nil if retention is not running
-	closed        bool             // set by Shutdown; servers must not start afterwards
+	grpcServer    *grpc.Server      // OTLP/gRPC; nil when disabled or not started
+	ingest        otlpgrpc.Ingester // the OTLP ingestion pipeline, for gRPC
+	fileWatcher   *watcher.Watcher  // nil if watch mode not enabled
+	watchedTools  []string          // tools the file watcher watches
+	stopRetention func()            // nil if retention is not running
+	closed        bool              // set by Shutdown; servers must not start afterwards
 	mu            sync.Mutex
 
 	// stopping is cancelled when Shutdown starts, ending requests that have
 	// no timeout (MCP); stop cancels it
 	stopping context.Context
 	stop     context.CancelFunc
+
+	startedAt time.Time // for GET /api/status
+
+	// transcripts is shared by the REST API and the MCP endpoint
+	transcripts *transcript.Cache
+
+	// tls is the HTTP servers' TLS configuration (AI_OBSERVER_TLS_CERT,
+	// AI_OBSERVER_TLS_KEY); nil serves plain HTTP
+	tls *tls.Config
+	// auth checks the token on OTLP (HTTP and gRPC) and API requests; nil
+	// without AI_OBSERVER_AUTH_TOKEN. One instance, so failed attempts are
+	// counted across all of them.
+	auth *TokenAuth
 }
 
 func New(cfg *config.Config) (*Server, error) {
+	tlsConfig, err := loadTLS(cfg.TLSCert, cfg.TLSKey)
+	if err != nil {
+		return nil, err
+	}
 	store, err := storage.NewDuckDBStoreWithOptions(cfg.DatabasePath, cfg.StorageOptions())
 	if err != nil {
 		return nil, fmt.Errorf("initializing storage: %w", err)
@@ -61,6 +87,7 @@ func New(cfg *config.Config) (*Server, error) {
 
 	hub := websocket.NewHub()
 	go hub.Run()
+	selfmetrics.SetWebSocketClients(hub.ClientCount)
 
 	s := &Server{
 		otlpRouter: chi.NewRouter(),
@@ -68,12 +95,18 @@ func New(cfg *config.Config) (*Server, error) {
 		storage:    store,
 		wsHub:      hub,
 		config:     cfg,
+		startedAt:  time.Now(),
+		tls:        tlsConfig,
 	}
+	s.transcripts = transcript.NewCache(store)
 	s.stopping, s.stop = context.WithCancel(context.Background())
 
 	s.setupMiddleware()
 
 	h := handlers.New(store, hub)
+	s.ingest = h
+	h.SetServerInfo(s.serverInfo)
+	h.SetTranscriptCache(s.transcripts)
 	if err := s.setupRoutes(h); err != nil {
 		s.stop()
 		hub.Stop()
@@ -82,6 +115,65 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 
 	return s, nil
+}
+
+// serverInfo describes the server for GET /api/status. The mode is "watch"
+// while the file watcher runs without OTLP (the watch command),
+// "serve+watch" while it runs beside the OTLP servers (serve --watch), and
+// "serve" otherwise. OTLP is enabled while the OTLP/HTTP server runs, gRPC
+// while the OTLP/gRPC server does.
+func (s *Server) serverInfo() handlers.ServerInfo {
+	s.mu.Lock()
+	watching, otlp, grpcOn := s.fileWatcher != nil, s.otlpServer != nil, s.grpcServer != nil
+	watchedTools := append([]string(nil), s.watchedTools...)
+	s.mu.Unlock()
+	mode := ModeServe
+	switch {
+	case watching && otlp:
+		mode = ModeServeWatch
+	case watching:
+		mode = ModeWatch
+	}
+	grpcPort := s.config.OTLPGRPCPort
+	// The mode in effect: a redactor without rules redacts nothing
+	redaction := redact.Off
+	if r := s.storage.Redactor(); r.Enabled() {
+		redaction = r.Mode()
+	}
+	dbPath := s.config.DatabasePath
+	if abs, err := filepath.Abs(dbPath); err == nil {
+		dbPath = abs
+	}
+	return handlers.ServerInfo{
+		Mode:        mode,
+		StartedAt:   s.startedAt,
+		Host:        s.config.Host,
+		APIPort:     s.config.APIPort,
+		OTLPPort:    s.config.OTLPPort,
+		OTLPEnabled: otlp,
+		// The configured port (0 when disabled) and whether it listens
+		OTLPGRPCPort:    grpcPort,
+		OTLPGRPCEnabled: grpcOn,
+		WatchedTools:    watchedTools,
+		DatabasePath:    dbPath,
+		DBMemoryLimit:   s.config.DBMemoryLimit,
+		DBThreads:       s.config.DBThreads,
+		RetentionDays:   s.config.RetentionDays,
+		Redaction:       string(redaction),
+		AuthEnabled:     s.config.AuthToken != "",
+		MCPEnabled:      s.config.MCPEnabled,
+		StoreAllSpans:   s.config.StoreAllSpans,
+		MaxDBSize:       s.config.MaxDBSize,
+		AdminAPI:        s.config.AdminAPI,
+		BackupDir:       absPath(s.config.AdminBackupDir()),
+
+		TLSEnabled:          s.tls != nil,
+		LogLevel:            s.config.LogLevel,
+		LogFormat:           s.config.LogFormat,
+		CORSOrigin:          s.config.FrontendURL,
+		AllowedHosts:        s.config.AllowedHosts,
+		SkipMigrationBackup: s.config.SkipMigrationBackup,
+	}
 }
 
 // corsOrigins are the browser origins the API answers CORS requests for
@@ -98,23 +190,22 @@ func (s *Server) setupMiddleware() {
 		router.Use(middleware.RequestID)
 		router.Use(RequestLogger)
 		router.Use(middleware.Recoverer)
+		router.Use(requestMetrics(router == s.otlpRouter))
 		// Reject cross-site requests (CSRF), including CORS "simple" requests
 		router.Use(origins.Middleware)
 	}
 
 	// Optional shared token (AI_OBSERVER_AUTH_TOKEN)
 	auth := NewTokenAuth(s.config.AuthToken)
+	s.auth = auth
 	if auth != nil {
 		s.otlpRouter.Use(auth.OTLPMiddleware)
 		logger.Info("Token authentication enabled; open the dashboard once with ?token=<AI_OBSERVER_AUTH_TOKEN>")
-	} else if !isLoopbackHost(normalizeHost(s.config.Host)) {
-		logger.Warn("Listening beyond localhost without authentication: anyone who can reach the ports can read "+
-			"the stored prompts and code and send telemetry. Set AI_OBSERVER_AUTH_TOKEN, or publish container ports "+
-			"to 127.0.0.1 only", "host", s.config.Host)
 	}
+	s.warnInsecureListening(auth != nil)
 
-	// OTLP router needs gzip decompression for clients that compress payloads
-	s.otlpRouter.Use(compression.GzipDecompressMiddleware)
+	// OTLP router decodes compressed payloads (gzip, deflate; 415 for others)
+	s.otlpRouter.Use(compression.DecompressMiddleware)
 
 	// OTLP router has 10MB payload size limit
 	s.otlpRouter.Use(appMiddleware.DefaultPayloadLimitMiddleware)
@@ -139,11 +230,19 @@ func (s *Server) setupMiddleware() {
 		MaxAge:         300,
 	}))
 
+	// Compress the dashboard's scripts and styles (1.3 MB uncompressed) and
+	// API responses for clients that accept it, which matters when AI
+	// Observer is reached over a network (Docker, a remote machine).
+	// Responses of other types, such as the WebSocket upgrade, pass through.
+	s.apiRouter.Use(middleware.Compress(5,
+		"application/json", "text/html", "text/css", "text/javascript", "application/javascript", "image/svg+xml", "text/plain"))
+
 	// Add context timeout for API requests (skips WebSocket upgrade requests)
 	// Handlers should check context.Done() to respect timeout. MCP tool calls
 	// run without it: an agent's search over a large database may take
 	// longer, and the client cancels requests it no longer waits for.
-	s.apiRouter.Use(exceptPath(mcpserver.Path, appMiddleware.DefaultContextTimeoutMiddleware))
+	// The admin API's operations run without it too (adminRoutes).
+	s.apiRouter.Use(exceptPath(mcpserver.Path, exceptPrefix(adminPathPrefix, appMiddleware.DefaultContextTimeoutMiddleware)))
 }
 
 // allowedHosts returns the host names accepted by HostCheck in addition to IP
@@ -165,9 +264,25 @@ func (s *Server) listen(port int) (net.Listener, error) {
 	return net.Listen("tcp", net.JoinHostPort(s.config.Host, strconv.Itoa(port)))
 }
 
-// ListenAndServe starts the OTLP and API servers. Both listeners are opened
-// before serving, so an unavailable port fails startup instead of leaving the
-// process running without OTLP ingestion. It returns when the API server stops.
+// Server modes reported by GET /api/status
+const (
+	ModeServe      = "serve"       // OTLP and API
+	ModeWatch      = "watch"       // session files and API, no OTLP
+	ModeServeWatch = "serve+watch" // OTLP, session files and API (serve --watch)
+)
+
+// grpcProtocol describes the OTLP/gRPC server's protocol for the log
+func (s *Server) grpcProtocol() string {
+	if s.tls != nil {
+		return "gRPC (TLS)"
+	}
+	return "gRPC (HTTP/2 cleartext)"
+}
+
+// ListenAndServe starts the OTLP servers (HTTP, and gRPC unless its port is
+// 0) and the API server. All listeners are opened before serving, so an
+// unavailable port fails startup instead of leaving the process running
+// without OTLP ingestion. It returns when the API server stops.
 func (s *Server) ListenAndServe() error {
 	log := logger.Logger()
 
@@ -175,40 +290,70 @@ func (s *Server) ListenAndServe() error {
 	if err != nil {
 		return fmt.Errorf("starting OTLP server: %w", err)
 	}
+	var grpcListener net.Listener
+	if s.config.OTLPGRPCPort != 0 {
+		if grpcListener, err = s.listen(s.config.OTLPGRPCPort); err != nil {
+			otlpListener.Close()
+			return fmt.Errorf("starting OTLP/gRPC server (set AI_OBSERVER_OTLP_GRPC_PORT to another port, or off): %w", err)
+		}
+	}
 	apiListener, err := s.listen(s.config.APIPort)
 	if err != nil {
 		otlpListener.Close()
+		if grpcListener != nil {
+			grpcListener.Close()
+		}
 		return fmt.Errorf("starting API server: %w", err)
 	}
 
 	otlpServer := &http.Server{
-		Handler:      h2c.NewHandler(s.otlpRouter, &http2.Server{}),
+		Handler:      s.otlpHandler(),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
+	}
+	var grpcServer *grpc.Server
+	if grpcListener != nil {
+		grpcServer = otlpgrpc.NewServer(s.ingest, otlpgrpc.Options{Authorize: s.auth.GRPCAuthorizer(), TLS: s.tls.Clone()})
 	}
 
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		otlpListener.Close()
+		if grpcListener != nil {
+			grpcListener.Close()
+		}
 		apiListener.Close()
 		return http.ErrServerClosed
 	}
 	s.otlpServer = otlpServer
+	s.grpcServer = grpcServer
 	s.mu.Unlock()
 
 	go func() {
 		log.Info("OTLP server starting",
 			"addr", otlpListener.Addr().String(),
-			"protocol", "HTTP/1.1 + h2c",
+			"protocol", s.otlpProtocol(),
 			"endpoints", "POST /v1/traces, /v1/metrics, /v1/logs",
 		)
 
-		if err := otlpServer.Serve(otlpListener); err != nil && err != http.ErrServerClosed {
+		if err := s.serveOTLP(otlpServer, otlpListener); err != nil && err != http.ErrServerClosed {
 			log.Error("OTLP server error", "error", err)
 		}
 	}()
+	if grpcServer != nil {
+		go func() {
+			log.Info("OTLP/gRPC server starting",
+				"addr", grpcListener.Addr().String(),
+				"protocol", s.grpcProtocol(),
+				"services", "TraceService, MetricsService, LogsService",
+			)
+			if err := grpcServer.Serve(grpcListener); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+				log.Error("OTLP/gRPC server error", "error", err)
+			}
+		}()
+	}
 
 	return s.serveAPI(apiListener)
 }
@@ -226,7 +371,23 @@ func (s *Server) StartWatcher(cfg watcher.Config) error {
 		return err
 	}
 	s.fileWatcher = w
+	s.watchedTools = watchedTools(cfg.Tools)
 	return nil
+}
+
+// watchedTools returns the tools a watcher configured with names watches:
+// those named, or all tools with session files when none are
+func watchedTools(names []string) []string {
+	if len(names) > 0 {
+		return append([]string(nil), names...)
+	}
+	var all []string
+	for _, p := range tools.Providers() {
+		if p.SessionFiles {
+			all = append(all, string(p.Tool))
+		}
+	}
+	return all
 }
 
 // ListenAndServeAPIOnly starts only the API server (no OTLP server)
@@ -259,18 +420,21 @@ func (s *Server) serveAPI(listener net.Listener) error {
 	}
 	s.apiServer = apiServer
 	s.startRetention()
+	// Message keys of logs stored by another version; Close stops it
+	s.storage.StartMessageKeyRefill()
 	s.mu.Unlock()
 
 	logger.Info("API server starting",
 		"addr", listener.Addr().String(),
-		"protocol", "HTTP/1.1",
-		"endpoints", "GET /api/*, /ws, /health",
+		"protocol", s.apiProtocol(),
+		"endpoints", "GET /api/*, /ws, /health, /ready, /metrics",
 	)
+	logger.Info("Dashboard available", "url", localURL(s.scheme(), listener.Addr(), "/"))
 	if s.config.MCPEnabled {
-		logger.Info("MCP endpoint for agents enabled", "url", localURL(listener.Addr(), mcpserver.Path))
+		logger.Info("MCP endpoint for agents enabled", "url", localURL(s.scheme(), listener.Addr(), mcpserver.Path))
 	}
 
-	return apiServer.Serve(listener)
+	return apiServer.Serve(s.apiListener(listener))
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
@@ -284,14 +448,38 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	var errs []error
 	var errMu sync.Mutex
 
-	// Shutdown OTLP server
 	s.mu.Lock()
 	s.closed = true
 	otlpServer := s.otlpServer
 	apiServer := s.apiServer
+	grpcServer := s.grpcServer
 	fileWatcher := s.fileWatcher
 	s.mu.Unlock()
 
+	// Shutdown OTLP/gRPC server: finish running exports, unless ctx ends first
+	if grpcServer != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			logger.Info("Shutting down OTLP/gRPC server")
+			stopped := make(chan struct{})
+			go func() {
+				grpcServer.GracefulStop()
+				close(stopped)
+			}()
+			select {
+			case <-stopped:
+			case <-ctx.Done():
+				grpcServer.Stop()
+				<-stopped
+				errMu.Lock()
+				errs = append(errs, fmt.Errorf("shutting down OTLP/gRPC server: %w", ctx.Err()))
+				errMu.Unlock()
+			}
+		}()
+	}
+
+	// Shutdown OTLP/HTTP server
 	if otlpServer != nil {
 		wg.Add(1)
 		go func() {
@@ -345,17 +533,18 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// localURL returns the URL of path on addr for clients on this machine: a
-// server listening on all interfaces (0.0.0.0, ::) is reached via localhost
-func localURL(addr net.Addr, path string) string {
+// localURL returns the URL (scheme http or https) of path on addr for
+// clients on this machine: a server listening on all interfaces (0.0.0.0,
+// ::) is reached via localhost
+func localURL(scheme string, addr net.Addr, path string) string {
 	host, port, err := net.SplitHostPort(addr.String())
 	if err != nil {
-		return "http://" + addr.String() + path
+		return scheme + "://" + addr.String() + path
 	}
 	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
 		host = "localhost"
 	}
-	return "http://" + net.JoinHostPort(host, port) + path
+	return scheme + "://" + net.JoinHostPort(host, port) + path
 }
 
 // endOnStop cancels the context of each request to h when stopping is done

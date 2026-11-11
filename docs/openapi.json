@@ -1,0 +1,5310 @@
+{
+  "components": {
+    "schemas": {
+      "AdminBackupRequest": {
+        "description": "AdminBackupRequest is the body of POST /api/admin/backup (optional): the\nfile name of the backup in the backup directory (letters, digits, \".\",\n\"_\" and \"-\"; default ai-observer-backup-\u003ctime\u003e.duckdb)",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "AdminBackupResponse": {
+        "description": "AdminBackupResponse describes a backup: a DuckDB database file",
+        "properties": {
+          "durationMs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          },
+          "schemaVersion": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "sizeBytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "tables": {
+            "additionalProperties": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "path",
+          "sizeBytes",
+          "tables",
+          "schemaVersion",
+          "durationMs"
+        ],
+        "type": "object"
+      },
+      "AdminCheckpointResponse": {
+        "description": "AdminCheckpointResponse answers POST /api/admin/checkpoint",
+        "properties": {
+          "database": {
+            "$ref": "#/components/schemas/AdminDatabaseSize"
+          },
+          "durationMs": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "database",
+          "durationMs"
+        ],
+        "type": "object"
+      },
+      "AdminDatabaseSize": {
+        "description": "AdminDatabaseSize is the space the database takes: the file and its\nwrite-ahead log, and the used and free blocks inside the file",
+        "properties": {
+          "compactRecommended": {
+            "description": "CompactRecommended is set when so much of the file is free that\nai-observer compact (with the server stopped) would shrink it\nnoticeably",
+            "type": "boolean"
+          },
+          "freeBytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "sizeBytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "usedBytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "walSizeBytes": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sizeBytes",
+          "walSizeBytes",
+          "usedBytes",
+          "freeBytes",
+          "compactRecommended"
+        ],
+        "type": "object"
+      },
+      "AdminDeleteRequest": {
+        "description": "AdminDeleteRequest is the body of POST /api/admin/delete: the telemetry\nin [from, to] (RFC 3339, both required) of a service filter (a tool name\nsuch as codex selects all of its services, a service name only itself;\nempty for all) and a scope (logs, metrics, traces or all, the default).\nDryRun only counts the records.",
+        "properties": {
+          "dryRun": {
+            "type": "boolean"
+          },
+          "from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/DeleteScope"
+          },
+          "service": {
+            "type": "string"
+          },
+          "to": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "type": "object"
+      },
+      "AdminDeleteResponse": {
+        "description": "AdminDeleteResponse counts the records deleted, or those a dry run would\ndelete (traces only then). Database is the space of the database after\nthe deletion and a checkpoint; the file keeps its size.",
+        "properties": {
+          "database": {
+            "$ref": "#/components/schemas/AdminDatabaseSize"
+          },
+          "dryRun": {
+            "type": "boolean"
+          },
+          "from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "logs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "metrics": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/DeleteScope"
+          },
+          "service": {
+            "type": "string"
+          },
+          "spans": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "to": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "traces": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "dryRun",
+          "from",
+          "to",
+          "scope",
+          "logs",
+          "metrics",
+          "spans"
+        ],
+        "type": "object"
+      },
+      "AdminExportRequest": {
+        "description": "AdminExportRequest is the body of POST /api/admin/export (optional): the\ndirectory name of the export in the backup directory (letters, digits,\n\".\", \"_\" and \"-\"; default ai-observer-export-\u003csource\u003e-\u003ctime\u003e), the source\n(a tool name or all, the default), an optional range and whether to\nwrite a ZIP archive",
+        "properties": {
+          "from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "to": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "zip": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "AdminExportResponse": {
+        "description": "AdminExportResponse describes an export: its directory, the files in it\nand the rows exported",
+        "properties": {
+          "baselines": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "dashboards": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "durationMs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "logs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "metrics": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          },
+          "sizeBytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "traces": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "files",
+          "traces",
+          "logs",
+          "metrics",
+          "baselines",
+          "dashboards",
+          "sizeBytes",
+          "durationMs"
+        ],
+        "type": "object"
+      },
+      "BatchMetricSeriesRequest": {
+        "description": "BatchMetricSeriesRequest represents a batch query for multiple metric series",
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "interval": {
+            "description": "Interval in seconds",
+            "format": "int64",
+            "type": "integer"
+          },
+          "queries": {
+            "items": {
+              "$ref": "#/components/schemas/MetricQuery"
+            },
+            "type": "array"
+          },
+          "timeZone": {
+            "description": "TimeZone is the IANA zone buckets are aligned to (default UTC)",
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "queries"
+        ],
+        "type": "object"
+      },
+      "BatchMetricSeriesResponse": {
+        "description": "BatchMetricSeriesResponse contains results for all queried metrics",
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/MetricQueryResult"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "type": "object"
+      },
+      "BreakdownValuesResponse": {
+        "description": "BreakdownValuesResponse lists the values of a metric's attribute",
+        "properties": {
+          "values": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "values"
+        ],
+        "type": "object"
+      },
+      "CreateDashboardRequest": {
+        "description": "CreateDashboardRequest is the body of POST /api/dashboards",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "isDefault": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "CreateWidgetRequest": {
+        "description": "CreateWidgetRequest is the body of POST /api/dashboards/{id}/widgets",
+        "properties": {
+          "colSpan": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "config": {
+            "$ref": "#/components/schemas/WidgetConfig"
+          },
+          "gridColumn": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "gridRow": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "rowSpan": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "title": {
+            "type": "string"
+          },
+          "widgetType": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "widgetType",
+          "title",
+          "gridColumn",
+          "gridRow",
+          "colSpan",
+          "rowSpan"
+        ],
+        "type": "object"
+      },
+      "Dashboard": {
+        "description": "Dashboard represents a user-defined dashboard",
+        "properties": {
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "isDefault": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "isDefault",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "DashboardWidget": {
+        "description": "DashboardWidget represents a widget placed on a dashboard",
+        "properties": {
+          "colSpan": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "config": {
+            "$ref": "#/components/schemas/WidgetConfig"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "dashboardId": {
+            "type": "string"
+          },
+          "gridColumn": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "gridRow": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "rowSpan": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "title": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "widgetType": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "dashboardId",
+          "widgetType",
+          "title",
+          "gridColumn",
+          "gridRow",
+          "colSpan",
+          "rowSpan",
+          "config",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "DashboardWithWidgets": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Dashboard"
+          },
+          {
+            "properties": {
+              "widgets": {
+                "items": {
+                  "$ref": "#/components/schemas/DashboardWidget"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "widgets"
+            ],
+            "type": "object"
+          }
+        ],
+        "description": "DashboardWithWidgets represents a full dashboard with its widgets"
+      },
+      "DashboardsResponse": {
+        "description": "DashboardsResponse lists the dashboards (without widgets)",
+        "properties": {
+          "dashboards": {
+            "items": {
+              "$ref": "#/components/schemas/Dashboard"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "dashboards"
+        ],
+        "type": "object"
+      },
+      "DeleteScope": {
+        "description": "What a deletion deletes: logs, metrics, traces or all of them",
+        "enum": [
+          "logs",
+          "metrics",
+          "traces",
+          "all"
+        ],
+        "type": "string"
+      },
+      "ErrorResponse": {
+        "description": "ErrorResponse is the body of error responses (status 4xx and 5xx)",
+        "properties": {
+          "error": {
+            "description": "Error is the HTTP status text, such as \"Bad Request\"",
+            "type": "string"
+          },
+          "message": {
+            "description": "Message says what went wrong (for server errors without internals)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "HealthResponse": {
+        "description": "HealthResponse is the answer of GET /health (liveness): always \"ok\" while\nthe server answers",
+        "properties": {
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "HistogramStat": {
+        "description": "Statistic of a histogram metric's series: avg (the default), sum, count, min, max or a percentile\n(estimated from the histogram buckets)",
+        "enum": [
+          "avg",
+          "sum",
+          "count",
+          "min",
+          "max",
+          "p50",
+          "p90",
+          "p95",
+          "p99"
+        ],
+        "type": "string"
+      },
+      "InternalBucket": {
+        "description": "InternalBucket counts the observations up to LE (cumulative; the last\nbucket, LE \"+Inf\", counts all)",
+        "properties": {
+          "count": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "le": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "le",
+          "count"
+        ],
+        "type": "object"
+      },
+      "InternalMetric": {
+        "description": "InternalMetric is a metric family: its series by label values",
+        "properties": {
+          "help": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/InternalMetricSeries"
+            },
+            "type": "array"
+          },
+          "type": {
+            "$ref": "#/components/schemas/InternalMetricType",
+            "description": "Type is counter, gauge or histogram"
+          }
+        },
+        "required": [
+          "name",
+          "help",
+          "type",
+          "series"
+        ],
+        "type": "object"
+      },
+      "InternalMetricSeries": {
+        "description": "InternalMetricSeries is one series of a metric. Counters and gauges have\nValue; histograms have Count, Sum and cumulative Buckets.",
+        "properties": {
+          "buckets": {
+            "items": {
+              "$ref": "#/components/schemas/InternalBucket"
+            },
+            "type": "array"
+          },
+          "count": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "sum": {
+            "format": "double",
+            "type": "number"
+          },
+          "value": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "InternalMetricType": {
+        "description": "Type of a metric of AI Observer itself",
+        "enum": [
+          "counter",
+          "gauge",
+          "histogram"
+        ],
+        "type": "string"
+      },
+      "InternalMetricsResponse": {
+        "description": "InternalMetricsResponse is the answer of GET /api/internal/metrics: AI\nObserver's own metrics (internal/selfmetrics), also served in the\nPrometheus text format at GET /metrics",
+        "properties": {
+          "metrics": {
+            "items": {
+              "$ref": "#/components/schemas/InternalMetric"
+            },
+            "type": "array"
+          },
+          "startedAt": {
+            "description": "StartedAt is when the counters started (process start), RFC 3339",
+            "type": "string"
+          }
+        },
+        "required": [
+          "startedAt",
+          "metrics"
+        ],
+        "type": "object"
+      },
+      "LogLevelCounts": {
+        "additionalProperties": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "description": "LogLevelCounts is the answer of GET /api/logs/levels: the number of log\nrecords per severity text, such as {\"INFO\": 120, \"ERROR\": 3} (records\nwithout one are not counted)",
+        "type": "object"
+      },
+      "LogRecord": {
+        "description": "LogRecord is a log record",
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "logAttributes": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "resourceAttributes": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "resourceSchemaUrl": {
+            "type": "string"
+          },
+          "scopeAttributes": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "scopeName": {
+            "type": "string"
+          },
+          "scopeSchemaUrl": {
+            "type": "string"
+          },
+          "scopeVersion": {
+            "type": "string"
+          },
+          "serviceName": {
+            "type": "string"
+          },
+          "sessionId": {
+            "description": "SessionID is the stored session of the log (read from storage;\nignored when logs are stored, which take it from LogAttributes)",
+            "type": "string"
+          },
+          "severityNumber": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "severityText": {
+            "type": "string"
+          },
+          "spanId": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "traceFlags": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "traceId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "timestamp",
+          "serviceName"
+        ],
+        "type": "object"
+      },
+      "LogsResponse": {
+        "description": "LogsResponse is a page of log records, the newest first",
+        "properties": {
+          "hasMore": {
+            "type": "boolean"
+          },
+          "logs": {
+            "items": {
+              "$ref": "#/components/schemas/LogRecord"
+            },
+            "type": "array"
+          },
+          "nextCursor": {
+            "description": "NextCursor selects the next page (cursor parameter) when HasMore",
+            "type": "string"
+          },
+          "total": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "logs",
+          "total",
+          "hasMore"
+        ],
+        "type": "object"
+      },
+      "MetricAttributeKeysResponse": {
+        "description": "MetricAttributeKeysResponse lists the attribute keys of a metric's points",
+        "properties": {
+          "keys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "keys"
+        ],
+        "type": "object"
+      },
+      "MetricDataPoint": {
+        "description": "MetricDataPoint is a metric point. Which value fields are set depends on\nMetricType: Value for gauges and sums; Count, Sum, Min, Max and buckets\nfor histograms; quantiles for summaries.",
+        "properties": {
+          "aggregationTemporality": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "attributes": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "bucketCounts": {
+            "items": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "count": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "explicitBounds": {
+            "items": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "isMonotonic": {
+            "type": "boolean"
+          },
+          "max": {
+            "format": "double",
+            "type": "number"
+          },
+          "metricDescription": {
+            "type": "string"
+          },
+          "metricName": {
+            "type": "string"
+          },
+          "metricType": {
+            "$ref": "#/components/schemas/MetricType"
+          },
+          "metricUnit": {
+            "type": "string"
+          },
+          "min": {
+            "format": "double",
+            "type": "number"
+          },
+          "negativeBucketCounts": {
+            "items": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "negativeOffset": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "positiveBucketCounts": {
+            "items": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "positiveOffset": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "quantileQuantiles": {
+            "items": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "quantileValues": {
+            "items": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "resourceAttributes": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "scale": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "scopeName": {
+            "type": "string"
+          },
+          "scopeVersion": {
+            "type": "string"
+          },
+          "serviceName": {
+            "type": "string"
+          },
+          "sum": {
+            "format": "double",
+            "type": "number"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "value": {
+            "format": "double",
+            "type": "number"
+          },
+          "zeroCount": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timestamp",
+          "serviceName",
+          "metricName",
+          "metricType"
+        ],
+        "type": "object"
+      },
+      "MetricNamesResponse": {
+        "description": "MetricNamesResponse lists the names of stored metrics",
+        "properties": {
+          "names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "names"
+        ],
+        "type": "object"
+      },
+      "MetricQuery": {
+        "description": "MetricQuery represents a single query within a batch request",
+        "properties": {
+          "aggregate": {
+            "type": "boolean"
+          },
+          "filters": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Filters keep only points whose attributes have these exact values",
+            "type": "object"
+          },
+          "groupBy": {
+            "description": "GroupBy names up to two point attributes: series are grouped by\nservice and their values (labelled by the keys) instead of by type",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "type": "string"
+          },
+          "merge": {
+            "description": "Merge makes one series of all matching points, without a service\nlabel (for a single value of an average or percentile); it takes no\nGroupBy",
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "service": {
+            "type": "string"
+          },
+          "stat": {
+            "description": "Stat is the statistic of a histogram metric: avg (default), sum,\ncount, min, max, p50, p90, p95 or p99",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "MetricQueryErrorCode": {
+        "description": "Codes of failed metric queries (MetricQueryResult.Code)",
+        "enum": [
+          "invalid_query",
+          "invalid_group_by",
+          "invalid_filter",
+          "invalid_stat",
+          "invalid_time_zone",
+          "too_many_series",
+          "timeout",
+          "query_failed"
+        ],
+        "type": "string"
+      },
+      "MetricQueryResult": {
+        "description": "MetricQueryResult contains the result for a single metric query",
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/MetricQueryErrorCode"
+          },
+          "error": {
+            "description": "Error says why a query failed, and Code is its kind (MetricError*)",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "metricType": {
+            "$ref": "#/components/schemas/MetricType",
+            "description": "MetricType and Stat as in TimeSeriesResponse"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/TimeSeries"
+            },
+            "type": "array"
+          },
+          "stat": {
+            "$ref": "#/components/schemas/HistogramStat"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "success"
+        ],
+        "type": "object"
+      },
+      "MetricType": {
+        "description": "Type of metric points, as OTLP names them",
+        "enum": [
+          "gauge",
+          "sum",
+          "histogram",
+          "exponential_histogram",
+          "summary"
+        ],
+        "type": "string"
+      },
+      "MetricsResponse": {
+        "description": "MetricsResponse is a page of metric points, the newest first",
+        "properties": {
+          "hasMore": {
+            "type": "boolean"
+          },
+          "metrics": {
+            "items": {
+              "$ref": "#/components/schemas/MetricDataPoint"
+            },
+            "type": "array"
+          },
+          "nextCursor": {
+            "description": "NextCursor selects the next page (cursor parameter) when HasMore",
+            "type": "string"
+          },
+          "total": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "metrics",
+          "total",
+          "hasMore"
+        ],
+        "type": "object"
+      },
+      "OKResponse": {
+        "description": "OKResponse is the answer of requests that return no data, such as\nmaking a dashboard the default or moving widgets: {\"status\": \"ok\"}",
+        "properties": {
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "Provider": {
+        "description": "Provider describes a supported AI coding tool (tools.Provider)",
+        "properties": {
+          "displayName": {
+            "type": "string"
+          },
+          "otherServices": {
+            "description": "OtherServices are further service names the tool sends",
+            "items": {
+              "$ref": "#/components/schemas/ProviderService"
+            },
+            "type": "array"
+          },
+          "serviceName": {
+            "type": "string"
+          },
+          "sessionFiles": {
+            "type": "boolean"
+          },
+          "tool": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool",
+          "serviceName",
+          "displayName",
+          "sessionFiles"
+        ],
+        "type": "object"
+      },
+      "ProviderService": {
+        "description": "ProviderService is a further service name of a tool (tools.Service)",
+        "properties": {
+          "displayName": {
+            "type": "string"
+          },
+          "serviceName": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "serviceName",
+          "displayName"
+        ],
+        "type": "object"
+      },
+      "ProvidersResponse": {
+        "description": "ProvidersResponse lists the supported tools (GET /api/providers)",
+        "properties": {
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/Provider"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "providers"
+        ],
+        "type": "object"
+      },
+      "ReadyResponse": {
+        "description": "ReadyResponse is the answer of GET /ready (readiness): Status and Database\nare \"ok\" (200) when the database answers a query, else \"unavailable\"\n(503) with Error",
+        "properties": {
+          "database": {
+            "$ref": "#/components/schemas/ReadyState"
+          },
+          "error": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ReadyState"
+          }
+        },
+        "required": [
+          "status",
+          "database"
+        ],
+        "type": "object"
+      },
+      "ReadyState": {
+        "description": "Readiness states of ReadyResponse",
+        "enum": [
+          "ok",
+          "unavailable"
+        ],
+        "type": "string"
+      },
+      "RedactionMode": {
+        "description": "Mode selects what is redacted\n- off: Off stores telemetry as it is received\n- secrets: Secrets redacts credentials: API keys, tokens, passwords, private keys\n- all: All redacts secrets and personal data",
+        "enum": [
+          "off",
+          "secrets",
+          "all"
+        ],
+        "type": "string"
+      },
+      "ServerMode": {
+        "description": "Server modes reported by GET /api/status\n- serve: OTLP and API\n- watch: session files and API, no OTLP\n- serve+watch: OTLP, session files and API (serve --watch)",
+        "enum": [
+          "serve",
+          "watch",
+          "serve+watch"
+        ],
+        "type": "string"
+      },
+      "ServicesResponse": {
+        "description": "ServicesResponse lists the services that sent telemetry",
+        "properties": {
+          "services": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "services"
+        ],
+        "type": "object"
+      },
+      "Session": {
+        "description": "Session represents a conversation session summary",
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "costUsd": {
+            "description": "Usage summed over the session's logs that become transcript messages\nand carry it (tools.CostKeys, InputTokenKeys, OutputTokenKeys); nil\nwhen none does",
+            "format": "double",
+            "type": "number"
+          },
+          "inputTokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "lastTime": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "matchedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "matches": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "messageCount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          },
+          "outputTokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "repository": {
+            "description": "Repository and Branch attribute the session to a Git repository (the\nlatest of its logs that names them: imported and watched sessions)",
+            "type": "string"
+          },
+          "serviceName": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "snippet": {
+            "description": "Search results only: the text around the terms in the newest matching\nrecord (redacted), the number of matching records in the range, and\nthe time of the newest",
+            "type": "string"
+          },
+          "startTime": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "title": {
+            "description": "Title is the session's first user prompt, on one line, cut to 200\ncharacters and redacted (storage.SessionTitle)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId",
+          "serviceName",
+          "startTime",
+          "lastTime",
+          "messageCount"
+        ],
+        "type": "object"
+      },
+      "SessionsResponse": {
+        "description": "SessionsResponse for listing sessions",
+        "properties": {
+          "hasMore": {
+            "type": "boolean"
+          },
+          "nextCursor": {
+            "description": "NextCursor selects the next page (cursor parameter) when HasMore",
+            "type": "string"
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/Session"
+            },
+            "type": "array"
+          },
+          "total": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sessions",
+          "total",
+          "hasMore"
+        ],
+        "type": "object"
+      },
+      "Span": {
+        "description": "Span is a span (Duration in nanoseconds)",
+        "properties": {
+          "duration": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/SpanEvent"
+            },
+            "type": "array"
+          },
+          "links": {
+            "items": {
+              "$ref": "#/components/schemas/SpanLink"
+            },
+            "type": "array"
+          },
+          "parentSpanId": {
+            "type": "string"
+          },
+          "resourceAttributes": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "scopeName": {
+            "type": "string"
+          },
+          "scopeVersion": {
+            "type": "string"
+          },
+          "serviceName": {
+            "type": "string"
+          },
+          "sessionId": {
+            "description": "SessionID is the stored session of the span (read from storage;\nignored when spans are stored, which take it from SpanAttributes)",
+            "type": "string"
+          },
+          "spanAttributes": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "spanId": {
+            "type": "string"
+          },
+          "spanKind": {
+            "type": "string"
+          },
+          "spanName": {
+            "type": "string"
+          },
+          "statusCode": {
+            "type": "string"
+          },
+          "statusMessage": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "traceId": {
+            "type": "string"
+          },
+          "traceState": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "timestamp",
+          "traceId",
+          "spanId",
+          "spanName",
+          "serviceName",
+          "duration"
+        ],
+        "type": "object"
+      },
+      "SpanEvent": {
+        "properties": {
+          "attributes": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "timestamp",
+          "name"
+        ],
+        "type": "object"
+      },
+      "SpanLink": {
+        "properties": {
+          "attributes": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "spanId": {
+            "type": "string"
+          },
+          "traceId": {
+            "type": "string"
+          },
+          "traceState": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "traceId",
+          "spanId"
+        ],
+        "type": "object"
+      },
+      "SpansResponse": {
+        "description": "SpansResponse is a page of the spans of a trace view, oldest first",
+        "properties": {
+          "hasMore": {
+            "type": "boolean"
+          },
+          "nextCursor": {
+            "description": "NextCursor selects the next page (cursor parameter) when HasMore",
+            "type": "string"
+          },
+          "spans": {
+            "items": {
+              "$ref": "#/components/schemas/Span"
+            },
+            "type": "array"
+          },
+          "total": {
+            "description": "Total counts all spans of the trace view",
+            "format": "int64",
+            "type": "integer"
+          },
+          "trace": {
+            "$ref": "#/components/schemas/TraceOverview",
+            "description": "Trace describes all spans of the trace view, not only this page's"
+          }
+        },
+        "required": [
+          "spans",
+          "total",
+          "hasMore"
+        ],
+        "type": "object"
+      },
+      "StatsResponse": {
+        "description": "StatsResponse counts the stored telemetry (GET /api/stats): all of it, or\nthat of a time range",
+        "properties": {
+          "errorRate": {
+            "description": "ErrorRate is the percentage of spans with an error status",
+            "format": "double",
+            "type": "number"
+          },
+          "logCount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "metricCount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "serviceCount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "services": {
+            "description": "Services lists all services that sent telemetry, whatever the range",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "spanCount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "traceCount": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "traceCount",
+          "spanCount",
+          "logCount",
+          "metricCount",
+          "serviceCount",
+          "services",
+          "errorRate"
+        ],
+        "type": "object"
+      },
+      "StatusDatabase": {
+        "description": "StatusDatabase describes the DuckDB database",
+        "properties": {
+          "compactRecommended": {
+            "type": "boolean"
+          },
+          "freeBytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "growthBytesPerDay": {
+            "description": "GrowthBytesPerDay is the used space divided by the days between the\noldest and newest record, 0 while they are less than a day apart",
+            "format": "int64",
+            "type": "integer"
+          },
+          "memoryLimit": {
+            "description": "MemoryLimit and Threads are AI_OBSERVER_DB_MEMORY_LIMIT and\nAI_OBSERVER_DB_THREADS, empty and 0 for DuckDB's defaults",
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "sizeBytes": {
+            "description": "SizeBytes is the size of the database file, WALSizeBytes that of its\nwrite-ahead log (0 when there is none)",
+            "format": "int64",
+            "type": "integer"
+          },
+          "threads": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "usedBytes": {
+            "description": "UsedBytes and FreeBytes are the used and free blocks inside the file\n(pragma_database_size). Deleted data frees blocks, which new data\nreuses; the file only shrinks when compacted (ai-observer compact,\nwith the server stopped), which CompactRecommended suggests when a\nlarge share of it is free.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "walSizeBytes": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "sizeBytes",
+          "walSizeBytes",
+          "usedBytes",
+          "freeBytes",
+          "compactRecommended"
+        ],
+        "type": "object"
+      },
+      "StatusImport": {
+        "description": "StatusImport sums up the imported and watched session files of a tool",
+        "properties": {
+          "files": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "lastImport": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "partialFiles": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "records": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "tool": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool",
+          "files",
+          "records",
+          "partialFiles"
+        ],
+        "type": "object"
+      },
+      "StatusPricing": {
+        "description": "StatusPricing describes a pricing file in use (pricing.Files)",
+        "properties": {
+          "file": {
+            "description": "File is the name of the file, such as claude.json",
+            "type": "string"
+          },
+          "lastUpdated": {
+            "description": "LastUpdated is the lastUpdated of the built-in file",
+            "type": "string"
+          },
+          "models": {
+            "description": "Models counts the models with prices, overrides included",
+            "format": "int64",
+            "type": "integer"
+          },
+          "override": {
+            "description": "Override is the path of the file from AI_OBSERVER_PRICING_DIR merged\nover the built-in one, with its lastUpdated",
+            "type": "string"
+          },
+          "overrideLastUpdated": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "file",
+          "provider",
+          "lastUpdated",
+          "models"
+        ],
+        "type": "object"
+      },
+      "StatusResponse": {
+        "description": "StatusResponse describes the running server for a status page (GET\n/api/status). It names settings, never their secret values: whether a\ntoken is required, not the token.",
+        "properties": {
+          "buildDate": {
+            "type": "string"
+          },
+          "database": {
+            "$ref": "#/components/schemas/StatusDatabase"
+          },
+          "gitCommit": {
+            "type": "string"
+          },
+          "imports": {
+            "items": {
+              "$ref": "#/components/schemas/StatusImport"
+            },
+            "type": "array"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/ServerMode",
+            "description": "Mode is what the server runs: \"serve\" (OTLP and API), \"watch\"\n(session files and API, no OTLP) or \"serve+watch\" (OTLP, session files\nand API: serve --watch)"
+          },
+          "pricing": {
+            "items": {
+              "$ref": "#/components/schemas/StatusPricing"
+            },
+            "type": "array"
+          },
+          "server": {
+            "$ref": "#/components/schemas/StatusServer"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/StatusSettings"
+          },
+          "startedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "telemetry": {
+            "$ref": "#/components/schemas/StatusTelemetry"
+          },
+          "version": {
+            "type": "string"
+          },
+          "watchedTools": {
+            "description": "WatchedTools lists the tools whose session files are watched\n(claude-code, codex, gemini) in watch and serve+watch mode",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "version",
+          "gitCommit",
+          "buildDate",
+          "mode",
+          "startedAt",
+          "server",
+          "database",
+          "telemetry",
+          "settings",
+          "pricing",
+          "imports"
+        ],
+        "type": "object"
+      },
+      "StatusServer": {
+        "description": "StatusServer describes where the server listens",
+        "properties": {
+          "apiPort": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "host": {
+            "type": "string"
+          },
+          "otlpEnabled": {
+            "type": "boolean"
+          },
+          "otlpGrpcEnabled": {
+            "type": "boolean"
+          },
+          "otlpGrpcPort": {
+            "description": "OTLPGRPCPort is the configured OTLP/gRPC port (AI_OBSERVER_OTLP_GRPC_PORT),\n0 when it is turned off; OTLPGRPCEnabled reports whether it listens\n(false in watch mode)",
+            "format": "int64",
+            "type": "integer"
+          },
+          "otlpPort": {
+            "description": "OTLPPort is the configured OTLP port; OTLPEnabled is false in watch\nmode, which does not listen on it",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "host",
+          "apiPort",
+          "otlpPort",
+          "otlpEnabled",
+          "otlpGrpcPort",
+          "otlpGrpcEnabled"
+        ],
+        "type": "object"
+      },
+      "StatusSettings": {
+        "description": "StatusSettings are the settings that change what is stored and who may\nread it",
+        "properties": {
+          "adminApiEnabled": {
+            "description": "AdminAPIEnabled is AI_OBSERVER_ADMIN_API; BackupDir is where the\nadmin API writes backups and exports (only set when it is enabled)",
+            "type": "boolean"
+          },
+          "allowedHosts": {
+            "description": "AllowedHosts are the further host names the API accepts\n(AI_OBSERVER_ALLOWED_HOSTS; \"*\" for any)",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "authEnabled": {
+            "description": "AuthEnabled reports whether AI_OBSERVER_AUTH_TOKEN is set",
+            "type": "boolean"
+          },
+          "backupDir": {
+            "type": "string"
+          },
+          "corsOrigin": {
+            "description": "CORSOrigin is the browser origin the API answers CORS requests of\n(AI_OBSERVER_FRONTEND_URL)",
+            "type": "string"
+          },
+          "logFormat": {
+            "description": "LogFormat is AI_OBSERVER_LOG_FORMAT in effect: text or json",
+            "type": "string"
+          },
+          "logLevel": {
+            "description": "LogLevel is AI_OBSERVER_LOG_LEVEL in effect: DEBUG, INFO, WARN or ERROR",
+            "type": "string"
+          },
+          "maxDbSizeBytes": {
+            "description": "MaxDBSizeBytes is AI_OBSERVER_MAX_DB_SIZE, 0 for no limit: the oldest\ndays are deleted while the used blocks exceed it",
+            "format": "int64",
+            "type": "integer"
+          },
+          "mcpEnabled": {
+            "type": "boolean"
+          },
+          "redaction": {
+            "$ref": "#/components/schemas/RedactionMode",
+            "description": "Redaction is AI_OBSERVER_REDACT: secrets, all or off"
+          },
+          "retentionDays": {
+            "description": "RetentionDays is AI_OBSERVER_RETENTION_DAYS, 0 to keep everything",
+            "format": "int64",
+            "type": "integer"
+          },
+          "skipMigrationBackup": {
+            "description": "SkipMigrationBackup is AI_OBSERVER_SKIP_MIGRATION_BACKUP",
+            "type": "boolean"
+          },
+          "storeAllSpans": {
+            "type": "boolean"
+          },
+          "tlsEnabled": {
+            "description": "TLSEnabled reports whether the servers speak TLS\n(AI_OBSERVER_TLS_CERT and AI_OBSERVER_TLS_KEY); the files are not named",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "retentionDays",
+          "redaction",
+          "authEnabled",
+          "mcpEnabled",
+          "storeAllSpans",
+          "maxDbSizeBytes",
+          "adminApiEnabled",
+          "tlsEnabled",
+          "logLevel",
+          "logFormat",
+          "corsOrigin",
+          "skipMigrationBackup"
+        ],
+        "type": "object"
+      },
+      "StatusTelemetry": {
+        "description": "StatusTelemetry counts the stored telemetry (the cached /api/stats) and\ngives the time of its oldest and newest record",
+        "properties": {
+          "logCount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "metricCount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "newest": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "oldest": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "serviceCount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "services": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "spanCount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "traceCount": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "traceCount",
+          "spanCount",
+          "logCount",
+          "metricCount",
+          "serviceCount",
+          "services"
+        ],
+        "type": "object"
+      },
+      "StoredNotification": {
+        "description": "Notification is the payload of a message: it tells clients that new records\nwere stored, without their content. Clients re-query the API for the data,\nso prompts, code and tool output are not pushed to every open browser, and\nlarge ingestion batches do not turn into large WebSocket frames.",
+        "properties": {
+          "count": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "services": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "timestamps": {
+            "description": "Unix milliseconds of each record",
+            "items": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "count",
+          "services",
+          "timestamps"
+        ],
+        "type": "object"
+      },
+      "TimeSeries": {
+        "description": "TimeSeries is a series of [timestamp (Unix ms), value] points; the\ntimestamp is 0 for the single point of an aggregate. A value is NaN, sent\nas JSON null, where a bucket has no value: histogram statistics other than\nsum and count, and gauges, in buckets without points.",
+        "properties": {
+          "datapoints": {
+            "description": "[timestamp, value]",
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "title": "timestamp",
+                  "type": "number"
+                },
+                {
+                  "title": "value",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              ],
+              "type": "array"
+            },
+            "type": "array"
+          },
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "datapoints"
+        ],
+        "type": "object"
+      },
+      "TimeSeriesResponse": {
+        "description": "TimeSeriesResponse holds the series of a metric (GET /api/metrics/series)",
+        "properties": {
+          "interval": {
+            "description": "Interval is the bucket size in seconds: the requested one, or a\ncoarser one when the range would have too many buckets; 0 for\naggregates",
+            "format": "int64",
+            "type": "integer"
+          },
+          "metricType": {
+            "$ref": "#/components/schemas/MetricType",
+            "description": "MetricType is the type of the points read (sum, gauge, histogram,\nexponential_histogram, summary); empty without points in the range"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/TimeSeries"
+            },
+            "type": "array"
+          },
+          "stat": {
+            "$ref": "#/components/schemas/HistogramStat",
+            "description": "Stat is the statistic of histogram series (MetricQuery.Stat, avg when\nthe query named none)"
+          },
+          "timeZone": {
+            "description": "TimeZone is the IANA zone the buckets are aligned to",
+            "type": "string"
+          }
+        },
+        "required": [
+          "series"
+        ],
+        "type": "object"
+      },
+      "TraceGroupLevel": {
+        "description": "Levels of Codex traces (TraceOverview.GroupLevel)\n- codex_turn: A trace of a Codex turn (root turn/start)\n- codex_operation: A Codex operation (TraceKindCodexOperation)",
+        "enum": [
+          "codex_turn",
+          "codex_operation"
+        ],
+        "type": "string"
+      },
+      "TraceKind": {
+        "description": "Kinds of trace views (TraceOverview.Kind, the kind parameter of GET\n/api/traces/{id})\n- otel_trace: An OpenTelemetry trace: the spans with one trace ID\n- codex_operation: The spans of one operation of an older Codex session trace: a first-level span and its descendants (detail views only)",
+        "enum": [
+          "otel_trace",
+          "codex_operation"
+        ],
+        "type": "string"
+      },
+      "TraceOverview": {
+        "description": "TraceOverview describes a trace (or a Codex operation) for lists and\ndetail views: its root span and all of its spans",
+        "properties": {
+          "duration": {
+            "description": "Duration from the start of the earliest span to the end of the\nlatest, in nanoseconds",
+            "format": "int64",
+            "type": "integer"
+          },
+          "groupLevel": {
+            "$ref": "#/components/schemas/TraceGroupLevel"
+          },
+          "id": {
+            "description": "ID identifies the trace view: the trace ID, or the root span ID of a\nCodex operation",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/TraceKind"
+          },
+          "rootSpan": {
+            "type": "string"
+          },
+          "rootSpanId": {
+            "type": "string"
+          },
+          "serviceName": {
+            "type": "string"
+          },
+          "sessionId": {
+            "description": "SessionID is the session of the trace's spans, when those that have\none have the same (their SessionId: the first of tools.SessionIDKeys)",
+            "type": "string"
+          },
+          "spanCount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "startTime": {
+            "description": "StartTime is the start of the earliest span",
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TraceStatus"
+          },
+          "traceId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "traceId",
+          "rootSpanId",
+          "rootSpan",
+          "serviceName",
+          "startTime",
+          "duration",
+          "spanCount",
+          "status"
+        ],
+        "type": "object"
+      },
+      "TraceStatus": {
+        "description": "Statuses of traces (TraceOverview.Status, storage.TraceStatus)\n- ERROR: A span failed\n- OK: No span failed and one succeeded\n- UNSET: No span has a status",
+        "enum": [
+          "ERROR",
+          "OK",
+          "UNSET"
+        ],
+        "type": "string"
+      },
+      "TracesResponse": {
+        "description": "TracesResponse is a page of traces, the most recent first",
+        "properties": {
+          "hasMore": {
+            "type": "boolean"
+          },
+          "nextCursor": {
+            "description": "NextCursor selects the next page (cursor parameter) when HasMore",
+            "type": "string"
+          },
+          "total": {
+            "description": "Total counts the traces matching the query, HasMore whether pages\nfollow this one",
+            "format": "int64",
+            "type": "integer"
+          },
+          "traces": {
+            "items": {
+              "$ref": "#/components/schemas/TraceOverview"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "traces",
+          "total",
+          "hasMore"
+        ],
+        "type": "object"
+      },
+      "TranscriptMessage": {
+        "description": "TranscriptMessage is a message of a transcript",
+        "properties": {
+          "cacheRead": {
+            "description": "Cache read tokens",
+            "format": "int64",
+            "type": "integer"
+          },
+          "cacheWrite": {
+            "description": "Cache write tokens",
+            "format": "int64",
+            "type": "integer"
+          },
+          "content": {
+            "type": "string"
+          },
+          "costUsd": {
+            "description": "Cost in USD",
+            "format": "double",
+            "type": "number"
+          },
+          "durationMs": {
+            "description": "Duration in milliseconds",
+            "format": "int64",
+            "type": "integer"
+          },
+          "index": {
+            "description": "Index is the message's number in its source (not its position in\nthe transcript)",
+            "format": "int64",
+            "type": "integer"
+          },
+          "inputTokens": {
+            "description": "Input token count",
+            "format": "int64",
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          },
+          "outputSize": {
+            "description": "Tool output size in bytes",
+            "format": "int64",
+            "type": "integer"
+          },
+          "outputTokens": {
+            "description": "Output token count",
+            "format": "int64",
+            "type": "integer"
+          },
+          "role": {
+            "$ref": "#/components/schemas/TranscriptRole"
+          },
+          "success": {
+            "description": "Tool execution success (pointer to distinguish false from unset)",
+            "type": "boolean"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "toolInput": {
+            "type": "string"
+          },
+          "toolName": {
+            "type": "string"
+          },
+          "toolOutput": {
+            "description": "Tool execution output (from imports)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "timestamp",
+          "role",
+          "content",
+          "index"
+        ],
+        "type": "object"
+      },
+      "TranscriptResponse": {
+        "description": "TranscriptResponse contains the transcript of a session, or a page of its\nmessages (transcript.Page): Total counts all messages of the session, and\nNextCursor requests the messages after this page when HasMore",
+        "properties": {
+          "hasMore": {
+            "type": "boolean"
+          },
+          "lastTime": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "messages": {
+            "description": "Messages are a page of the session's messages, oldest first",
+            "items": {
+              "$ref": "#/components/schemas/TranscriptMessage"
+            },
+            "type": "array"
+          },
+          "nextCursor": {
+            "description": "NextCursor selects the next page (cursor parameter) when HasMore",
+            "type": "string"
+          },
+          "search": {
+            "$ref": "#/components/schemas/TranscriptSearch",
+            "description": "Search lists the matching messages (only with the search parameter)"
+          },
+          "serviceName": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "startTime": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "title": {
+            "description": "Title is the first user prompt of the transcript (see Session.Title)",
+            "type": "string"
+          },
+          "total": {
+            "description": "Total counts all messages of the session",
+            "format": "int64",
+            "type": "integer"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/TranscriptTotals",
+            "description": "Totals sum all messages of the transcript, not only this page's"
+          }
+        },
+        "required": [
+          "sessionId",
+          "serviceName",
+          "startTime",
+          "lastTime",
+          "messages",
+          "total",
+          "hasMore"
+        ],
+        "type": "object"
+      },
+      "TranscriptRole": {
+        "description": "Transcript roles",
+        "enum": [
+          "user",
+          "assistant",
+          "tool_use",
+          "tool_result",
+          "system"
+        ],
+        "type": "string"
+      },
+      "TranscriptSearch": {
+        "description": "TranscriptSearch lists the messages of a whole transcript that contain all\nsearch terms",
+        "properties": {
+          "matches": {
+            "description": "Matches are the positions (0-based, ascending) of the matching\nmessages among all messages of the transcript: position p is on the\npage that starts at the multiple of the page size below p",
+            "items": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "terms": {
+            "description": "Terms are the words and \"quoted phrases\" read from the search\nparameter",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "terms",
+          "matches"
+        ],
+        "type": "object"
+      },
+      "TranscriptTotals": {
+        "description": "TranscriptTotals are the totals of all messages of a transcript",
+        "properties": {
+          "assistantMessages": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "cacheRead": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "cacheWrite": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "costUsd": {
+            "format": "double",
+            "type": "number"
+          },
+          "inputTokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "outputTokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "toolCalls": {
+            "description": "ToolCalls counts the tool_use messages, ToolErrors the tool_result\nmessages with success false",
+            "format": "int64",
+            "type": "integer"
+          },
+          "toolErrors": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "userMessages": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "costUsd",
+          "inputTokens",
+          "outputTokens",
+          "cacheRead",
+          "cacheWrite",
+          "userMessages",
+          "assistantMessages",
+          "toolCalls",
+          "toolErrors"
+        ],
+        "type": "object"
+      },
+      "UpdateDashboardRequest": {
+        "description": "UpdateDashboardRequest changes the name and description of a dashboard\n(those it sets)",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "UpdateWidgetPositionsRequest": {
+        "description": "UpdateWidgetPositionsRequest moves widgets of a dashboard",
+        "properties": {
+          "positions": {
+            "items": {
+              "$ref": "#/components/schemas/WidgetPosition"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "positions"
+        ],
+        "type": "object"
+      },
+      "UpdateWidgetRequest": {
+        "description": "UpdateWidgetRequest changes the fields of a widget that it sets: a\nnon-empty title, positions and spans above 0, and the config when present\n(it replaces the stored config whole; {} clears it)",
+        "properties": {
+          "colSpan": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "config": {
+            "$ref": "#/components/schemas/WidgetConfig"
+          },
+          "gridColumn": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "gridRow": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "rowSpan": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "WebSocketMessage": {
+        "description": "WebSocketMessage is a message of the real-time WebSocket (GET /ws): one JSON text frame each",
+        "properties": {
+          "payload": {
+            "$ref": "#/components/schemas/StoredNotification"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/components/schemas/WebSocketMessageType"
+          }
+        },
+        "required": [
+          "type",
+          "timestamp",
+          "payload"
+        ],
+        "type": "object"
+      },
+      "WebSocketMessageType": {
+        "description": "What a real-time message announces: stored spans, metric points or log records",
+        "enum": [
+          "traces",
+          "metrics",
+          "logs"
+        ],
+        "type": "string"
+      },
+      "WidgetConfig": {
+        "description": "WidgetConfig holds optional configuration for configurable widgets",
+        "properties": {
+          "breakdownAttribute": {
+            "description": "BreakdownAttribute is the attribute key series are broken down by\n(such as type or model)",
+            "type": "string"
+          },
+          "breakdownValue": {
+            "description": "BreakdownValue is the value of BreakdownAttribute a metric value\nwidget shows",
+            "type": "string"
+          },
+          "chartStacked": {
+            "description": "ChartStacked stacks a chart's bars (default true)",
+            "type": "boolean"
+          },
+          "metricName": {
+            "type": "string"
+          },
+          "service": {
+            "type": "string"
+          },
+          "stat": {
+            "description": "Stat is the statistic of a histogram metric (MetricQuery.Stat)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "WidgetPosition": {
+        "description": "WidgetPosition moves a widget to a grid cell",
+        "properties": {
+          "gridColumn": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "gridRow": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "gridColumn",
+          "gridRow"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "The REST API of AI Observer's dashboard (API port, default 8080) and its OTLP/HTTP ingestion (OTLP port, default 4318). With AI_OBSERVER_AUTH_TOKEN set, requests need Authorization: Bearer \u003ctoken\u003e. Generated from the Go types and route table (backend/internal/apigen/spec); do not edit.",
+    "title": "AI Observer API",
+    "version": "1"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/admin/backup": {
+      "post": {
+        "description": "Only with AI_OBSERVER_ADMIN_API=true; one admin operation at a time.",
+        "operationId": "postApiAdminBackup",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminBackupRequest"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminBackupResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The admin API is disabled (AI_OBSERVER_ADMIN_API)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Another admin operation runs, or the name exists"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "Write a backup of the database to the backup directory",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/checkpoint": {
+      "post": {
+        "description": "Only with AI_OBSERVER_ADMIN_API=true; one admin operation at a time.",
+        "operationId": "postApiAdminCheckpoint",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminCheckpointResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The admin API is disabled (AI_OBSERVER_ADMIN_API)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Another admin operation runs, or the name exists"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "Write the write-ahead log into the database file",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/delete": {
+      "post": {
+        "description": "Only with AI_OBSERVER_ADMIN_API=true; one admin operation at a time.",
+        "operationId": "postApiAdminDelete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminDeleteRequest"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminDeleteResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The admin API is disabled (AI_OBSERVER_ADMIN_API)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Another admin operation runs, or the name exists"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "Delete telemetry in a range (or count it: dryRun)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/export": {
+      "post": {
+        "description": "Only with AI_OBSERVER_ADMIN_API=true; one admin operation at a time.",
+        "operationId": "postApiAdminExport",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminExportRequest"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminExportResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The admin API is disabled (AI_OBSERVER_ADMIN_API)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Another admin operation runs, or the name exists"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "Export telemetry to Parquet files in the backup directory",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/dashboards": {
+      "get": {
+        "operationId": "getApiDashboards",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "The dashboards (without widgets)",
+        "tags": [
+          "dashboards"
+        ]
+      },
+      "post": {
+        "operationId": "postApiDashboards",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDashboardRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Dashboard"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "Create a dashboard",
+        "tags": [
+          "dashboards"
+        ]
+      }
+    },
+    "/api/dashboards/default": {
+      "get": {
+        "operationId": "getApiDashboardsDefault",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardWithWidgets"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "The default dashboard with its widgets (created when there is none)",
+        "tags": [
+          "dashboards"
+        ]
+      }
+    },
+    "/api/dashboards/{id}": {
+      "delete": {
+        "operationId": "deleteApiDashboardsById",
+        "parameters": [
+          {
+            "description": "Dashboard ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "Delete a dashboard",
+        "tags": [
+          "dashboards"
+        ]
+      },
+      "get": {
+        "operationId": "getApiDashboardsById",
+        "parameters": [
+          {
+            "description": "Dashboard ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardWithWidgets"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "A dashboard with its widgets",
+        "tags": [
+          "dashboards"
+        ]
+      },
+      "put": {
+        "operationId": "putApiDashboardsById",
+        "parameters": [
+          {
+            "description": "Dashboard ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateDashboardRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Dashboard"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "Rename a dashboard",
+        "tags": [
+          "dashboards"
+        ]
+      }
+    },
+    "/api/dashboards/{id}/default": {
+      "put": {
+        "operationId": "putApiDashboardsByIdDefault",
+        "parameters": [
+          {
+            "description": "Dashboard ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OKResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "Make a dashboard the default",
+        "tags": [
+          "dashboards"
+        ]
+      }
+    },
+    "/api/dashboards/{id}/widgets": {
+      "post": {
+        "operationId": "postApiDashboardsByIdWidgets",
+        "parameters": [
+          {
+            "description": "Dashboard ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWidgetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardWidget"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "Add a widget",
+        "tags": [
+          "dashboards"
+        ]
+      }
+    },
+    "/api/dashboards/{id}/widgets/positions": {
+      "put": {
+        "operationId": "putApiDashboardsByIdWidgetsPositions",
+        "parameters": [
+          {
+            "description": "Dashboard ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateWidgetPositionsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OKResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "Move widgets",
+        "tags": [
+          "dashboards"
+        ]
+      }
+    },
+    "/api/dashboards/{id}/widgets/{widgetId}": {
+      "delete": {
+        "operationId": "deleteApiDashboardsByIdWidgetsByWidgetId",
+        "parameters": [
+          {
+            "description": "Dashboard ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Widget ID",
+            "in": "path",
+            "name": "widgetId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "Delete a widget",
+        "tags": [
+          "dashboards"
+        ]
+      },
+      "put": {
+        "operationId": "putApiDashboardsByIdWidgetsByWidgetId",
+        "parameters": [
+          {
+            "description": "Dashboard ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Widget ID",
+            "in": "path",
+            "name": "widgetId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateWidgetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardWidget"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "Change a widget (the fields the body sets)",
+        "tags": [
+          "dashboards"
+        ]
+      }
+    },
+    "/api/internal/metrics": {
+      "get": {
+        "operationId": "getApiInternalMetrics",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalMetricsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "AI Observer's own metrics (JSON)",
+        "tags": [
+          "status"
+        ]
+      }
+    },
+    "/api/logs": {
+      "get": {
+        "operationId": "getApiLogs",
+        "parameters": [
+          {
+            "description": "Service name, or a tool name (such as codex) for all of its services",
+            "in": "query",
+            "name": "service",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Severity text, such as ERROR",
+            "in": "query",
+            "name": "severity",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "traceId",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Text the body, scope, severity or attributes contain",
+            "in": "query",
+            "name": "search",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Start of the range (RFC 3339); default: 24 hours before to",
+            "in": "query",
+            "name": "from",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "End of the range (RFC 3339); default: now",
+            "in": "query",
+            "name": "to",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size; larger values are reduced to the maximum",
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 50,
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "nextCursor of the previous page",
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Rows to skip (deprecated: page with cursor)",
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "maximum": 10000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The query took longer than the request timeout (5 seconds); not worth retrying"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "A page of log records, the newest first",
+        "tags": [
+          "logs"
+        ]
+      }
+    },
+    "/api/logs/levels": {
+      "get": {
+        "operationId": "getApiLogsLevels",
+        "parameters": [
+          {
+            "description": "Start of the range (RFC 3339); default: open",
+            "in": "query",
+            "name": "from",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "End of the range (RFC 3339); default: open",
+            "in": "query",
+            "name": "to",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogLevelCounts"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The query took longer than the request timeout (5 seconds); not worth retrying"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "The number of log records per severity",
+        "tags": [
+          "logs"
+        ]
+      }
+    },
+    "/api/metrics": {
+      "get": {
+        "operationId": "getApiMetrics",
+        "parameters": [
+          {
+            "description": "Service name, or a tool name (such as codex) for all of its services",
+            "in": "query",
+            "name": "service",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Metric name",
+            "in": "query",
+            "name": "name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "type",
+            "schema": {
+              "$ref": "#/components/schemas/MetricType"
+            }
+          },
+          {
+            "description": "Start of the range (RFC 3339); default: 24 hours before to",
+            "in": "query",
+            "name": "from",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "End of the range (RFC 3339); default: now",
+            "in": "query",
+            "name": "to",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size; larger values are reduced to the maximum",
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 50,
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "nextCursor of the previous page",
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Rows to skip (deprecated: page with cursor)",
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "maximum": 10000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The query took longer than the request timeout (5 seconds); not worth retrying"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "A page of metric points, the newest first",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/metrics/attribute-keys": {
+      "get": {
+        "operationId": "getApiMetricsAttributeKeys",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Service name, or a tool name (such as codex) for all of its services",
+            "in": "query",
+            "name": "service",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricAttributeKeysResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The query took longer than the request timeout (5 seconds); not worth retrying"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "The attribute keys of a metric's points, which series can be grouped and filtered by",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/metrics/batch-series": {
+      "post": {
+        "description": "Up to 50 queries; a query that fails has success false, its error and a code, without affecting the others.",
+        "operationId": "postApiMetricsBatchSeries",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchMetricSeriesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchMetricSeriesResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The query took longer than the request timeout (5 seconds); not worth retrying"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "Several metric series over one range (a read sent as POST)",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/metrics/breakdown-values": {
+      "get": {
+        "operationId": "getApiMetricsBreakdownValues",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "attribute",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Service name, or a tool name (such as codex) for all of its services",
+            "in": "query",
+            "name": "service",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BreakdownValuesResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The query took longer than the request timeout (5 seconds); not worth retrying"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "The values of a metric's attribute",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/metrics/names": {
+      "get": {
+        "operationId": "getApiMetricsNames",
+        "parameters": [
+          {
+            "description": "Service name, or a tool name (such as codex) for all of its services",
+            "in": "query",
+            "name": "service",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricNamesResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The query took longer than the request timeout (5 seconds); not worth retrying"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "The names of stored metrics",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/metrics/series": {
+      "get": {
+        "description": "attr.\u003ckey\u003e=\u003cvalue\u003e parameters keep only points whose attribute has the value (at most 10). Cumulative counters are turned into per-interval increases.",
+        "operationId": "getApiMetricsSeries",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Service name, or a tool name (such as codex) for all of its services",
+            "in": "query",
+            "name": "service",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Start of the range (RFC 3339); default: 24 hours before to",
+            "in": "query",
+            "name": "from",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "End of the range (RFC 3339); default: now",
+            "in": "query",
+            "name": "to",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Bucket size in seconds (coarser when the range would have more than ~2,000 buckets)",
+            "in": "query",
+            "name": "interval",
+            "schema": {
+              "default": 60,
+              "maximum": 2678400,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "One total per series over the range",
+            "in": "query",
+            "name": "aggregate",
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Up to two attribute keys, comma-separated (or repeated): series per service and their values",
+            "in": "query",
+            "name": "groupBy",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Statistic of a histogram metric (default avg)",
+            "in": "query",
+            "name": "stat",
+            "schema": {
+              "$ref": "#/components/schemas/HistogramStat"
+            }
+          },
+          {
+            "description": "One series of all matching points",
+            "in": "query",
+            "name": "merge",
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "IANA time zone the buckets follow (default UTC)",
+            "in": "query",
+            "name": "tz",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimeSeriesResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The query took longer than the request timeout (5 seconds); not worth retrying"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "A metric as time series, or totals",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/providers": {
+      "get": {
+        "operationId": "getApiProviders",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvidersResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "The supported tools",
+        "tags": [
+          "status"
+        ]
+      }
+    },
+    "/api/services": {
+      "get": {
+        "operationId": "getApiServices",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServicesResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The query took longer than the request timeout (5 seconds); not worth retrying"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "The services that sent telemetry",
+        "tags": [
+          "status"
+        ]
+      }
+    },
+    "/api/sessions": {
+      "get": {
+        "operationId": "getApiSessions",
+        "parameters": [
+          {
+            "description": "Service name, or a tool name (such as codex) for all of its services",
+            "in": "query",
+            "name": "service",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Words and \"quoted phrases\" (at most 10): sessions with a record containing all of them, newest match first, with a snippet",
+            "in": "query",
+            "name": "search",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Start of the range (RFC 3339); default: 24 hours before to",
+            "in": "query",
+            "name": "from",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "End of the range (RFC 3339); default: now",
+            "in": "query",
+            "name": "to",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size; larger values are reduced to the maximum",
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 50,
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "nextCursor of the previous page",
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Rows to skip (deprecated: page with cursor)",
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "maximum": 10000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The query took longer than the request timeout (5 seconds); not worth retrying"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "A page of sessions, the most recently active first",
+        "tags": [
+          "sessions"
+        ]
+      }
+    },
+    "/api/sessions/{sessionId}/transcript": {
+      "get": {
+        "description": "With search, search.matches lists the positions of all matching messages of the session.",
+        "operationId": "getApiSessionsBySessionIdTranscript",
+        "parameters": [
+          {
+            "description": "Session ID (or one of its aliases)",
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size; larger values are reduced to the maximum",
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 500,
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "nextCursor of the previous page",
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Words and \"quoted phrases\" a record must all contain (case-insensitive)",
+            "in": "query",
+            "name": "search",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The query took longer than the request timeout (5 seconds); not worth retrying"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "A page of a session's transcript, oldest first",
+        "tags": [
+          "sessions"
+        ]
+      }
+    },
+    "/api/stats": {
+      "get": {
+        "operationId": "getApiStats",
+        "parameters": [
+          {
+            "description": "Start of the range (RFC 3339); default: open",
+            "in": "query",
+            "name": "from",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "End of the range (RFC 3339); default: open",
+            "in": "query",
+            "name": "to",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The query took longer than the request timeout (5 seconds); not worth retrying"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "Counts of the stored telemetry (all of it without from and to)",
+        "tags": [
+          "status"
+        ]
+      }
+    },
+    "/api/status": {
+      "get": {
+        "operationId": "getApiStatus",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "The running server: version, mode, database, settings, pricing, imports",
+        "tags": [
+          "status"
+        ]
+      }
+    },
+    "/api/traces": {
+      "get": {
+        "operationId": "getApiTraces",
+        "parameters": [
+          {
+            "description": "Service name, or a tool name (such as codex) for all of its services",
+            "in": "query",
+            "name": "service",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Words and \"quoted phrases\" a record must all contain (case-insensitive)",
+            "in": "query",
+            "name": "search",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Include the background traces of Codex's app and exec servers",
+            "in": "query",
+            "name": "background",
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Start of the range (RFC 3339); default: 24 hours before to",
+            "in": "query",
+            "name": "from",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "End of the range (RFC 3339); default: now",
+            "in": "query",
+            "name": "to",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size; larger values are reduced to the maximum",
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 50,
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "nextCursor of the previous page",
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Rows to skip (deprecated: page with cursor)",
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "maximum": 10000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TracesResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The query took longer than the request timeout (5 seconds); not worth retrying"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "A page of traces, the most recent first",
+        "tags": [
+          "traces"
+        ]
+      }
+    },
+    "/api/traces/recent": {
+      "get": {
+        "operationId": "getApiTracesRecent",
+        "parameters": [
+          {
+            "description": "Page size; larger values are reduced to the maximum",
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Start of the range (RFC 3339); default: 24 hours before to",
+            "in": "query",
+            "name": "from",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "End of the range (RFC 3339); default: now",
+            "in": "query",
+            "name": "to",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TracesResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The query took longer than the request timeout (5 seconds); not worth retrying"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "The most recent traces (no paging)",
+        "tags": [
+          "traces"
+        ]
+      }
+    },
+    "/api/traces/{traceId}": {
+      "get": {
+        "description": "A page of the spans of a trace view, oldest first, with the overview of all of its spans.",
+        "operationId": "getApiTracesByTraceId",
+        "parameters": [
+          {
+            "description": "Trace ID, or the root span ID of a Codex operation",
+            "in": "path",
+            "name": "traceId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The kind of the trace view (TraceOverview.kind)",
+            "in": "query",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/TraceKind"
+            }
+          },
+          {
+            "description": "Page size; larger values are reduced to the maximum",
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 1000,
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "nextCursor of the previous page",
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Rows to skip (deprecated: page with cursor)",
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "maximum": 10000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpansResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The query took longer than the request timeout (5 seconds); not worth retrying"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "A page of a trace's spans",
+        "tags": [
+          "traces"
+        ]
+      }
+    },
+    "/api/traces/{traceId}/spans": {
+      "get": {
+        "description": "A page of the spans of a trace view, oldest first, with the overview of all of its spans.",
+        "operationId": "getApiTracesByTraceIdSpans",
+        "parameters": [
+          {
+            "description": "Trace ID, or the root span ID of a Codex operation",
+            "in": "path",
+            "name": "traceId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The kind of the trace view (TraceOverview.kind)",
+            "in": "query",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/TraceKind"
+            }
+          },
+          {
+            "description": "Page size; larger values are reduced to the maximum",
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 1000,
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "nextCursor of the previous page",
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Rows to skip (deprecated: page with cursor)",
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "maximum": 10000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpansResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid parameters, named in the message"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The query took longer than the request timeout (5 seconds); not worth retrying"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "A page of a trace's spans (same as /api/traces/{traceId})",
+        "tags": [
+          "traces"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "servers": [
+          {
+            "description": "API, dashboard and WebSocket",
+            "url": "http://localhost:8080"
+          },
+          {
+            "description": "OTLP/HTTP ingestion",
+            "url": "http://localhost:4318"
+          }
+        ],
+        "summary": "Liveness: always ok while the server runs",
+        "tags": [
+          "status"
+        ]
+      }
+    },
+    "/mcp": {
+      "post": {
+        "description": "Only with AI_OBSERVER_MCP=true or --mcp (otherwise 404); GET and DELETE answer 405. JSON-RPC 2.0 messages of the Model Context Protocol.",
+        "operationId": "postMcp",
+        "requestBody": {
+          "content": {
+            "application/json": {}
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "description": "JSON-RPC response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "MCP endpoint (Streamable HTTP, stateless, JSON responses)",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
+    "/metrics": {
+      "get": {
+        "operationId": "getMetrics",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain; version=0.0.4": {}
+            },
+            "description": "Prometheus text exposition"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "AI Observer's own metrics in the Prometheus text format",
+        "tags": [
+          "status"
+        ]
+      }
+    },
+    "/ready": {
+      "get": {
+        "operationId": "getReady",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadyResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadyResponse"
+                }
+              }
+            },
+            "description": "The database does not answer"
+          }
+        },
+        "servers": [
+          {
+            "description": "API, dashboard and WebSocket",
+            "url": "http://localhost:8080"
+          },
+          {
+            "description": "OTLP/HTTP ingestion",
+            "url": "http://localhost:4318"
+          }
+        ],
+        "summary": "Readiness: whether the database answers",
+        "tags": [
+          "status"
+        ]
+      }
+    },
+    "/v1/logs": {
+      "post": {
+        "description": "OTLP/HTTP as the OpenTelemetry protocol specifies it: protobuf or JSON (detected from the body), optionally gzip- or deflate-compressed, at most 10 MB. Responses are the OTLP Export*ServiceResponse in the request's encoding, with partial_success for rejected records.",
+        "operationId": "postV1Logs",
+        "requestBody": {
+          "content": {
+            "application/json": {},
+            "application/x-protobuf": {}
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/x-protobuf": {}
+            },
+            "description": "Stored (an OTLP Export*ServiceResponse, JSON for JSON requests)"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The body is not OTLP"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The body exceeds 10 MB"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unsupported Content-Encoding"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Storing failed; retry after Retry-After"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "servers": [
+          {
+            "description": "OTLP/HTTP ingestion",
+            "url": "http://localhost:4318"
+          }
+        ],
+        "summary": "Receive log records (OTLP ExportLogsServiceRequest)",
+        "tags": [
+          "otlp"
+        ]
+      }
+    },
+    "/v1/metrics": {
+      "post": {
+        "description": "OTLP/HTTP as the OpenTelemetry protocol specifies it: protobuf or JSON (detected from the body), optionally gzip- or deflate-compressed, at most 10 MB. Responses are the OTLP Export*ServiceResponse in the request's encoding, with partial_success for rejected records.",
+        "operationId": "postV1Metrics",
+        "requestBody": {
+          "content": {
+            "application/json": {},
+            "application/x-protobuf": {}
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/x-protobuf": {}
+            },
+            "description": "Stored (an OTLP Export*ServiceResponse, JSON for JSON requests)"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The body is not OTLP"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The body exceeds 10 MB"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unsupported Content-Encoding"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Storing failed; retry after Retry-After"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "servers": [
+          {
+            "description": "OTLP/HTTP ingestion",
+            "url": "http://localhost:4318"
+          }
+        ],
+        "summary": "Receive metric points (OTLP ExportMetricsServiceRequest)",
+        "tags": [
+          "otlp"
+        ]
+      }
+    },
+    "/v1/traces": {
+      "post": {
+        "description": "OTLP/HTTP as the OpenTelemetry protocol specifies it: protobuf or JSON (detected from the body), optionally gzip- or deflate-compressed, at most 10 MB. Responses are the OTLP Export*ServiceResponse in the request's encoding, with partial_success for rejected records.",
+        "operationId": "postV1Traces",
+        "requestBody": {
+          "content": {
+            "application/json": {},
+            "application/x-protobuf": {}
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/x-protobuf": {}
+            },
+            "description": "Stored (an OTLP Export*ServiceResponse, JSON for JSON requests)"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The body is not OTLP"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The body exceeds 10 MB"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unsupported Content-Encoding"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Storing failed; retry after Retry-After"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "servers": [
+          {
+            "description": "OTLP/HTTP ingestion",
+            "url": "http://localhost:4318"
+          }
+        ],
+        "summary": "Receive spans (OTLP ExportTraceServiceRequest)",
+        "tags": [
+          "otlp"
+        ]
+      }
+    },
+    "/ws": {
+      "get": {
+        "description": "Each text frame is a JSON WebSocketMessage announcing stored records (count, services, timestamps), without their content.",
+        "operationId": "getWs",
+        "responses": {
+          "101": {
+            "description": "WebSocket; messages are WebSocketMessage"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "WebSocket of real-time notifications",
+        "tags": [
+          "realtime"
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "description": "API, dashboard and WebSocket",
+      "url": "http://localhost:8080"
+    }
+  ]
+}

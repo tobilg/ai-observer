@@ -11,6 +11,7 @@ import (
 
 	duckdb "github.com/duckdb/duckdb-go/v2"
 	"github.com/tobilg/ai-observer/internal/redact"
+	"github.com/tobilg/ai-observer/internal/selfmetrics"
 )
 
 // writeTx is a write transaction on a dedicated connection. SQL statements run
@@ -51,8 +52,10 @@ func (w *writeTx) redactShared(m map[string]string) map[string]string {
 // concurrent writers never hit DuckDB transaction conflicts; reads take no lock
 // and rely on DuckDB's MVCC instead.
 func (s *DuckDBStore) inWriteTx(ctx context.Context, fn func(w *writeTx) error) error {
+	wt := selfmetrics.StartWrite()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer wt.Locked().Done()
 
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
@@ -69,7 +72,18 @@ func (s *DuckDBStore) inWriteTx(ctx context.Context, fn func(w *writeTx) error) 
 	if err := fn(&writeTx{conn: conn, tx: tx, redact: s.redactor}); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.writes.Add(1)
+	return nil
+}
+
+// WriteGeneration returns a number that changes whenever telemetry was
+// written or deleted, so results derived from stored telemetry can be
+// reused while it stays the same
+func (s *DuckDBStore) WriteGeneration() uint64 {
+	return s.writes.Load()
 }
 
 // appendRows bulk-inserts n rows into the given columns of table. Appending is

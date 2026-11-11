@@ -1,86 +1,23 @@
-export interface WidgetConfig {
-  service?: string
-  metricName?: string
-  breakdownAttribute?: string // Attribute key to use for series breakdown (e.g., "type", "model")
-  breakdownValue?: string // Specific breakdown value to filter by (for metric_value widgets)
-  chartStacked?: boolean // Whether to stack bars (default: true)
-}
+// The dashboard types of the API, generated from the Go types (api.gen.ts)
+export type {
+  WidgetConfig,
+  DashboardWidget,
+  Dashboard,
+  DashboardWithWidgets,
+  CreateDashboardRequest,
+  UpdateDashboardRequest,
+  CreateWidgetRequest,
+  UpdateWidgetRequest,
+  WidgetPosition,
+  UpdateWidgetPositionsRequest,
+  DashboardsResponse,
+} from './api.gen'
 
-export interface DashboardWidget {
-  id: string
-  dashboardId: string
-  widgetType: string
-  title: string
-  gridColumn: number
-  gridRow: number
-  colSpan: number
-  rowSpan: number
-  config: WidgetConfig
-  createdAt: string
-  updatedAt: string
-}
-
-export interface Dashboard {
-  id: string
-  name: string
-  description?: string
-  isDefault: boolean
-  createdAt: string
-  updatedAt: string
-}
-
-export interface DashboardWithWidgets extends Dashboard {
-  widgets: DashboardWidget[]
-}
-
-export interface CreateDashboardRequest {
-  name: string
-  description?: string
-  isDefault?: boolean
-}
-
-export interface UpdateDashboardRequest {
-  name?: string
-  description?: string
-}
-
-export interface CreateWidgetRequest {
-  widgetType: string
-  title: string
-  gridColumn: number
-  gridRow: number
-  colSpan: number
-  rowSpan: number
-  config?: WidgetConfig
-}
-
-export interface UpdateWidgetRequest {
-  title?: string
-  gridColumn?: number
-  gridRow?: number
-  colSpan?: number
-  rowSpan?: number
-  config?: WidgetConfig
-}
-
-export interface WidgetPosition {
-  id: string
-  gridColumn: number
-  gridRow: number
-}
-
+// An empty cell of the dashboard grid
 export interface EmptyCell {
   gridRow: number
   gridColumn: number
   colSpan?: number
-}
-
-export interface UpdateWidgetPositionsRequest {
-  positions: WidgetPosition[]
-}
-
-export interface DashboardsResponse {
-  dashboards: Dashboard[]
 }
 
 // Widget type constants
@@ -112,7 +49,7 @@ export const WIDGET_DEFINITIONS: WidgetDefinition[] = [
   {
     type: WIDGET_TYPES.STATS_TRACES,
     label: 'Total Traces',
-    description: 'Shows the total number of traces',
+    description: "Number of traces and spans in the dashboard's time range",
     defaultColSpan: 1,
     defaultRowSpan: 1,
     configurable: false,
@@ -121,7 +58,7 @@ export const WIDGET_DEFINITIONS: WidgetDefinition[] = [
   {
     type: WIDGET_TYPES.STATS_METRICS,
     label: 'Metrics Count',
-    description: 'Shows the total number of metrics',
+    description: "Number of metric data points in the dashboard's time range",
     defaultColSpan: 1,
     defaultRowSpan: 1,
     configurable: false,
@@ -130,7 +67,7 @@ export const WIDGET_DEFINITIONS: WidgetDefinition[] = [
   {
     type: WIDGET_TYPES.STATS_LOGS,
     label: 'Log Count',
-    description: 'Shows the total number of logs',
+    description: "Number of log records in the dashboard's time range",
     defaultColSpan: 1,
     defaultRowSpan: 1,
     configurable: false,
@@ -139,7 +76,7 @@ export const WIDGET_DEFINITIONS: WidgetDefinition[] = [
   {
     type: WIDGET_TYPES.STATS_ERROR_RATE,
     label: 'Error Rate',
-    description: 'Shows the error rate percentage',
+    description: "Percentage of spans with an error status in the dashboard's time range",
     defaultColSpan: 1,
     defaultRowSpan: 1,
     configurable: false,
@@ -148,7 +85,7 @@ export const WIDGET_DEFINITIONS: WidgetDefinition[] = [
   {
     type: WIDGET_TYPES.ACTIVE_SERVICES,
     label: 'Active Services',
-    description: 'Shows services sending telemetry',
+    description: 'All services that have sent telemetry',
     defaultColSpan: 2,
     defaultRowSpan: 1,
     configurable: false,
@@ -157,7 +94,7 @@ export const WIDGET_DEFINITIONS: WidgetDefinition[] = [
   {
     type: WIDGET_TYPES.RECENT_ACTIVITY,
     label: 'Recent Traces',
-    description: 'Shows recent traces',
+    description: "The newest traces in the dashboard's time range, linked to their details",
     defaultColSpan: 4,
     defaultRowSpan: 1,
     configurable: false,
@@ -166,7 +103,7 @@ export const WIDGET_DEFINITIONS: WidgetDefinition[] = [
   {
     type: WIDGET_TYPES.METRIC_VALUE,
     label: 'Metric Value',
-    description: 'Display a single metric value',
+    description: "A metric's total in the dashboard's time range, optionally for one attribute value",
     defaultColSpan: 1,
     defaultRowSpan: 1,
     configurable: true,
@@ -175,7 +112,7 @@ export const WIDGET_DEFINITIONS: WidgetDefinition[] = [
   {
     type: WIDGET_TYPES.METRIC_CHART,
     label: 'Metric Chart',
-    description: 'Display a metric as a line chart',
+    description: 'A metric over time as a bar chart, stacked or grouped by an attribute',
     defaultColSpan: 2,
     defaultRowSpan: 1,
     configurable: true,

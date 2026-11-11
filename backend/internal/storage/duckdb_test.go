@@ -460,8 +460,9 @@ func TestQueryTraces_CodexSearchMatchesSpanInsideTimeRange(t *testing.T) {
 	if resp.Total != 1 {
 		t.Fatalf("expected matching span in time range to return trace, got total %d", resp.Total)
 	}
-	if resp.Traces[0].RootSpanID != "matching-child" {
-		t.Errorf("expected visible in-range span to become page root, got %q", resp.Traces[0].RootSpanID)
+	// The trace is listed whole: its root began before the range
+	if resp.Traces[0].RootSpanID != "session-root" || resp.Traces[0].SpanCount != 2 {
+		t.Errorf("expected the whole trace with its root session-root, got %+v", resp.Traces[0])
 	}
 }
 

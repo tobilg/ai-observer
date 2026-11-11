@@ -55,7 +55,7 @@ func TestPrintHelp(t *testing.T) {
 		"Options:",
 		"--help",
 		"--version",
-		"Environment Variables:",
+		"Settings (environment variables):",
 		"AI_OBSERVER_API_PORT",
 		"AI_OBSERVER_OTLP_PORT",
 		"AI_OBSERVER_DATABASE_PATH",
@@ -196,6 +196,7 @@ func TestPrintSetupInstructions(t *testing.T) {
 				"CLAUDE_CODE_ENABLE_TELEMETRY",
 				"OTEL_METRICS_EXPORTER",
 				"OTEL_EXPORTER_OTLP_ENDPOINT",
+				"OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317",
 			},
 		},
 		{
@@ -205,6 +206,7 @@ func TestPrintSetupInstructions(t *testing.T) {
 				"settings.json",
 				"telemetry",
 				"otlpEndpoint",
+				`"otlpProtocol": "grpc"`,
 			},
 		},
 		{
@@ -214,6 +216,7 @@ func TestPrintSetupInstructions(t *testing.T) {
 				"config.toml",
 				"[otel]",
 				"exporter",
+				"otlp-grpc",
 			},
 		},
 		{
@@ -232,6 +235,7 @@ func TestPrintSetupInstructions(t *testing.T) {
 				"@devtheops/opencode-plugin-otel",
 				"OPENCODE_OTLP_ENDPOINT=http://localhost:4318",
 				"OPENCODE_OTLP_PROTOCOL=http/protobuf",
+				"OPENCODE_OTLP_ENDPOINT=http://localhost:4317",
 			},
 		},
 	}

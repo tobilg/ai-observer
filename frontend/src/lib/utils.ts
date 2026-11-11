@@ -5,16 +5,8 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-export function formatDuration(nanos: number): string {
-  const ms = nanos / 1_000_000
-  if (ms < 1) {
-    return `${(nanos / 1000).toFixed(2)}µs`
-  }
-  if (ms < 1000) {
-    return `${ms.toFixed(2)}ms`
-  }
-  return `${(ms / 1000).toFixed(2)}s`
-}
+// A span duration in nanoseconds (formatDurationNanos of lib/format.ts)
+export { formatDurationNanos as formatDuration } from '@/lib/format'
 
 export function formatTimestamp(timestamp: string | Date): string {
   const date = typeof timestamp === 'string' ? new Date(timestamp) : timestamp
@@ -68,11 +60,6 @@ export function getSeverityColor(severity: string): string {
   }
 }
 
-export function truncate(str: string, length: number): string {
-  if (str.length <= length) return str
-  return str.slice(0, length) + '...'
-}
-
 export function getSpanKindIcon(kind: string | undefined): string {
   switch (kind?.toUpperCase()) {
     case 'CLIENT':
@@ -87,45 +74,6 @@ export function getSpanKindIcon(kind: string | undefined): string {
     default:
       return '○'
   }
-}
-
-export function getSpanKindLabel(kind: string | undefined): string {
-  switch (kind?.toUpperCase()) {
-    case 'CLIENT':
-      return 'Client'
-    case 'SERVER':
-      return 'Server'
-    case 'PRODUCER':
-      return 'Producer'
-    case 'CONSUMER':
-      return 'Consumer'
-    case 'INTERNAL':
-      return 'Internal'
-    default:
-      return 'Unknown'
-  }
-}
-
-const SERVICE_COLORS = [
-  'bg-blue-500',
-  'bg-green-500',
-  'bg-purple-500',
-  'bg-orange-500',
-  'bg-pink-500',
-  'bg-teal-500',
-  'bg-indigo-500',
-  'bg-rose-500',
-]
-
-export function getServiceColor(serviceName: string): string {
-  // Generate a deterministic color based on service name hash
-  let hash = 0
-  for (let i = 0; i < serviceName.length; i++) {
-    hash = ((hash << 5) - hash) + serviceName.charCodeAt(i)
-    hash = hash & hash // Convert to 32bit integer
-  }
-  const index = Math.abs(hash) % SERVICE_COLORS.length
-  return SERVICE_COLORS[index]
 }
 
 export function formatEventTime(eventTimestamp: string | Date, spanTimestamp: string | Date): string {

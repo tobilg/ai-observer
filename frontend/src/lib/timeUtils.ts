@@ -1,6 +1,7 @@
 /**
  * Time utilities for date range calculations
  */
+import { TIMEFRAME_OPTIONS, isAbsoluteTimeSelection, type TimeSelection, type TimeframeOption } from '@/types/dashboard'
 
 /**
  * Calculate the optimal interval in seconds for a given date range.
@@ -56,15 +57,6 @@ export function calculateTickInterval(bucketCount: number): number {
 }
 
 /**
- * Format a date range for display.
- */
-export function formatDateRange(from: Date, to: Date): string {
-  const formatDate = (d: Date) =>
-    d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
-  return `${formatDate(from)} - ${formatDate(to)}`
-}
-
-/**
  * Check if a date range exceeds a given number of days.
  */
 export function isRangeExceeding(days: number, from: Date, to: Date): boolean {
@@ -72,9 +64,155 @@ export function isRangeExceeding(days: number, from: Date, to: Date): boolean {
   return rangeDays > days
 }
 
+// ============================================================================
+// Time selections
+// ============================================================================
+
+export function findTimeframe(value: string | null | undefined): TimeframeOption | undefined {
+  return value ? TIMEFRAME_OPTIONS.find((t) => t.value === value) : undefined
+}
+
+/** The relative selection of a timeframe value, or of fallback ('7d') if it is unknown */
+export function relativeTimeSelection(value: string | null | undefined, fallback = '7d'): TimeSelection {
+  const timeframe = findTimeframe(value) ?? findTimeframe(fallback) ?? TIMEFRAME_OPTIONS[10]
+  return { type: 'relative', timeframe }
+}
+
+/** An absolute selection with chart bucketing derived from its length */
+export function absoluteTimeSelection(from: Date, to: Date): TimeSelection {
+  const intervalSeconds = calculateInterval(from, to)
+  const bucketCount = Math.ceil((to.getTime() - from.getTime()) / 1000 / intervalSeconds)
+  return {
+    type: 'absolute',
+    range: { from, to, intervalSeconds, tickInterval: calculateTickInterval(bucketCount) },
+  }
+}
+
 /**
- * Get the number of days in a date range.
+ * Identity of a selection for query keys: the timeframe of a relative one,
+ * the bounds of an absolute one. Never the moving bounds of a relative
+ * window: they are computed when a query runs (resolveTimeRange).
  */
-export function getRangeDays(from: Date, to: Date): number {
-  return (to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24)
+export type TimeSelectionKey = { timeframe: string } | { from: string; to: string }
+
+export function timeSelectionKey(selection: TimeSelection): TimeSelectionKey {
+  if (isAbsoluteTimeSelection(selection)) {
+    return { from: selection.range.from.toISOString(), to: selection.range.to.toISOString() }
+  }
+  return { timeframe: selection.timeframe.value }
+}
+
+/**
+ * The bounds to query: fixed for an absolute selection, the window ending
+ * now for a relative one. Call it when the request is sent (in a queryFn),
+ * so a relative window moves with every refresh.
+ */
+export function resolveTimeRange(selection: TimeSelection, now: Date = new Date()): { from: Date; to: Date } {
+  if (isAbsoluteTimeSelection(selection)) {
+    return { from: selection.range.from, to: selection.range.to }
+  }
+  return { from: new Date(now.getTime() - selection.timeframe.durationSeconds * 1000), to: now }
+}
+
+export function timeSelectionDurationSeconds(selection: TimeSelection): number {
+  if (isAbsoluteTimeSelection(selection)) {
+    return (selection.range.to.getTime() - selection.range.from.getTime()) / 1000
+  }
+  return selection.timeframe.durationSeconds
+}
+
+export function timeSelectionIntervalSeconds(selection: TimeSelection): number {
+  return isAbsoluteTimeSelection(selection) ? selection.range.intervalSeconds : selection.timeframe.intervalSeconds
+}
+
+export function timeSelectionTickInterval(selection: TimeSelection): number {
+  return isAbsoluteTimeSelection(selection) ? selection.range.tickInterval : selection.timeframe.tickInterval
+}
+
+/**
+ * What query hooks take as time range (lib/queries.ts): key goes into the
+ * query key, resolve() is called by the queryFn.
+ */
+export interface RangeSource {
+  key: TimeSelectionKey
+  resolve: () => { from: Date; to: Date }
+}
+
+export function timeRangeSource(selection: TimeSelection): RangeSource {
+  return { key: timeSelectionKey(selection), resolve: () => resolveTimeRange(selection) }
+}
+
+/** resolve() as RFC 3339 strings, as the API takes them */
+export function resolveRangeParams(range: RangeSource): { from: string; to: string } {
+  const { from, to } = range.resolve()
+  return { from: from.toISOString(), to: to.toISOString() }
+}
+
+// ============================================================================
+// URL and storage representation
+// ============================================================================
+
+/** URL parameters of a time selection; other parameters must not use these names */
+export const TIME_SELECTION_PARAMS = ['timeframe', 'from', 'to'] as const
+
+/**
+ * The selection in URL parameters: from and to (absolute, RFC 3339) win over
+ * timeframe (relative). null when the parameters name no valid selection.
+ */
+export function timeSelectionFromParams(params: URLSearchParams): TimeSelection | null {
+  const fromParam = params.get('from')
+  const toParam = params.get('to')
+  if (fromParam && toParam) {
+    const from = new Date(fromParam)
+    const to = new Date(toParam)
+    if (!isNaN(from.getTime()) && !isNaN(to.getTime()) && from <= to) {
+      return absoluteTimeSelection(from, to)
+    }
+  }
+  const timeframe = findTimeframe(params.get('timeframe'))
+  return timeframe ? { type: 'relative', timeframe } : null
+}
+
+/** Writes the selection's parameters to params, removing the other kind's */
+export function writeTimeSelectionParams(params: URLSearchParams, selection: TimeSelection): void {
+  for (const name of TIME_SELECTION_PARAMS) {
+    params.delete(name)
+  }
+  if (isAbsoluteTimeSelection(selection)) {
+    params.set('from', selection.range.from.toISOString())
+    params.set('to', selection.range.to.toISOString())
+  } else {
+    params.set('timeframe', selection.timeframe.value)
+  }
+}
+
+/**
+ * The relative selection stored under a page's localStorage key, if any.
+ * Absolute selections are never restored from storage (earlier versions
+ * stored them; they live in the URL only).
+ */
+export function readStoredTimeSelection(storageKey: string): TimeSelection | null {
+  try {
+    const raw = localStorage.getItem(storageKey)
+    if (!raw) {
+      return null
+    }
+    const stored = JSON.parse(raw) as { type?: string; timeframeValue?: string } | null
+    const timeframe = stored?.type === 'relative' ? findTimeframe(stored.timeframeValue) : undefined
+    return timeframe ? { type: 'relative', timeframe } : null
+  } catch {
+    return null
+  }
+}
+
+/** Stores a relative selection; absolute ones are not stored */
+export function storeTimeSelection(storageKey: string, selection: TimeSelection): void {
+  if (isAbsoluteTimeSelection(selection)) {
+    return
+  }
+  try {
+    localStorage.setItem(storageKey, JSON.stringify({ type: 'relative', timeframeValue: selection.timeframe.value }))
+  } catch {
+    // Ignore storage errors (private mode, quota)
+  }
 }

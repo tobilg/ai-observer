@@ -1,183 +1,110 @@
 import { useState, useMemo, useCallback } from 'react'
+import { isAbsoluteTimeSelection, type TimeSelection } from '@/types/dashboard'
 import {
-  TIMEFRAME_OPTIONS,
-  isAbsoluteTimeSelection,
-  type TimeSelection,
-} from '@/types/dashboard'
-import { calculateInterval, calculateTickInterval } from '@/lib/timeUtils'
-import { getLocalStorageValue } from '@/hooks/useLocalStorage'
+  readStoredTimeSelection,
+  relativeTimeSelection,
+  storeTimeSelection,
+  timeRangeSource,
+  timeSelectionDurationSeconds,
+  timeSelectionFromParams,
+  timeSelectionIntervalSeconds,
+  timeSelectionTickInterval,
+  writeTimeSelectionParams,
+  type RangeSource,
+  type TimeSelectionKey,
+} from '@/lib/timeUtils'
+import type { UrlWriter } from '@/hooks/useUrlState'
 
-interface StoredTimeSelection {
-  type: string
-  timeframeValue?: string
-  from?: string
-  to?: string
-}
-
-interface UseTimeSelectionOptions {
-  /** localStorage key for persisting the selection */
+export interface UseTimeSelectionOptions {
+  /** localStorage key of the page; only relative selections are stored */
   storageKey: string
-  /** URLSearchParams for reading initial URL values */
-  searchParams: URLSearchParams
-  /** Default timeframe value (default: '7d') */
+  /** Timeframe value used when neither URL nor storage name one (default: '7d') */
   defaultTimeframe?: string
+  /**
+   * Keep the selection in the URL (timeframe, or from and to) through the
+   * page's writer (useUrlWriter, or useUrlState which passes it)
+   */
+  url?: UrlWriter
 }
 
-interface UseTimeSelectionResult {
-  /** Current time selection state */
+export interface UseTimeSelectionResult {
   timeSelection: TimeSelection
-  /** Update time selection (also persists to localStorage) */
+  /** Selects a range: relative ones are stored per page, both kinds written to the URL with `url` */
   setTimeSelection: (selection: TimeSelection) => void
-  /** Computed start time based on selection */
-  fromTime: Date
-  /** Computed end time based on selection */
-  toTime: Date
-  /** Whether the current selection is an absolute date range */
+  /** Identity of the selection for query keys (never moving timestamps) */
+  timeKey: TimeSelectionKey
+  /** { key, resolve } for the query hooks of lib/queries.ts; stable while the selection is */
+  range: RangeSource
+  /** The bounds to query, computed when called: a relative window ends now */
+  resolveRange: () => { from: Date; to: Date }
   isAbsoluteRange: boolean
-  /** Interval in seconds for data bucketing (from timeframe or calculated for absolute) */
+  /** Bucket size for series (from the timeframe, or derived from an absolute range's length) */
   intervalSeconds: number
   /** Tick interval for X-axis labels */
   tickInterval: number
+  /** Length of the selected window */
+  durationSeconds: number
 }
 
 /**
- * Hook for managing time selection state with localStorage persistence.
+ * A page's time selection. Where it comes from: the URL wins; otherwise the
+ * relative selection last stored under storageKey; otherwise
+ * defaultTimeframe. Absolute selections are never stored (they live in the
+ * URL only), so opening a page again never shows a stale fixed range.
  *
- * Loads initial value from: URL params → localStorage → default
- * Persists changes to localStorage automatically.
- *
- * Note: URL param updates are NOT handled by this hook - pages should
- * handle that separately since URL structure varies per page.
+ * Queries put timeKey (or range.key) into their key and call
+ * resolveRange() (range.resolve()) in their queryFn, so every fetch of a
+ * relative selection queries the window ending at that moment.
  */
 export function useTimeSelection({
   storageKey,
-  searchParams,
   defaultTimeframe = '7d',
+  url,
 }: UseTimeSelectionOptions): UseTimeSelectionResult {
+  // Without URL parameters: the stored or default selection, and the
+  // relative one chosen last
+  const [localSelection, setLocalSelection] = useState<TimeSelection>(() => {
+    return readStoredTimeSelection(storageKey) ?? relativeTimeSelection(defaultTimeframe)
+  })
 
-  // Get initial time selection from URL or localStorage
-  const getInitialTimeSelection = (): TimeSelection => {
-    // Check for absolute date range in URL
-    const fromParam = searchParams.get('from')
-    const toParam = searchParams.get('to')
-    if (fromParam && toParam) {
-      const from = new Date(fromParam)
-      const to = new Date(toParam)
-      if (!isNaN(from.getTime()) && !isNaN(to.getTime())) {
-        const intervalSeconds = calculateInterval(from, to)
-        const rangeDays = (to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24)
-        const bucketCount = Math.ceil((rangeDays * 86400) / intervalSeconds)
-        return {
-          type: 'absolute',
-          range: {
-            from,
-            to,
-            intervalSeconds,
-            tickInterval: calculateTickInterval(bucketCount),
-          },
-        }
+  const timeframeParam = url?.params.get('timeframe') ?? null
+  const fromParam = url?.params.get('from') ?? null
+  const toParam = url?.params.get('to') ?? null
+  const urlSelection = useMemo(() => {
+    const params = new URLSearchParams()
+    if (timeframeParam) params.set('timeframe', timeframeParam)
+    if (fromParam) params.set('from', fromParam)
+    if (toParam) params.set('to', toParam)
+    return timeSelectionFromParams(params)
+  }, [timeframeParam, fromParam, toParam])
+
+  const timeSelection = (url && urlSelection) || localSelection
+  const write = url?.write
+
+  const setTimeSelection = useCallback(
+    (selection: TimeSelection) => {
+      storeTimeSelection(storageKey, selection)
+      // With the URL, an absolute range lives there only: removing it from
+      // the URL returns to the last relative selection
+      if (!write || !isAbsoluteTimeSelection(selection)) {
+        setLocalSelection(selection)
       }
-    }
+      write?.((params) => writeTimeSelectionParams(params, selection))
+    },
+    [storageKey, write],
+  )
 
-    // Check for relative timeframe in URL or localStorage
-    const storedSelection = getLocalStorageValue<StoredTimeSelection | null>(storageKey, null)
-
-    // Check URL param first, then localStorage
-    const timeframeParam = searchParams.get('timeframe')
-    if (timeframeParam) {
-      const timeframe = TIMEFRAME_OPTIONS.find((t) => t.value === timeframeParam)
-        || TIMEFRAME_OPTIONS.find((t) => t.value === defaultTimeframe)!
-      return { type: 'relative', timeframe }
-    }
-
-    // Check localStorage for saved selection
-    if (storedSelection) {
-      if (storedSelection.type === 'absolute' && storedSelection.from && storedSelection.to) {
-        const from = new Date(storedSelection.from)
-        const to = new Date(storedSelection.to)
-        if (!isNaN(from.getTime()) && !isNaN(to.getTime())) {
-          const intervalSeconds = calculateInterval(from, to)
-          const rangeDays = (to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24)
-          const bucketCount = Math.ceil((rangeDays * 86400) / intervalSeconds)
-          return {
-            type: 'absolute',
-            range: {
-              from,
-              to,
-              intervalSeconds,
-              tickInterval: calculateTickInterval(bucketCount),
-            },
-          }
-        }
-      } else if (storedSelection.timeframeValue) {
-        const timeframe = TIMEFRAME_OPTIONS.find((t) => t.value === storedSelection.timeframeValue)
-        if (timeframe) {
-          return { type: 'relative', timeframe }
-        }
-      }
-    }
-
-    // Default timeframe
-    const timeframe = TIMEFRAME_OPTIONS.find((t) => t.value === defaultTimeframe)!
-    return { type: 'relative', timeframe }
-  }
-
-  const [timeSelection, setTimeSelectionState] = useState<TimeSelection>(getInitialTimeSelection)
-
-  // Wrapper that also persists to localStorage
-  const setTimeSelection = useCallback((selection: TimeSelection) => {
-    setTimeSelectionState(selection)
-
-    // Persist to localStorage
-    try {
-      if (isAbsoluteTimeSelection(selection)) {
-        localStorage.setItem(
-          storageKey,
-          JSON.stringify({
-            type: 'absolute',
-            from: selection.range.from.toISOString(),
-            to: selection.range.to.toISOString(),
-          })
-        )
-      } else {
-        localStorage.setItem(
-          storageKey,
-          JSON.stringify({ type: 'relative', timeframeValue: selection.timeframe.value })
-        )
-      }
-    } catch {
-      // Ignore storage errors
-    }
-  }, [storageKey])
-
-  // Compute from/to times and intervals based on selection
-  const { fromTime, toTime, intervalSeconds, tickInterval } = useMemo(() => {
-    if (isAbsoluteTimeSelection(timeSelection)) {
-      return {
-        fromTime: timeSelection.range.from,
-        toTime: timeSelection.range.to,
-        intervalSeconds: timeSelection.range.intervalSeconds,
-        tickInterval: timeSelection.range.tickInterval,
-      }
-    }
-    const now = new Date()
-    return {
-      fromTime: new Date(now.getTime() - timeSelection.timeframe.durationSeconds * 1000),
-      toTime: now,
-      intervalSeconds: timeSelection.timeframe.intervalSeconds,
-      tickInterval: timeSelection.timeframe.tickInterval,
-    }
-  }, [timeSelection])
-
-  const isAbsoluteRange = isAbsoluteTimeSelection(timeSelection)
+  const range = useMemo(() => timeRangeSource(timeSelection), [timeSelection])
 
   return {
     timeSelection,
     setTimeSelection,
-    fromTime,
-    toTime,
-    isAbsoluteRange,
-    intervalSeconds,
-    tickInterval,
+    timeKey: range.key,
+    range,
+    resolveRange: range.resolve,
+    isAbsoluteRange: isAbsoluteTimeSelection(timeSelection),
+    intervalSeconds: timeSelectionIntervalSeconds(timeSelection),
+    tickInterval: timeSelectionTickInterval(timeSelection),
+    durationSeconds: timeSelectionDurationSeconds(timeSelection),
   }
 }

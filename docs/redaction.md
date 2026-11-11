@@ -49,12 +49,13 @@ Names and postal addresses cannot be recognized reliably by patterns and are not
 
 Log bodies and attributes, span attributes, event and link attributes and status messages, and metric attributes, including resource attributes. Session IDs are read before redaction, so sessions stay complete. Metric names, span names and numeric values are not changed.
 
+Every way data is stored is covered: OTLP, `import`, `watch`, `export --from-files` (which stores nothing but writes the same records to Parquet) and `restore`, which redacts the restored text again with the current mode, so an export of a database that did not redact is stored redacted (restoring 3.5 million records took 10 seconds, 5.5 without redaction).
+
 ## Limits
 
-- **Only new telemetry:** what was stored before redaction was enabled stays as it was. The [MCP tools](mcp.md) redact their results again, so agents do not see it; the dashboard does. To clean up old data, delete it (`ai-observer delete`) and import the session files again.
+- **Only new telemetry:** what was stored before redaction was enabled stays as it was. The [MCP tools](mcp.md) redact their results again, so agents do not see it; the dashboard does. To clean up old data, delete it (`ai-observer delete`) and import the session files again, or export it and restore the export.
 - **Patterns, not certainty:** a secret in an unknown format (for example a random password without a recognizable key name) is not found, and occasionally ordinary text that looks like a credential is replaced. Treat redaction as a safety net, not a guarantee.
 - **Changing the mode while a tool runs:** tools that send cumulative counters (Gemini CLI, GitHub Copilot, OpenCode) identify a series by its attributes. When a new mode replaces a value in a running session's metric attributes (for example `user.email` with `all`), its next points start a new series, whose first point counts the session's total so far once more. Change the mode between sessions.
-- **Exports from files:** `ai-observer export --from-files` converts session files directly to Parquet without storing them, so it is not redacted.
 
 ## Cost
 

@@ -187,11 +187,21 @@ export function metricChart(result: MetricsResult): ChartData {
   const durationSeconds = (Date.parse(result.to) - Date.parse(result.from)) / 1000
   const intervalSeconds = goDurationSeconds(result.interval) ?? durationSeconds / 50
   return buildChartData(series, seriesKey, metricLabel, (timestamp) =>
-    // Buckets of whole days start at midnight UTC: their date only
+    // Buckets of whole days start at midnight in the result's zone: their
+    // date there only
     intervalSeconds % DAY_SECONDS === 0
-      ? new Date(timestamp).toLocaleDateString([], { month: 'short', day: 'numeric', timeZone: 'UTC' })
+      ? formatDay(timestamp, result.timezone)
       : formatTickLabel(timestamp, durationSeconds, intervalSeconds)
   )
+}
+
+// The date of a day bucket in its zone (UTC when unknown or not supported)
+function formatDay(timestamp: number, timeZone = 'UTC'): string {
+  try {
+    return new Date(timestamp).toLocaleDateString([], { month: 'short', day: 'numeric', timeZone })
+  } catch {
+    return new Date(timestamp).toLocaleDateString([], { month: 'short', day: 'numeric', timeZone: 'UTC' })
+  }
 }
 
 // The totals of an aggregated query_metrics result, largest first
@@ -236,6 +246,23 @@ export function sessionCounts(sessions: SessionRow[]): Array<{ tool: string; cou
   return [...counts.entries()]
     .map(([tool, count]) => ({ tool, count }))
     .sort((a, b) => b.count - a.count || a.tool.localeCompare(b.tool))
+}
+
+// The summed cost of the sessions that record one; undefined when none does
+export function sessionsCost(sessions: SessionRow[]): number | undefined {
+  let total: number | undefined
+  for (const s of sessions) {
+    if (s.cost_usd != null) {
+      total = (total ?? 0) + s.cost_usd
+    }
+  }
+  return total
+}
+
+// Where a session worked: repository and branch, when known
+export function sessionPlace(s: SessionRow): string | undefined {
+  if (!s.repository) return undefined
+  return s.branch ? `${s.repository} @ ${s.branch}` : s.repository
 }
 
 export function formatRange(from: string, to: string): string {

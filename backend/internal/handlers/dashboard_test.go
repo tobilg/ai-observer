@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -142,26 +144,84 @@ func TestGetDefaultDashboard(t *testing.T) {
 	h, cleanup := setupTestHandlers(t)
 	defer cleanup()
 
-	// No default dashboard initially
-	req := httptest.NewRequest(http.MethodGet, "/api/dashboards/default", nil)
-	rec := httptest.NewRecorder()
-	h.GetDefaultDashboard(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("expected status 404 for no default dashboard, got %d", rec.Code)
+	get := func() api.DashboardWithWidgets {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/dashboards/default", nil)
+		rec := httptest.NewRecorder()
+		h.GetDefaultDashboard(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var d api.DashboardWithWidgets
+		if err := json.NewDecoder(rec.Body).Decode(&d); err != nil {
+			t.Fatal(err)
+		}
+		return d
 	}
 
-	// Create a dashboard and set it as default
-	dashboard := createTestDashboard(t, h, "Default Dashboard")
+	// Without a default, the server creates it with the default widgets
+	created := get()
+	if created.Name != "Default Dashboard" || created.Description != "AI Observer default dashboard" || !created.IsDefault {
+		t.Errorf("created dashboard = %+v", created.Dashboard)
+	}
+	want := []string{
+		"stats_traces Total Traces 1,1 1x1", "stats_metrics Metrics 2,1 1x1", "stats_logs Logs 3,1 1x1",
+		"stats_error_rate Error Rate 4,1 1x1", "active_services Active Services 1,2 2x1", "recent_activity Recent Traces 1,3 4x1",
+	}
+	if len(created.Widgets) != len(want) {
+		t.Fatalf("widgets = %+v", created.Widgets)
+	}
+	for i, w := range created.Widgets {
+		got := fmt.Sprintf("%s %s %d,%d %dx%d", w.WidgetType, w.Title, w.GridColumn, w.GridRow, w.ColSpan, w.RowSpan)
+		if got != want[i] || w.DashboardID != created.ID {
+			t.Errorf("widget %d = %s (dashboard %s), want %s", i, got, w.DashboardID, want[i])
+		}
+	}
+	if again := get(); again.ID != created.ID || len(again.Widgets) != len(want) {
+		t.Errorf("second request = %s with %d widgets, want the created dashboard", again.ID, len(again.Widgets))
+	}
+
+	// Another default dashboard is returned as it is
+	dashboard := createTestDashboard(t, h, "Mine")
 	setDashboardAsDefault(t, h, dashboard.ID)
+	if d := get(); d.ID != dashboard.ID || len(d.Widgets) != 0 {
+		t.Errorf("default = %s with %d widgets, want %s without widgets", d.ID, len(d.Widgets), dashboard.ID)
+	}
+}
 
-	// Now should return the dashboard
-	req = httptest.NewRequest(http.MethodGet, "/api/dashboards/default", nil)
-	rec = httptest.NewRecorder()
-	h.GetDefaultDashboard(rec, req)
+// Two dashboard tabs opening at once create one default dashboard
+func TestGetDefaultDashboard_Concurrent(t *testing.T) {
+	h, cleanup := setupTestHandlers(t)
+	defer cleanup()
 
-	if rec.Code != http.StatusOK {
-		t.Errorf("expected status 200 after setting default, got %d: %s", rec.Code, rec.Body.String())
+	const requests = 8
+	ids := make(chan string, requests)
+	var wg sync.WaitGroup
+	for range requests {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			h.GetDefaultDashboard(rec, httptest.NewRequest(http.MethodGet, "/api/dashboards/default", nil))
+			var d api.DashboardWithWidgets
+			if rec.Code != http.StatusOK || json.NewDecoder(rec.Body).Decode(&d) != nil || len(d.Widgets) != 6 {
+				t.Errorf("status %d: %s", rec.Code, rec.Body.String())
+			}
+			ids <- d.ID
+		}()
+	}
+	wg.Wait()
+	close(ids)
+	seen := make(map[string]bool)
+	for id := range ids {
+		seen[id] = true
+	}
+	dashboards, err := h.store.GetDashboards(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 1 || len(dashboards) != 1 {
+		t.Errorf("requests returned %d dashboards, %d stored; want one", len(seen), len(dashboards))
 	}
 }
 
@@ -261,6 +321,11 @@ func TestCreateWidget(t *testing.T) {
 		{
 			name:       "missing widgetType",
 			body:       map[string]interface{}{"title": "No Type"},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "colSpan wider than the grid",
+			body:       map[string]interface{}{"widgetType": "stats", "title": "Wide", "colSpan": 5},
 			wantStatus: http.StatusBadRequest,
 		},
 		{
@@ -561,3 +626,95 @@ func setDashboardAsDefault(t *testing.T, h *Handlers, id string) {
 		t.Fatalf("failed to set default dashboard: %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// updateWidget sends PUT /api/dashboards/{id}/widgets/{widgetId} with body
+func updateWidget(t *testing.T, h *Handlers, dashboardID, widgetID, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPut, "/api/dashboards/"+dashboardID+"/widgets/"+widgetID, bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", dashboardID)
+	rctx.URLParams.Add("widgetId", widgetID)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+	h.UpdateWidget(rec, req)
+	return rec
+}
+
+func TestUpdateWidget(t *testing.T) {
+	h, cleanup := setupTestHandlers(t)
+	defer cleanup()
+
+	dashboard := createTestDashboard(t, h, "Widget Dashboard")
+	widget := createTestWidget(t, h, dashboard.ID, "Tokens")
+	decode := func(rec *httptest.ResponseRecorder) api.DashboardWidget {
+		t.Helper()
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var w api.DashboardWidget
+		if err := json.NewDecoder(rec.Body).Decode(&w); err != nil {
+			t.Fatal(err)
+		}
+		return w
+	}
+
+	// Title, config and spans together; the response is the updated widget
+	w := decode(updateWidget(t, h, dashboard.ID, widget.ID, `{"title": "Token usage", "colSpan": 2, "rowSpan": 3,
+		"config": {"metricName": "claude_code.token.usage", "service": "claude-code", "breakdownAttribute": "type", "chartStacked": false}}`))
+	if w.ID != widget.ID || w.Title != "Token usage" || w.ColSpan != 2 || w.RowSpan != 3 || w.WidgetType != "stats" {
+		t.Errorf("updated widget = %+v", w)
+	}
+	if w.Config.MetricName != "claude_code.token.usage" || w.Config.Service != "claude-code" ||
+		w.Config.BreakdownAttribute != "type" || w.Config.ChartStacked == nil || *w.Config.ChartStacked {
+		t.Errorf("updated config = %+v", w.Config)
+	}
+	if !w.UpdatedAt.After(widget.UpdatedAt) && !w.UpdatedAt.Equal(widget.UpdatedAt) {
+		t.Errorf("updatedAt %v before %v", w.UpdatedAt, widget.UpdatedAt)
+	}
+
+	// Fields left out are kept, the config too
+	w = decode(updateWidget(t, h, dashboard.ID, widget.ID, `{"title": "Renamed"}`))
+	if w.Title != "Renamed" || w.ColSpan != 2 || w.RowSpan != 3 || w.Config.MetricName != "claude_code.token.usage" {
+		t.Errorf("after title update: %+v", w)
+	}
+	w = decode(updateWidget(t, h, dashboard.ID, widget.ID, `{"colSpan": 4}`))
+	if w.Title != "Renamed" || w.ColSpan != 4 || w.RowSpan != 3 || w.Config.Service != "claude-code" {
+		t.Errorf("after span update: %+v", w)
+	}
+
+	// A config replaces the stored one whole; {} clears it
+	w = decode(updateWidget(t, h, dashboard.ID, widget.ID, `{"config": {"metricName": "other"}}`))
+	if w.Config.MetricName != "other" || w.Config.Service != "" || w.Config.ChartStacked != nil {
+		t.Errorf("after config update: %+v", w.Config)
+	}
+	w = decode(updateWidget(t, h, dashboard.ID, widget.ID, `{"config": {}}`))
+	if w.Config != (api.WidgetConfig{}) {
+		t.Errorf("after clearing config: %+v", w.Config)
+	}
+
+	// What the dashboard returns matches
+	stored, err := h.store.GetDashboardWithWidgets(context.Background(), dashboard.ID)
+	if err != nil || len(stored.Widgets) != 1 || stored.Widgets[0].Title != "Renamed" || stored.Widgets[0].ColSpan != 4 {
+		t.Errorf("stored widgets = %+v, %v", stored, err)
+	}
+
+	for body, want := range map[string]int{
+		`{"colSpan": 5}`:                 http.StatusBadRequest,
+		`{"colSpan": -1}`:                http.StatusBadRequest,
+		`{"rowSpan": -1}`:                http.StatusBadRequest,
+		`{"title": "` + longTitle + `"}`: http.StatusBadRequest,
+		`not json`:                       http.StatusBadRequest,
+	} {
+		if rec := updateWidget(t, h, dashboard.ID, widget.ID, body); rec.Code != want {
+			t.Errorf("%s: status %d, want %d", body, rec.Code, want)
+		}
+	}
+	// A widget of another dashboard
+	other := createTestDashboard(t, h, "Other")
+	if rec := updateWidget(t, h, other.ID, widget.ID, `{"title": "x"}`); rec.Code != http.StatusNotFound {
+		t.Errorf("widget of another dashboard: status %d, want 404", rec.Code)
+	}
+}
+
+var longTitle = string(bytes.Repeat([]byte("t"), 256))

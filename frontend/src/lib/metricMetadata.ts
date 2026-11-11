@@ -4,7 +4,9 @@
 
 import { Bot, BotMessageSquare, Terminal, Sparkles, type LucideIcon } from 'lucide-react'
 import { useProviderStore } from '@/stores/providerStore'
+import { formatBytes } from '@/lib/format'
 import { UNIT_FORMATS, type MetricType, type SourceTool, type UnitFormat, type AttributeBreakdown, type MetricMetadata } from '@/lib/metricTypes'
+import type { HistogramStat as APIHistogramStat } from '@/types/metrics'
 import { CLAUDE_CODE_METRICS } from '@/lib/metricCatalog/claudeCode'
 import { CODEX_EVENT_METRICS, CODEX_METRICS } from '@/lib/metricCatalog/codex'
 import { GEMINI_METRICS } from '@/lib/metricCatalog/gemini'
@@ -171,15 +173,8 @@ export function formatDuration(value: number, unit: string): string {
   return `${Math.round(value * 1000)}ms`
 }
 
-/**
- * Format bytes to human-readable format
- */
-export function formatBytes(bytes: number): string {
-  if (bytes >= 1_073_741_824) return `${(bytes / 1_073_741_824).toFixed(1)} GB`
-  if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(1)} MB`
-  if (bytes >= 1_024) return `${(bytes / 1_024).toFixed(1)} KB`
-  return `${bytes} B`
-}
+// Format bytes to human-readable format
+export { formatBytes }
 
 /**
  * Format currency (USD)
@@ -283,7 +278,7 @@ export function getSourceDisplayName(source: SourceTool): string {
 }
 
 // Display names of the supported tools' service names, used until the
-// backend's provider list (useProviderStore) has loaded or when it cannot be
+// backend's provider list (providerStore) has loaded or when it cannot be
 // loaded. Keep in sync with the provider table in backend/internal/tools.
 const FALLBACK_SERVICE_NAMES: Record<string, string> = {
   'claude-code': 'Claude Code',
@@ -309,21 +304,37 @@ const TOOL_FILTER_NAMES: Record<string, string> = {
   codex: 'OpenAI Codex (all services)',
 }
 
+// What service names depend on: the backend's provider list once loaded
+// (providerStore), otherwise the fallbacks above
+export interface ProviderNames {
+  displayNames: Record<string, string>
+  toolServices: Record<string, string[]>
+  loaded: boolean
+}
+
 // The service names of the tools that send several, by tool name
-function getToolServices(): Record<string, string[]> {
-  const { loaded, toolServices } = useProviderStore.getState()
-  return loaded ? toolServices : FALLBACK_TOOL_SERVICES
+function toolServicesOf(names: ProviderNames): Record<string, string[]> {
+  return names.loaded ? names.toolServices : FALLBACK_TOOL_SERVICES
 }
 
 /**
- * Get display name for a service name (from API/backend), or for a tool name
- * used as service filter (codex: all of Codex's services)
+ * Display name of a service name (from API/backend), or of a tool name used
+ * as service filter (codex: all of Codex's services), given the provider
+ * names (useServiceNames passes the store's state)
+ */
+export function serviceDisplayName(serviceName: string, names: ProviderNames): string {
+  const name = names.displayNames[serviceName] ?? FALLBACK_SERVICE_NAMES[serviceName]
+  if (name) return name
+  if (toolServicesOf(names)[serviceName]) return TOOL_FILTER_NAMES[serviceName] ?? `${serviceName} (all services)`
+  return serviceName
+}
+
+/**
+ * serviceDisplayName with the provider names loaded so far. Components use
+ * useServiceNames instead, which re-renders them when the names arrive.
  */
 export function getServiceDisplayName(serviceName: string): string {
-  const name = useProviderStore.getState().displayNames[serviceName] ?? FALLBACK_SERVICE_NAMES[serviceName]
-  if (name) return name
-  if (getToolServices()[serviceName]) return TOOL_FILTER_NAMES[serviceName] ?? `${serviceName} (all services)`
-  return serviceName
+  return serviceDisplayName(serviceName, useProviderStore.getState())
 }
 
 export interface ServiceFilterOption {
@@ -337,12 +348,12 @@ export interface ServiceFilterOption {
  * name (which the API accepts as filter for all of them), when at least two
  * of them are present
  */
-export function serviceFilterOptions(services: string[]): ServiceFilterOption[] {
-  const toolServices = getToolServices()
+export function serviceFilterOptionsFor(services: string[], names: ProviderNames): ServiceFilterOption[] {
+  const toolServices = toolServicesOf(names)
   const toolOf = new Map<string, string>()
-  for (const [tool, names] of Object.entries(toolServices)) {
-    if (names.filter((name) => services.includes(name)).length >= 2) {
-      for (const name of names) toolOf.set(name, tool)
+  for (const [tool, serviceNames] of Object.entries(toolServices)) {
+    if (serviceNames.filter((name) => services.includes(name)).length >= 2) {
+      for (const name of serviceNames) toolOf.set(name, tool)
     }
   }
   const options: ServiceFilterOption[] = []
@@ -351,11 +362,16 @@ export function serviceFilterOptions(services: string[]): ServiceFilterOption[] 
     const tool = toolOf.get(service)
     if (tool && !added.has(tool)) {
       added.add(tool)
-      options.push({ value: tool, label: getServiceDisplayName(tool) })
+      options.push({ value: tool, label: serviceDisplayName(tool, names) })
     }
-    options.push({ value: service, label: getServiceDisplayName(service) })
+    options.push({ value: service, label: serviceDisplayName(service, names) })
   }
   return options
+}
+
+/** serviceFilterOptionsFor with the provider names loaded so far (see getServiceDisplayName) */
+export function serviceFilterOptions(services: string[]): ServiceFilterOption[] {
+  return serviceFilterOptionsFor(services, useProviderStore.getState())
 }
 
 /**
@@ -380,4 +396,100 @@ export function getServiceIcon(serviceName: string): LucideIcon {
     default:
       return Bot // fallback
   }
+}
+
+// ============================================================================
+// Histogram statistics and breakdowns of series queries
+// ============================================================================
+
+/**
+ * The statistics of histogram series (the stat parameter of series queries),
+ * each one the API knows (APIHistogramStat)
+ */
+export const HISTOGRAM_STATS = [
+  { value: 'avg', label: 'Average' },
+  { value: 'p50', label: 'Median (p50)' },
+  { value: 'p90', label: '90th percentile' },
+  { value: 'p95', label: '95th percentile' },
+  { value: 'p99', label: '99th percentile' },
+  { value: 'min', label: 'Minimum' },
+  { value: 'max', label: 'Maximum' },
+  { value: 'sum', label: 'Sum' },
+  { value: 'count', label: 'Count' },
+] as const satisfies readonly { value: APIHistogramStat; label: string }[]
+
+export type HistogramStat = (typeof HISTOGRAM_STATS)[number]['value']
+
+export function isHistogramStat(value: string | undefined): value is HistogramStat {
+  return HISTOGRAM_STATS.some((s) => s.value === value)
+}
+
+export function isHistogramMetric(metadata: MetricMetadata | null | undefined): boolean {
+  return metadata?.metricType === 'histogram'
+}
+
+/**
+ * The statistic a histogram metric shows when none is chosen: the sum for
+ * token counts (the tokens of the requests add up to the usage), the
+ * average otherwise (durations and sizes, as the server defaults)
+ */
+export function defaultHistogramStat(metadata: MetricMetadata): HistogramStat {
+  return metadata.unit.formatter === 'tokens' ? 'sum' : 'avg'
+}
+
+/**
+ * The stat to request for a metric: the chosen one, or the default, for
+ * histograms; undefined for other metrics, which take none
+ */
+export function seriesStat(metadata: MetricMetadata | null | undefined, stat?: string): HistogramStat | undefined {
+  if (!metadata || !isHistogramMetric(metadata)) return undefined
+  return isHistogramStat(stat) ? stat : defaultHistogramStat(metadata)
+}
+
+/**
+ * The stat parameter of a series query: seriesStat, left out when it is the
+ * server's default (avg). Not sending the default keeps metrics the catalog
+ * takes for histograms working when their points are of another type.
+ */
+export function statParam(metadata: MetricMetadata | null | undefined, stat?: string): HistogramStat | undefined {
+  const s = seriesStat(metadata, stat)
+  return s === 'avg' ? undefined : s
+}
+
+/** Whether the values of a stat add up across series (stacked bars, sums) */
+export function isAdditiveStat(stat: string | undefined): boolean {
+  return !stat || stat === 'sum' || stat === 'count'
+}
+
+/** The unit of a stat's values: counts are plain numbers */
+export function statUnit(unit: UnitFormat, stat: string | undefined): UnitFormat {
+  return stat === 'count' ? UNIT_FORMATS.count : unit
+}
+
+export interface BreakdownOption {
+  value: string
+  label: string
+  // A catalog breakdown of the metric (else an attribute key seen in its points)
+  known: boolean
+}
+
+/**
+ * The attributes a metric's series can be broken down by: the catalog's
+ * breakdowns with their names first, then the other attribute keys the
+ * stored points have (GET /api/metrics/attribute-keys)
+ */
+export function breakdownOptions(metadata: MetricMetadata | null | undefined, keys: string[] = []): BreakdownOption[] {
+  const options: BreakdownOption[] = (metadata?.breakdowns ?? []).map((b) => ({
+    value: b.attributeKey,
+    label: b.displayName,
+    known: true,
+  }))
+  const seen = new Set(options.map((o) => o.value))
+  for (const key of [...keys].sort((a, b) => a.localeCompare(b))) {
+    if (!seen.has(key)) {
+      seen.add(key)
+      options.push({ value: key, label: key, known: false })
+    }
+  }
+  return options
 }

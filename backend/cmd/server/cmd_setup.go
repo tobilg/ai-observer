@@ -7,27 +7,25 @@ import (
 )
 
 func cmdSetup(args []string) {
-	if err := runSetup(args); err != nil {
-		fmt.Printf("Error: %v\n", err)
-		os.Exit(1)
-	}
+	exitOnError(runSetup(args))
 }
 
 func runSetup(args []string) error {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
 
 	fs.Usage = func() {
-		fmt.Print(`Show setup instructions for AI tools
+		fmt.Print(`Show how to send a tool's telemetry to AI Observer
 
-Usage: ai-observer setup [claude-code|codex|gemini|opencode|github-copilot]
+Usage: ai-observer setup <claude-code|codex|gemini|opencode|github-copilot>
 
-Arguments:
-  claude-code  Show Claude Code setup instructions
-  codex        Show OpenAI Codex CLI setup instructions
-  gemini       Show Gemini CLI setup instructions
-  opencode     Show OpenCode OTEL plugin setup instructions
-  github-copilot Show GitHub Copilot setup instructions
 `)
+		printArguments(os.Stdout, []argument{
+			{"claude-code", "Claude Code"},
+			{"codex", "OpenAI Codex (CLI and app)"},
+			{"gemini", "Gemini CLI"},
+			{"opencode", "OpenCode, with its OTEL plugin"},
+			{"github-copilot", "GitHub Copilot (VS Code and CLI)"},
+		})
 	}
 
 	if err := fs.Parse(reorderArgs(fs, args)); err != nil {
@@ -83,6 +81,9 @@ export OTEL_LOGS_EXPORTER=otlp          # Options: otlp, console
 # 3. Configure OTLP endpoint (for OTLP exporter)
 export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+#    or OTLP/gRPC:
+#    export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+#    export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
 
 # 4. For faster visibilty: reduce export intervals
 export OTEL_METRIC_EXPORT_INTERVAL=10000  # 10 seconds (default: 60000ms)
@@ -108,6 +109,8 @@ export OTEL_LOG_USER_PROMPTS=1
   }
 }
 
+   For OTLP/gRPC use "otlpProtocol": "grpc" and "otlpEndpoint": "http://localhost:4317".
+
 2. Add to ~/.bashrc or ~/.zshrc:
 
 # Mitigate Gemini CLI bug
@@ -125,6 +128,9 @@ exporter = { otlp-http = { endpoint = "http://localhost:4318/v1/logs", protocol 
 trace_exporter = { otlp-http = { endpoint = "http://localhost:4318/v1/traces", protocol = "binary" } }
 metrics_exporter = { otlp-http = { endpoint = "http://localhost:4318/v1/metrics", protocol = "binary" } }
 log_user_prompt = true
+
+For OTLP/gRPC, use otlp-grpc exporters instead, e.g.
+exporter = { otlp-grpc = { endpoint = "http://localhost:4317" } }
 
 Codex 0.167 and later run the CLI's conversations in a background app server,
 which keeps the settings it started with. After changing [otel], quit Codex,
@@ -148,8 +154,8 @@ export OPENCODE_ENABLE_TELEMETRY=1
 export OPENCODE_OTLP_ENDPOINT=http://localhost:4318
 export OPENCODE_OTLP_PROTOCOL=http/protobuf
 
-The plugin default is OTLP/gRPC on port 4317. AI Observer receives OTLP over
-HTTP on port 4318, so use the http/protobuf protocol and endpoint above.
+AI Observer also receives the plugin's default, OTLP/gRPC on port 4317: leave
+OPENCODE_OTLP_PROTOCOL unset and set OPENCODE_OTLP_ENDPOINT=http://localhost:4317.
 `)
 	case "github-copilot":
 		fmt.Print(`GitHub Copilot Setup

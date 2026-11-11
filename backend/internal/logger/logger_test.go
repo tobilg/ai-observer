@@ -110,3 +110,18 @@ func TestLoggerConfiguration(t *testing.T) {
 		})
 	}
 }
+
+func TestInitFormats(t *testing.T) {
+	resetLogger(t)
+	Init(slog.LevelDebug, FormatJSON)
+	if _, ok := Logger().Handler().(*slog.JSONHandler); !ok {
+		t.Errorf("json: handler %T", Logger().Handler())
+	}
+	if !Logger().Enabled(context.Background(), slog.LevelDebug) {
+		t.Error("level not applied")
+	}
+	Init(slog.LevelInfo, FormatText)
+	if _, ok := Logger().Handler().(*slog.TextHandler); !ok {
+		t.Errorf("text: handler %T", Logger().Handler())
+	}
+}

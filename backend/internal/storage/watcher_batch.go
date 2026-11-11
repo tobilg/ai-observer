@@ -38,6 +38,10 @@ func (s *DuckDBStore) InsertWatcherBatch(ctx context.Context, logs []api.LogReco
 		if err := insertSpansTx(ctx, w, spans, state.FilePath); err != nil {
 			return fmt.Errorf("inserting watcher spans: %w", err)
 		}
+		// Count requests OTLP recorded as well only once (usage_overlap.go)
+		if _, err := reconcileUsage(ctx, w, logs, metrics, true); err != nil {
+			return err
+		}
 		return setWatchFields(ctx, w.tx, state.Source, state.FilePath, state.ByteOffset, state.MessageCount, state.ParserState)
 	})
 }

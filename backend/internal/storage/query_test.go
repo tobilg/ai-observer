@@ -125,7 +125,7 @@ func TestQuerySessionsShowsWholeSession(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 
 	attrs := func(model string) map[string]string {
-		a := map[string]string{"session.id": "s1"}
+		a := map[string]string{"session.id": "s1", "event.name": "user_prompt"}
 		if model != "" {
 			a["model"] = model
 		}

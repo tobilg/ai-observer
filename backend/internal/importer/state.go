@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"os"
 	"time"
 
 	"github.com/tobilg/ai-observer/internal/storage"
@@ -34,11 +33,11 @@ func NewStateManager(store *storage.DuckDBStore) *StateManager {
 // fileHash returns the hash of the file at path, hashing it only if it
 // changed since it was last hashed
 func (m *StateManager) fileHash(path string) (string, error) {
-	info, err := os.Stat(path)
+	info, err := StatSessionFile(path)
 	if err != nil {
 		return "", err
 	}
-	size, modTime := info.Size(), info.ModTime().UnixNano()
+	size, modTime := info.Size, info.ModTimeNs
 	if h, ok := m.hashes[path]; ok && h.size == size && h.modTimeNs == modTime {
 		return h.hash, nil
 	}
@@ -85,15 +84,17 @@ func (m *StateManager) fileStatus(ctx context.Context, source SourceType, filePa
 	}
 
 	// Same size and modification time as when it was imported: unchanged,
-	// without reading the whole file to hash it
+	// without reading the whole file to hash it. For a compressed Codex file
+	// these are its content's size and the time Codex kept from the .jsonl,
+	// so compressing a file imported before is no change (codex_rollout.go).
 	if state.FileSize > 0 {
-		if info, err := os.Stat(filePath); err == nil &&
-			info.Size() == state.FileSize && info.ModTime().UnixNano() == state.FileModTimeNs {
+		if info, err := StatSessionFile(filePath); err == nil &&
+			info.Size == state.FileSize && info.ModTimeNs == state.FileModTimeNs {
 			return StatusCurrent, state, nil
 		}
 	}
 
-	// Get current file hash
+	// Get current file hash (of the content of a compressed file)
 	currentHash, err := m.fileHash(filePath)
 	if err != nil {
 		return "", nil, fmt.Errorf("computing file hash: %w", err)
@@ -129,9 +130,10 @@ func (m *StateManager) NewImportState(source SourceType, filePath, fileHash stri
 	}, nil
 }
 
-// computeFileHash computes the SHA256 hash of a file
+// computeFileHash computes the SHA256 hash of a file's content (decompressed
+// for a compressed Codex file)
 func computeFileHash(filePath string) (string, error) {
-	file, err := os.Open(filePath)
+	file, _, err := OpenSessionFile(filePath)
 	if err != nil {
 		return "", err
 	}

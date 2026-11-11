@@ -1,5 +1,5 @@
 import { MetricBarChart, MetricLineChart } from '@/components/charts'
-import { formatMetricValue, getMetricMetadata } from '@/lib/metricMetadata'
+import { HISTOGRAM_STATS, formatMetricValue, getMetricMetadata, statUnit } from '@/lib/metricMetadata'
 import { formatIntervalSeconds } from '@/lib/utils'
 import { formatRange, goDurationSeconds, isBucketed, metricChart, metricTotals } from '../data'
 import type { MetricsResult } from '../types'
@@ -9,9 +9,14 @@ import { BarList, Notice, ViewHeader } from './parts'
 // and lines otherwise, or the totals of an aggregated query as bars
 export function MetricsView({ data }: { data: MetricsResult }) {
   const metadata = getMetricMetadata(data.name)
-  const format = (value: number) => formatMetricValue(value, metadata.unit)
+  const unit = statUnit(metadata.unit, data.stat)
+  const format = (value: number) => formatMetricValue(value, unit)
   const interval = goDurationSeconds(data.interval)
-  const subtitle = [formatRange(data.from, data.to), interval ? `per ${formatIntervalSeconds(interval)}` : 'totals'].join(' · ')
+  // A histogram's statistic, such as "95th percentile"
+  const stat = data.stat ? (HISTOGRAM_STATS.find((s) => s.value === data.stat)?.label ?? data.stat) : undefined
+  const subtitle = [formatRange(data.from, data.to), stat, interval ? `per ${formatIntervalSeconds(interval)}` : 'totals']
+    .filter(Boolean)
+    .join(' · ')
   const title = (
     <>
       {metadata.displayName} <span className="font-mono text-xs font-normal text-muted-foreground">{data.name}</span>

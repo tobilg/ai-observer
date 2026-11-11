@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/tobilg/ai-observer/internal/api"
+	"github.com/tobilg/ai-observer/internal/selfmetrics"
 	"github.com/tobilg/ai-observer/internal/tools"
 )
 
@@ -66,6 +67,7 @@ func dropNoiseSpans(ctx context.Context, tx *sql.Tx, spans []api.Span) ([]api.Sp
 			kept = append(kept, span)
 		}
 	}
+	selfmetrics.NoiseSpansDropped.With().Add(len(spans) - len(kept))
 	return kept, nil
 }
 

@@ -41,8 +41,11 @@ export function MetricLineChart({
 
   // Left margin: more for long date labels, less for short time-only labels
   const leftMargin = needsTiltedLabels ? (hasShortLabels ? 15 : 40) : 0
+  // Buckets without a value (null) are gaps in the lines: points between
+  // gaps get dots, or they would not show
+  const hasGaps = data.some((row) => series.some((s) => row[s.key] === null))
   const formatTooltipValue = (value: unknown, name: unknown): [string, string] => {
-    const numericValue = typeof value === 'number' ? value : Number(value)
+    const numericValue = typeof value === 'number' ? value : value == null ? NaN : Number(value)
     return tooltipFormatter(
       Number.isFinite(numericValue) ? numericValue : undefined,
       typeof name === 'string' ? name : undefined
@@ -111,7 +114,7 @@ export function MetricLineChart({
             dataKey={s.key}
             stroke={colorMap.get(s.key) || CHART_COLORS[0]}
             strokeWidth={2}
-            dot={false}
+            dot={hasGaps ? { r: 2 } : false}
             isAnimationActive={false}
           />
         ))}

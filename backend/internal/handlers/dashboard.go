@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,22 +9,6 @@ import (
 	"github.com/tobilg/ai-observer/internal/api"
 	"github.com/tobilg/ai-observer/internal/storage"
 )
-
-// decodeBody decodes a JSON request body into v. It answers 413 for a body
-// over the API limit and 400 for an invalid one, and then returns false.
-func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
-	err := json.NewDecoder(r.Body).Decode(v)
-	if err == nil {
-		return true
-	}
-	var tooLarge *http.MaxBytesError
-	if errors.As(err, &tooLarge) {
-		api.WriteError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("request body exceeds the %d byte limit", tooLarge.Limit))
-	} else {
-		api.WriteError(w, http.StatusBadRequest, "invalid request body")
-	}
-	return false
-}
 
 // ListDashboards handles GET /api/dashboards
 func (h *Handlers) ListDashboards(w http.ResponseWriter, r *http.Request) {
@@ -69,9 +52,12 @@ func (h *Handlers) CreateDashboard(w http.ResponseWriter, r *http.Request) {
 	api.WriteJSON(w, http.StatusCreated, dashboard)
 }
 
-// GetDefaultDashboard handles GET /api/dashboards/default
+// GetDefaultDashboard handles GET /api/dashboards/default. When there is no
+// default dashboard (a new database, or the default was deleted), it
+// creates one with the default widgets (storage.GetOrCreateDefaultDashboard),
+// so concurrent first requests share one dashboard.
 func (h *Handlers) GetDefaultDashboard(w http.ResponseWriter, r *http.Request) {
-	dashboard, err := h.store.GetDefaultDashboard(r.Context())
+	dashboard, _, err := h.store.GetOrCreateDefaultDashboard(r.Context())
 	if err != nil {
 		api.WriteInternalError(w, "failed to load default dashboard", err)
 		return
@@ -172,7 +158,7 @@ func (h *Handlers) SetDefaultDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	api.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	api.WriteJSON(w, http.StatusOK, api.OKResponse{Status: "ok"})
 }
 
 // CreateWidget handles POST /api/dashboards/{id}/widgets
@@ -212,12 +198,7 @@ func (h *Handlers) CreateWidget(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, http.StatusBadRequest, "gridRow must be non-negative")
 		return
 	}
-	if req.ColSpan < 0 {
-		api.WriteError(w, http.StatusBadRequest, "colSpan must be non-negative")
-		return
-	}
-	if req.RowSpan < 0 {
-		api.WriteError(w, http.StatusBadRequest, "rowSpan must be non-negative")
+	if !validSpans(w, req.ColSpan, req.RowSpan) {
 		return
 	}
 
@@ -272,7 +253,7 @@ func (h *Handlers) UpdateWidgetPositions(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	api.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	api.WriteJSON(w, http.StatusOK, api.OKResponse{Status: "ok"})
 }
 
 // UpdateWidget handles PUT /api/dashboards/{id}/widgets/{widgetId}
@@ -304,12 +285,7 @@ func (h *Handlers) UpdateWidget(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, http.StatusBadRequest, "gridRow must be non-negative")
 		return
 	}
-	if req.ColSpan < 0 {
-		api.WriteError(w, http.StatusBadRequest, "colSpan must be non-negative")
-		return
-	}
-	if req.RowSpan < 0 {
-		api.WriteError(w, http.StatusBadRequest, "rowSpan must be non-negative")
+	if !validSpans(w, req.ColSpan, req.RowSpan) {
 		return
 	}
 
@@ -324,6 +300,23 @@ func (h *Handlers) UpdateWidget(w http.ResponseWriter, r *http.Request) {
 	}
 
 	api.WriteJSON(w, http.StatusOK, widget)
+}
+
+// validSpans checks the spans of a widget request (0: unset), answering 400
+// and returning false for invalid ones. A widget spans at most the grid's
+// columns; whether it overlaps others is for the client to check.
+func validSpans(w http.ResponseWriter, colSpan, rowSpan int) bool {
+	switch {
+	case colSpan < 0:
+		api.WriteError(w, http.StatusBadRequest, "colSpan must be non-negative")
+	case colSpan > api.DashboardGridColumns:
+		api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("colSpan must be at most %d", api.DashboardGridColumns))
+	case rowSpan < 0:
+		api.WriteError(w, http.StatusBadRequest, "rowSpan must be non-negative")
+	default:
+		return true
+	}
+	return false
 }
 
 // DeleteWidget handles DELETE /api/dashboards/{id}/widgets/{widgetId}

@@ -9,9 +9,11 @@ require (
 	github.com/go-chi/cors v1.2.2
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
+	github.com/klauspost/compress v1.18.5
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	go.opentelemetry.io/proto/otlp v1.10.0
 	golang.org/x/net v0.52.0
+	google.golang.org/grpc v1.79.3
 	google.golang.org/protobuf v1.36.11
 	mvdan.cc/sh/v3 v3.14.1
 )
@@ -24,7 +26,6 @@ require (
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
-	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.26 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
@@ -48,5 +49,4 @@ require (
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260319201613-d00831a3d3e7 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260319201613-d00831a3d3e7 // indirect
-	google.golang.org/grpc v1.79.3 // indirect
 )

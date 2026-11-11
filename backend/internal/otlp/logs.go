@@ -91,7 +91,7 @@ func ConvertLogs(req *collogspb.ExportLogsServiceRequest) LogConversionResult {
 				// (codex_cli_rs, and codex-app-server since Codex 0.167):
 				// - Extract token/cost metrics from response.completed events
 				// - Filter out the raw log (too noisy to store)
-				if hasEventName && eventName == "codex.sse_event" && isCodexService(serviceName) {
+				if hasEventName && eventName == "codex.sse_event" && tools.Codex.HasService(serviceName) {
 					// Extract metrics from response.completed events
 					if metrics := ExtractCodexMetrics(logAttrs, log.Timestamp, serviceName, resourceAttrs, log.TraceID, log.SpanID); len(metrics) > 0 {
 						derivedMetrics = append(derivedMetrics, metrics...)
@@ -109,12 +109,6 @@ func ConvertLogs(req *collogspb.ExportLogsServiceRequest) LogConversionResult {
 	}
 
 	return LogConversionResult{Logs: logs, DerivedMetrics: derivedMetrics}
-}
-
-// isCodexService reports whether a service name is one of Codex's
-func isCodexService(service string) bool {
-	tool, ok := tools.ToolForService(service)
-	return ok && tool == tools.Codex
 }
 
 // anyValueToBody converts an AnyValue to a string body

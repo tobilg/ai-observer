@@ -1,11 +1,14 @@
 package storage
 
 import (
+	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -45,16 +48,6 @@ func normalizePagination(limit, offset int) (int, int) {
 		offset = 0
 	}
 	return limit, offset
-}
-
-func normalizeIntervalSeconds(intervalSeconds int64) int64 {
-	if intervalSeconds <= 0 {
-		return 60
-	}
-	if intervalSeconds > 86400 {
-		return 86400
-	}
-	return intervalSeconds
 }
 
 // conditions collects the conditions of a WHERE or HAVING clause together
@@ -241,6 +234,31 @@ func containsCondition(exprs []string, search string) (string, []any) {
 	return "(" + strings.Join(conds, " OR ") + ")", args
 }
 
+// searchCondition returns a condition matching rows where one of the plain
+// expressions, or a value of one of the JSON columns, contains search
+// literally (case-insensitive), and its arguments. A search that reads the
+// same inside JSON is matched against the JSON text, which is cheap (and
+// matches keys too); JSON escapes the characters of other searches (quotes,
+// backslashes, control characters, and <, > and & which Go's encoder
+// escapes), so those are matched against the values (jsonValuesText).
+func searchCondition(plain, jsonColumns []string, search string) (string, []any) {
+	exprs := slices.Clone(plain)
+	for _, column := range jsonColumns {
+		if jsonUnchanged(search) {
+			exprs = append(exprs, "CAST("+column+" AS VARCHAR)")
+		} else {
+			exprs = append(exprs, jsonValuesText(column))
+		}
+	}
+	return containsCondition(exprs, search)
+}
+
+// jsonValuesText is the text of the top-level values of a JSON object
+// column (attribute maps), one per line, unescaped
+func jsonValuesText(column string) string {
+	return "array_to_string(json_extract_string(" + column + ", '$.*'), chr(10))"
+}
+
 // containsPattern returns the ILIKE pattern matching text that contains
 // search literally, and the ESCAPE clause it needs (empty when it needs none)
 func containsPattern(search string) (pattern, escape string) {
@@ -256,4 +274,8 @@ func metricAttributeJSONPath(attribute string) (string, error) {
 		return "", ErrInvalidAttributeKey
 	}
 	return `$."` + attribute + `"`, nil
+}
+
+type execContexter interface {
+	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
 }

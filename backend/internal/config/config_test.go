@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/tobilg/ai-observer/internal/redact"
@@ -196,5 +197,101 @@ func TestLoad_DatabaseLimits(t *testing.T) {
 	t.Setenv("AI_OBSERVER_DB_THREADS", "2")
 	if opts := Load().StorageOptions(); opts.MemoryLimit != "1GB" || opts.Threads != 2 {
 		t.Errorf("storage options = %+v", opts)
+	}
+}
+
+func TestLogFormat(t *testing.T) {
+	for value, want := range map[string]string{"": "text", "text": "text", "JSON": "json", " json ": "json"} {
+		t.Setenv("AI_OBSERVER_LOG_FORMAT", value)
+		if got, err := LogFormat(); got != want || err != nil {
+			t.Errorf("%q: format = %q, err = %v", value, got, err)
+		}
+	}
+	t.Setenv("AI_OBSERVER_LOG_FORMAT", "yaml")
+	if got, err := LogFormat(); got != "text" || err == nil {
+		t.Errorf("invalid format: %q, %v; want text and an error", got, err)
+	}
+}
+
+// OTLP/gRPC listens on 4317 unless AI_OBSERVER_OTLP_GRPC_PORT names another
+// port or turns it off
+func TestLoad_OTLPGRPCPort(t *testing.T) {
+	tests := []struct {
+		value string
+		want  int
+	}{
+		{"", 4317},
+		{"14317", 14317},
+		{"0", 0},
+		{"off", 0},
+		{" OFF ", 0},
+		{"disabled", 0},
+		{"70000", 4317}, // out of range: default, with a warning
+		{"grpc", 4317},
+	}
+	for _, tt := range tests {
+		t.Setenv("AI_OBSERVER_OTLP_GRPC_PORT", tt.value)
+		if got := Load().OTLPGRPCPort; got != tt.want {
+			t.Errorf("AI_OBSERVER_OTLP_GRPC_PORT=%q: OTLPGRPCPort = %d, want %d", tt.value, got, tt.want)
+		}
+	}
+}
+
+func TestLogLevel(t *testing.T) {
+	for value, want := range map[string]string{"": "INFO", "debug": "DEBUG", " Warn ": "WARN", "WARNING": "WARN", "ERROR": "ERROR"} {
+		t.Setenv("AI_OBSERVER_LOG_LEVEL", value)
+		if got, err := LogLevel(); got != want || err != nil {
+			t.Errorf("%q: level = %q, err = %v", value, got, err)
+		}
+	}
+	t.Setenv("AI_OBSERVER_LOG_LEVEL", "verbose")
+	if got, err := LogLevel(); got != "INFO" || err == nil {
+		t.Errorf("invalid level: %q, %v; want INFO and an error", got, err)
+	}
+	t.Setenv("AI_OBSERVER_LOG_FORMAT", "yaml")
+	if level, format, err := LogSettings(); level != "INFO" || format != "text" || err == nil ||
+		!strings.Contains(err.Error(), "AI_OBSERVER_LOG_LEVEL") || !strings.Contains(err.Error(), "AI_OBSERVER_LOG_FORMAT") {
+		t.Errorf("LogSettings = %q, %q, %v; want the defaults and both errors", level, format, err)
+	}
+	if cfg := Load(); cfg.LogLevel != "INFO" || cfg.LogFormat != "text" {
+		t.Errorf("config log settings = %q, %q", cfg.LogLevel, cfg.LogFormat)
+	}
+}
+
+// Invalid hosts, origins and host names are logged and replaced by the
+// default (or left out), like invalid numbers
+func TestLoad_InvalidNetworkSettings(t *testing.T) {
+	for _, tt := range []struct {
+		host, want string
+	}{
+		{"0.0.0.0", "0.0.0.0"},
+		{"::", "::"},
+		{"observer.local", "observer.local"},
+		{"http://0.0.0.0", "127.0.0.1"},
+		{"0.0.0.0:8080", "127.0.0.1"},
+		{"bad host", "127.0.0.1"},
+	} {
+		t.Setenv("AI_OBSERVER_HOST", tt.host)
+		if got := Load().Host; got != tt.want {
+			t.Errorf("host %q: %q, want %q", tt.host, got, tt.want)
+		}
+	}
+	for _, tt := range []struct {
+		origin, want string
+	}{
+		{"https://observer.example.com:8443", "https://observer.example.com:8443"},
+		{"http://localhost:5173/", "http://localhost:5173"},
+		{"localhost:5173", "http://localhost:5173"},
+		{"ftp://example.com", "http://localhost:5173"},
+		{"https://example.com/app", "http://localhost:5173"},
+	} {
+		t.Setenv("AI_OBSERVER_FRONTEND_URL", tt.origin)
+		if got := Load().FrontendURL; got != tt.want {
+			t.Errorf("frontend URL %q: %q, want %q", tt.origin, got, tt.want)
+		}
+	}
+	t.Setenv("AI_OBSERVER_ALLOWED_HOSTS", "observer.example.com, *, [::1], https://bad.example.com, host:8080, example.org.")
+	if got := strings.Join(Load().AllowedHosts, ","); got != "observer.example.com,*,[::1],example.org." {
+		t.Errorf("allowed hosts = %q", got)
 	}
 }

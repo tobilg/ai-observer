@@ -5,6 +5,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/tobilg/ai-observer/internal/config"
 	"github.com/tobilg/ai-observer/internal/deleter"
@@ -14,10 +16,7 @@ import (
 )
 
 func cmdDelete(args []string) {
-	if err := runDelete(args); err != nil {
-		fmt.Printf("Error: %v\n", err)
-		os.Exit(1)
-	}
+	exitOnError(runDelete(args))
 }
 
 // DeleteFlags holds the parsed flags for the delete command
@@ -27,6 +26,8 @@ type DeleteFlags struct {
 	Service string
 	Yes     bool
 	Scope   string
+	// DB is the database file (--db), overriding AI_OBSERVER_DATABASE_PATH
+	DB string
 }
 
 // parseDeleteFlags parses command line arguments into DeleteFlags
@@ -34,24 +35,24 @@ func parseDeleteFlags(args []string) (*DeleteFlags, error) {
 	fs := flag.NewFlagSet("delete", flag.ContinueOnError)
 
 	flags := &DeleteFlags{}
-	fs.StringVar(&flags.From, "from", "", "Start date (YYYY-MM-DD, required)")
-	fs.StringVar(&flags.To, "to", "", "End date (YYYY-MM-DD, required)")
-	fs.StringVar(&flags.Service, "service", "", "Filter by tool/service (claude-code, codex, gemini, opencode, copilot-chat, github-copilot)")
-	fs.BoolVar(&flags.Yes, "yes", false, "Skip confirmation prompts")
+	registerDateFlags(fs, &flags.From, &flags.To, "delete", true)
+	fs.Var(valueFlag{&flags.Service, "tool"}, "service", "Only the telemetry of this tool or service ("+strings.ReplaceAll(toolList(false), "|", ", ")+")")
+	registerYesFlag(fs, &flags.Yes)
+	registerDBFlag(fs, &flags.DB)
 
 	fs.Usage = func() {
-		fmt.Print(`Delete telemetry data from the database
+		fmt.Print(`Delete telemetry in a time range
 
-Usage: ai-observer delete [logs|metrics|traces|all] --from DATE --to DATE [options]
+Usage: ai-observer delete [logs|metrics|traces|all] --from <date> --to <date> [options]
 
-Arguments:
-  logs      Delete only log records
-  metrics   Delete only metric data points
-  traces    Delete only trace spans
-  all       Delete all telemetry data
-
-Options:
 `)
+		printArguments(os.Stdout, []argument{
+			{"logs", "Delete log records"},
+			{"metrics", "Delete metric points"},
+			{"traces", "Delete spans"},
+			{"all", "Delete all three"},
+		})
+		fmt.Println("Options:")
 		printFlags(fs)
 	}
 
@@ -70,11 +71,11 @@ func runDelete(args []string) error {
 	}
 
 	if flags.Scope == "" {
-		return fmt.Errorf("scope argument is required\nUsage: ai-observer delete [logs|metrics|traces|all] --from DATE --to DATE")
+		return fmt.Errorf("scope argument is required\nUsage: ai-observer delete [logs|metrics|traces|all] --from <date> --to <date>")
 	}
 
 	if flags.From == "" || flags.To == "" {
-		return fmt.Errorf("--from and --to are required for delete operations\nUsage: ai-observer delete <scope> --from YYYY-MM-DD --to YYYY-MM-DD")
+		return fmt.Errorf("--from and --to are required\nUsage: ai-observer delete [logs|metrics|traces|all] --from <date> --to <date>")
 	}
 
 	// Parse scope
@@ -111,9 +112,20 @@ func runDelete(args []string) error {
 	}
 
 	// Load config and initialize store
+	initLogging()
 	cfg := config.Load()
+	if flags.DB != "" {
+		cfg.DatabasePath = flags.DB
+	}
 	store, err := storage.NewDuckDBStoreWithOptions(cfg.DatabasePath, cfg.StorageOptions())
 	if err != nil {
+		body := map[string]any{"from": fromTime.Format(time.RFC3339), "to": toTime.Format(time.RFC3339), "scope": string(scope), "dryRun": true}
+		if serviceName != "" {
+			body["service"] = serviceName
+		}
+		if storage.IsLocked(err) {
+			return lockedError(err, cfg, "delete", body, `The dry run returns the counts; send "dryRun": false to delete.`)
+		}
 		return fmt.Errorf("failed to open database: %w", err)
 	}
 	defer store.Close()

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -10,13 +11,14 @@ import (
 	"github.com/tobilg/ai-observer/internal/importer"
 	"github.com/tobilg/ai-observer/internal/logger"
 	"github.com/tobilg/ai-observer/internal/server"
+	"github.com/tobilg/ai-observer/internal/tools"
 	"github.com/tobilg/ai-observer/internal/watcher"
 )
 
 func cmdWatch(args []string) {
 	ctx, stop := shutdownSignals()
 	defer stop()
-	if err := runWatch(ctx, args); err != nil {
+	if err := runWatch(ctx, args); err != nil && !errors.Is(err, flag.ErrHelp) {
 		fmt.Printf("Error: %v\n", err)
 		stop()
 		os.Exit(1)
@@ -28,6 +30,8 @@ type watchArgs struct {
 	Tools    []string
 	Backfill bool
 	MCP      bool
+	// Server overrides the environment's host, API port and database
+	Server serverFlags
 }
 
 // runWatch watches session files and serves the API until ctx is cancelled
@@ -38,12 +42,12 @@ func runWatch(ctx context.Context, args []string) error {
 	}
 
 	// Initialize logging
-	logLevel := parseLogLevel(os.Getenv("AI_OBSERVER_LOG_LEVEL"))
-	logger.InitializeText(logLevel)
+	initLogging()
 	log := logger.Logger()
 
 	cfg := config.Load()
 	cfg.MCPEnabled = cfg.MCPEnabled || parsed.MCP
+	parsed.Server.apply(cfg)
 
 	srv, err := server.New(cfg)
 	if err != nil {
@@ -80,22 +84,20 @@ func parseWatchArgs(args []string) (*watchArgs, error) {
 	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
 
 	var backfill, mcp bool
-	fs.BoolVar(&backfill, "backfill", false, "Import all existing data on first start")
-	fs.BoolVar(&mcp, "mcp", false, "Serve the MCP endpoint (/mcp on the API port) for agents; also AI_OBSERVER_MCP=true")
+	fs.BoolVar(&backfill, "backfill", false, backfillHelp)
+	fs.BoolVar(&mcp, "mcp", false, mcpHelp)
+	var server serverFlags
+	server.register(fs, false)
 
 	fs.Usage = func() {
-		fmt.Print(`Watch local AI tool session files for changes and import incrementally
+		fmt.Printf(`Read local session files as they change and serve the dashboard, without OTLP
+(serve --watch also receives OTLP)
 
-Usage: ai-observer watch [all|claude-code|codex|gemini] [options]
+Usage: ai-observer watch [%s|all] [options]
 
-Arguments:
-  claude-code  Watch Claude Code session files
-  codex        Watch Codex CLI session files
-  gemini       Watch Gemini CLI session files
-  all          Watch all tools (default if no argument)
-
-Options:
-`)
+`, toolList(true))
+		printArguments(os.Stdout, toolArguments(true, func(p tools.Provider) string { return "Watch " + p.DisplayName + " session files" }, "Watch the files of all of them (default)"))
+		fmt.Println("Options:")
 		printFlags(fs)
 	}
 
@@ -103,20 +105,12 @@ Options:
 		return nil, err
 	}
 
-	toolArg := fs.Arg(0)
-	if toolArg == "" {
-		toolArg = "all"
+	if fs.NArg() > 1 {
+		return nil, fmt.Errorf("unexpected argument: %s", fs.Arg(1))
 	}
-
-	// Validate tool argument
-	var tools []string
-	if toolArg == "all" {
-		// Empty slice means all tools
-	} else {
-		if _, ok := importer.ParseSourceType(toolArg); !ok {
-			return nil, fmt.Errorf("invalid tool: %s (valid: claude-code, codex, gemini, all)", toolArg)
-		}
-		tools = []string{toolArg}
+	toolArg, tools, err := parseWatchTool(fs.Arg(0))
+	if err != nil {
+		return nil, err
 	}
 
 	return &watchArgs{
@@ -124,5 +118,19 @@ Options:
 		Tools:    tools,
 		Backfill: backfill,
 		MCP:      mcp,
+		Server:   server,
 	}, nil
+}
+
+// parseWatchTool reads the tool argument of watch and serve --watch: a tool
+// with session files, or all (also when arg is empty). It returns the
+// argument as given and the tools to watch, none for all.
+func parseWatchTool(arg string) (toolArg string, tools []string, err error) {
+	if arg == "" || arg == "all" {
+		return "all", nil, nil
+	}
+	if _, ok := importer.ParseSourceType(arg); !ok {
+		return "", nil, fmt.Errorf("invalid tool: %s (valid: claude-code, codex, gemini, all)", arg)
+	}
+	return arg, []string{arg}, nil
 }

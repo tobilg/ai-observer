@@ -1,14 +1,14 @@
 package exporter
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
+	"github.com/tobilg/ai-observer/internal/diskspace"
+	"github.com/tobilg/ai-observer/internal/prompt"
 	"github.com/tobilg/ai-observer/internal/storage"
 )
 
@@ -30,8 +30,8 @@ func NewExporter(store *storage.DuckDBStore, verbose bool) *Exporter {
 func (e *Exporter) Preview(ctx context.Context, opts Options) (*Summary, error) {
 	summary := &Summary{}
 
-	// Get counts from the database
-	service := opts.ServiceName()
+	// Get counts from the database (a tool's records of all its services)
+	service := opts.ServiceFilter()
 
 	// For preview, we need from/to dates - if not set, use a wide range
 	from, to := getDateRange(opts.FromDate, opts.ToDate)
@@ -80,7 +80,14 @@ func getDateRange(from, to *time.Time) (time.Time, time.Time) {
 	return fromTime, toTime
 }
 
-// Export performs the actual export to Parquet files
+// Export performs the actual export to Parquet files: the telemetry
+// (traces.parquet, logs.parquet, metrics.parquet), the metric baselines its
+// cumulative series need (metric_baselines.parquet), the import state of
+// the session files its records were read from (import_state.parquet), all
+// dashboards (dashboards.json), a manifest (manifest.json) and a database
+// of views of the Parquet files. ai-observer restore reads them back. The
+// Parquet files are written in one read transaction, so they show the
+// database at one point in time while the server keeps storing telemetry.
 func (e *Exporter) Export(ctx context.Context, opts Options) (*Summary, error) {
 	summary := &Summary{}
 
@@ -89,54 +96,67 @@ func (e *Exporter) Export(ctx context.Context, opts Options) (*Summary, error) {
 		return nil, fmt.Errorf("creating output directory: %w", err)
 	}
 
-	// Export each table to Parquet
-	tracesPath := filepath.Join(opts.OutputDir, "traces.parquet")
-	logsPath := filepath.Join(opts.OutputDir, "logs.parquet")
-	metricsPath := filepath.Join(opts.OutputDir, "metrics.parquet")
-
-	service := opts.ServiceName()
-
-	// Export traces
-	if e.verbose {
-		fmt.Fprint(opts.out(), "Exporting traces... ")
+	service := opts.ServiceFilter()
+	path := func(name string) string { return filepath.Join(opts.OutputDir, name) }
+	step := func(what string, run func() (int64, error), file string) (int64, error) {
+		if e.verbose {
+			fmt.Fprintf(opts.out(), "Exporting %s... ", what)
+		}
+		count, err := run()
+		if err != nil {
+			return 0, fmt.Errorf("exporting %s: %w", what, err)
+		}
+		summary.OutputFiles = append(summary.OutputFiles, path(file))
+		if e.verbose {
+			fmt.Fprintf(opts.out(), "done (%d rows)\n", count)
+		}
+		return count, nil
 	}
-	tracesCount, err := e.exportToParquet(ctx, "otel_traces", tracesPath, opts.FromDate, opts.ToDate, service)
+
+	if err := e.inSnapshot(ctx, func(snap snapshot) error {
+		var err error
+		files := []struct {
+			what, file string
+			count      *int64
+			run        func(path string) (int64, error)
+		}{
+			{"traces", TracesFile, &summary.TracesCount, func(p string) (int64, error) {
+				return snap.exportToParquet(ctx, "otel_traces", p, opts.FromDate, opts.ToDate, service)
+			}},
+			{"logs", LogsFile, &summary.LogsCount, func(p string) (int64, error) {
+				return snap.exportToParquet(ctx, "otel_logs", p, opts.FromDate, opts.ToDate, service)
+			}},
+			{"metrics", MetricsFile, &summary.MetricsCount, func(p string) (int64, error) {
+				return snap.exportToParquet(ctx, "otel_metrics", p, opts.FromDate, opts.ToDate, service)
+			}},
+			{"metric baselines", BaselinesFile, &summary.BaselinesCount, func(p string) (int64, error) {
+				return snap.exportBaselines(ctx, p, opts.FromDate, opts.ToDate, service)
+			}},
+			{"session file state", ImportStateFile, &summary.ImportStateCount, func(p string) (int64, error) {
+				return snap.exportImportState(ctx, p, opts.FromDate, opts.ToDate, service)
+			}},
+		}
+		for _, f := range files {
+			if *f.count, err = step(f.what, func() (int64, error) { return f.run(path(f.file)) }, f.file); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	dashboards, err := step("dashboards", func() (int64, error) {
+		n, err := e.exportDashboards(ctx, path(DashboardsFile))
+		return int64(n), err
+	}, DashboardsFile)
 	if err != nil {
-		return nil, fmt.Errorf("exporting traces: %w", err)
+		return nil, err
 	}
-	summary.TracesCount = tracesCount
-	summary.OutputFiles = append(summary.OutputFiles, tracesPath)
-	if e.verbose {
-		fmt.Fprintf(opts.out(), "done (%d rows)\n", tracesCount)
+	summary.DashboardsCount = int(dashboards)
+	if err := e.writeManifest(ctx, path(ManifestFile), opts, summary); err != nil {
+		return nil, fmt.Errorf("writing manifest: %w", err)
 	}
-
-	// Export logs
-	if e.verbose {
-		fmt.Fprint(opts.out(), "Exporting logs... ")
-	}
-	logsCount, err := e.exportToParquet(ctx, "otel_logs", logsPath, opts.FromDate, opts.ToDate, service)
-	if err != nil {
-		return nil, fmt.Errorf("exporting logs: %w", err)
-	}
-	summary.LogsCount = logsCount
-	summary.OutputFiles = append(summary.OutputFiles, logsPath)
-	if e.verbose {
-		fmt.Fprintf(opts.out(), "done (%d rows)\n", logsCount)
-	}
-
-	// Export metrics
-	if e.verbose {
-		fmt.Fprint(opts.out(), "Exporting metrics... ")
-	}
-	metricsCount, err := e.exportToParquet(ctx, "otel_metrics", metricsPath, opts.FromDate, opts.ToDate, service)
-	if err != nil {
-		return nil, fmt.Errorf("exporting metrics: %w", err)
-	}
-	summary.MetricsCount = metricsCount
-	summary.OutputFiles = append(summary.OutputFiles, metricsPath)
-	if e.verbose {
-		fmt.Fprintf(opts.out(), "done (%d rows)\n", metricsCount)
-	}
+	summary.OutputFiles = append(summary.OutputFiles, path(ManifestFile))
 
 	// Create views database
 	if e.verbose {
@@ -181,6 +201,25 @@ func (e *Exporter) Export(ctx context.Context, opts Options) (*Summary, error) {
 	}
 
 	return summary, nil
+}
+
+// inSnapshot runs fn in a read transaction on one connection: DuckDB gives
+// a transaction one snapshot of the database, so the files fn writes agree
+// with each other (an import's records with its import state, a log with
+// the metrics derived from it) although writers commit meanwhile
+func (e *Exporter) inSnapshot(ctx context.Context, fn func(snapshot) error) error {
+	conn, err := e.store.DB().Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("opening a connection: %w", err)
+	}
+	defer conn.Close()
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning the export transaction: %w", err)
+	}
+	// Read only: rolling back ends it as well as a commit would
+	defer tx.Rollback()
+	return fn(snapshot{tx: tx})
 }
 
 // generateViewsDBPath generates the views database filename
@@ -230,9 +269,9 @@ func PrintPreview(summary *Summary, opts Options) {
 	fmt.Fprintln(opts.out())
 	fmt.Fprintf(opts.out(), "Output directory: %s\n", opts.OutputDir)
 	fmt.Fprintln(opts.out(), "Files to create:")
-	fmt.Fprintln(opts.out(), "  - traces.parquet")
-	fmt.Fprintln(opts.out(), "  - logs.parquet")
-	fmt.Fprintln(opts.out(), "  - metrics.parquet")
+	for _, file := range []string{TracesFile, LogsFile, MetricsFile, BaselinesFile, ImportStateFile, DashboardsFile, ManifestFile} {
+		fmt.Fprintf(opts.out(), "  - %s\n", file)
+	}
 	fmt.Fprintf(opts.out(), "  - ai-observer-export-%s-%s.duckdb\n", opts.Source, opts.DateRangeString())
 
 	if opts.CreateZip {
@@ -244,7 +283,7 @@ func PrintPreview(summary *Summary, opts Options) {
 func PrintResult(summary *Summary, opts Options) {
 	fmt.Fprintln(opts.out())
 	fmt.Fprintln(opts.out(), "Export complete!")
-	fmt.Fprintf(opts.out(), "Output: %s (%d files, %s)\n", opts.OutputDir, len(summary.OutputFiles), formatSize(summary.TotalSize))
+	fmt.Fprintf(opts.out(), "Output: %s (%d files, %s)\n", opts.OutputDir, len(summary.OutputFiles), diskspace.FormatBytes(summary.TotalSize))
 }
 
 // ConfirmExport prompts the user for confirmation
@@ -252,14 +291,7 @@ func ConfirmExport(opts Options) bool {
 	fmt.Fprintln(opts.out())
 	fmt.Fprint(opts.out(), "Continue? [y/N] ")
 
-	reader := bufio.NewReader(opts.in())
-	response, err := reader.ReadString('\n')
-	if err != nil {
-		return false
-	}
-
-	response = strings.TrimSpace(strings.ToLower(response))
-	return response == "y" || response == "yes"
+	return prompt.Confirmed(opts.in())
 }
 
 // Run executes the full export workflow with preview and confirmation
@@ -313,18 +345,4 @@ func Run(ctx context.Context, store *storage.DuckDBStore, opts Options) error {
 	PrintResult(result, opts)
 
 	return nil
-}
-
-// formatSize formats a byte count as human-readable string
-func formatSize(bytes int64) string {
-	const unit = 1024
-	if bytes < unit {
-		return fmt.Sprintf("%d B", bytes)
-	}
-	div, exp := int64(unit), 0
-	for n := bytes / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }

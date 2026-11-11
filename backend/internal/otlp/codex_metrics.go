@@ -7,6 +7,7 @@ import (
 	"github.com/tobilg/ai-observer/internal/api"
 	"github.com/tobilg/ai-observer/internal/attrval"
 	"github.com/tobilg/ai-observer/internal/pricing"
+	"github.com/tobilg/ai-observer/internal/tools"
 )
 
 // Codex token types (pricing.CodexTokenType*)
@@ -65,6 +66,12 @@ func ExtractCodexMetrics(
 	baseAttrs := map[string]string{"model": model}
 	if originator := logAttrs["originator"]; originator != "" {
 		baseAttrs["originator"] = originator
+	}
+	// The session (Codex's conversation.id, the session ID of its session
+	// file) tells responses of concurrent sessions apart when the usage a
+	// session file records as well is counted once (storage/usage_overlap.go)
+	if session := attrval.String(logAttrs, tools.SessionIDKeys...); session != "" {
+		baseAttrs["session.id"] = session
 	}
 
 	var metrics []api.MetricDataPoint

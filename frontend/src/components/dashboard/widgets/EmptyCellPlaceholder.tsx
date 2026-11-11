@@ -27,9 +27,11 @@ export function EmptyCellPlaceholder({
   })
 
   return (
-    <div
+    <button
+      type="button"
       ref={setNodeRef}
       onClick={onClick}
+      aria-label={`Add a widget in row ${dataRow}, column ${gridColumn}`}
       style={{
         gridColumn: `${gridColumn} / span ${effectiveColSpan}`,
         gridRow: `${gridRow} / span 1`,
@@ -37,12 +39,13 @@ export function EmptyCellPlaceholder({
       className={cn(
         'flex items-center justify-center rounded-lg border-2 border-dashed',
         'text-muted-foreground text-sm cursor-pointer transition-colors min-h-[100px]',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         isOver
           ? 'border-primary bg-primary/10'
           : 'border-muted-foreground/30 hover:border-primary/50 hover:bg-accent/30'
       )}
     >
-      + Add widget
-    </div>
+      <span aria-hidden="true">+ Add widget</span>
+    </button>
   )
 }
