@@ -4921,8 +4921,41 @@
       }
     },
     "/mcp": {
+      "delete": {
+        "description": "Supply the Mcp-Session-Id returned during initialization. Sessionless requests receive 405.",
+        "operationId": "deleteMcp",
+        "responses": {
+          "204": {
+            "description": "Session closed"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
+          }
+        },
+        "summary": "Close a legacy MCP Apps session",
+        "tags": [
+          "mcp"
+        ]
+      },
       "post": {
-        "description": "Only with AI_OBSERVER_MCP=true or --mcp (otherwise 404); GET and DELETE answer 405. JSON-RPC 2.0 messages of the Model Context Protocol.",
+        "description": "Enabled with AI_OBSERVER_MCP=true or --mcp. Legacy MCP Apps clients receive a session ID for capability negotiation. GET answers 405.",
         "operationId": "postMcp",
         "requestBody": {
           "content": {
@@ -4958,7 +4991,7 @@
             "description": "Error: 400 for invalid parameters, 401 without the token (AI_OBSERVER_AUTH_TOKEN), 429 after failed tokens, 500"
           }
         },
-        "summary": "MCP endpoint (Streamable HTTP, stateless, JSON responses)",
+        "summary": "MCP endpoint (Streamable HTTP, JSON responses)",
         "tags": [
           "mcp"
         ]

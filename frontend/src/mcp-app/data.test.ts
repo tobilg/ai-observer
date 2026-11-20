@@ -3,6 +3,7 @@ import {
   errorOf,
   goDurationSeconds,
   isBucketed,
+  isCounter,
   metricChart,
   metricLabel,
   metricTotals,
@@ -144,6 +145,43 @@ describe('metrics', () => {
     expect(chart.data).toHaveLength(2)
     const input = chart.series.find((s) => s.label.endsWith('input'))!.key
     expect(chart.data.map((row) => row[input])).toEqual([1, 2])
+  })
+
+  it('uses the reported OTLP type ahead of name-based guesses', () => {
+    expect(isCounter({ ...bucketed, name: 'custom.depth', metric_type: 'gauge' })).toBe(false)
+    expect(isCounter({ ...bucketed, name: 'custom.depth', metric_type: 'sum' })).toBe(true)
+    expect(isCounter(bucketed)).toBe(true)
+  })
+
+  it('keeps missing gauge and percentile readings separate from observed zeros', () => {
+    const t0 = bucketed.from
+    const t1 = '2026-11-01T01:00:00Z'
+    const t2 = bucketed.to
+    const series = [
+      { labels: { model: 'A' }, points: [{ time: t0, value: 50 }, { time: t2, value: 0 }] },
+      { labels: { model: 'B' }, points: [{ time: t1, value: 100 }] },
+    ]
+    for (const type of ['gauge', 'histogram'] as const) {
+      const chart = metricChart({ ...bucketed, metric_type: type, stat: type === 'histogram' ? 'p95' : undefined, series })
+      const [a, b] = chart.series
+      expect(chart.data.map((p) => [p[a.key], p[b.key]])).toEqual([[50, null], [null, 100], [0, null]])
+    }
+    const lone = metricChart({ ...bucketed, metric_type: 'gauge', series: [
+      { points: [{ time: t0, value: 50 }, { time: t2, value: 50, gap_start: t1 }] },
+    ] })
+    expect(lone.data.map((p) => p[lone.series[0].key])).toEqual([50, null, 50])
+
+    const additive = metricChart({ ...bucketed, metric_type: 'histogram', stat: 'count', series })
+    expect(additive.data.map((p) => p[additive.series[0].key])).toEqual([50, 0, 0])
+  })
+
+  it('keeps empty bucketed responses in time-series mode and omits unmeasured aggregate series', () => {
+    const empty = { ...bucketed, series: [{ points: [] }] }
+    expect(isBucketed(empty)).toBe(true)
+    expect(metricChart(empty).data).toEqual([])
+    const aggregate = { ...empty, interval: undefined }
+    expect(isBucketed(aggregate)).toBe(false)
+    expect(metricTotals(aggregate)).toEqual([])
   })
 
   it('labels day buckets with their date in the zone of the result', () => {

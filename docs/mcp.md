@@ -102,7 +102,7 @@ Results are JSON (also as structured content with an output schema). Long text i
 
 `search_logs` and `list_traces` find `query` as a case-insensitive substring of log bodies, span names and attribute values; a query with quotes, backslashes, line breaks, `<`, `>` or `&` reads every attribute value in the range and takes 1.4 to 2.4 times as long as one with plain words.
 
-`query_metrics` reports the `timezone`, `metric_type`, `stat` and the bucket `interval` it used; buckets of a histogram average, extreme or percentile, or of a gauge, that have no points are left out. Percentiles are estimated from the histogram buckets.
+`query_metrics` reports the `timezone`, `metric_type`, `stat` and bucket `interval` it used. Gauge readings and histogram averages, extremes and percentiles omit empty buckets. When a series resumes after a gap, the next point's `gap_start` identifies the first empty bucket. Percentiles are estimated from the histogram buckets.
 
 ### Searching conversations
 
@@ -132,10 +132,10 @@ Hosts that render [MCP Apps](https://modelcontextprotocol.io/docs/extensions/app
 
 | Tool | View |
 |------|------|
-| `usage_summary` | Total cost and tokens; bars per tool, model or repository, or daily bars stacked by tool. Switch between cost and tokens, and between groupings (this calls the tool again for the same range) |
+| `usage_summary` | Total cost and tokens; bars per tool, model or repository, or daily bars stacked by tool. Switch between cost and tokens. Hosts that support tool calls can change the grouping for the same range |
 | `query_metrics` | The metric over time (bars for counters, lines for other metrics), or bars of the totals with `aggregate` |
 | `get_trace` | The trace page's waterfall; click a span for its attributes and error |
-| `list_sessions` | Sessions per tool, the total cost, and a table of them with their title, repository and branch, and cost; *Load more* reads the next page |
+| `list_sessions` | Counts per tool and recorded cost for the loaded sessions, with title, repository, branch and cost for each row; *Load more* reads the next page |
 
 **Which agents show it:** hosts that support MCP Apps and run on your machine, such as the Codex app (with `apps = true` and `enable_mcp_apps = true` under `[features]` in `~/.codex/config.toml`), VS Code with GitHub Copilot (turn on the experimental setting `chat.mcp.apps.enabled`), Cursor and Goose; see the [client matrix](https://modelcontextprotocol.io/extensions/client-matrix). The host must reach the endpoint: one that connects from the cloud cannot reach `127.0.0.1`. Claude Code, Codex CLI, Gemini CLI and OpenCode don't render MCP Apps; they get the same results as before, and nothing of the view enters their context.
 
@@ -143,9 +143,9 @@ Hosts that render [MCP Apps](https://modelcontextprotocol.io/docs/extensions/app
 
 **How it works:**
 
-- The four tools name the view in their `_meta.ui.resourceUri`: `ui://ai-observer/view.html`. The host reads it with `resources/read` (`text/html;profile=mcp-app`): a single page with its scripts and styles inlined, built into the binary. The host shows it in a sandboxed frame and passes it the tool's arguments and result.
+- For clients advertising the MCP Apps HTML profile, the four tools name the view in their `_meta.ui.resourceUri`: `ui://ai-observer/view.html`. The host reads it with `resources/read` (`text/html;profile=mcp-app`): a single page with its scripts and styles inlined, built into the binary. The host shows it in a sandboxed frame and passes it the tool's arguments and result.
 - The view has no network access. It gets results from the host and calls tools through the host (another grouping, the next page), so the endpoint's Host, Origin and token checks apply as to any call.
-- The agent still gets the whole result as text and may repeat it below the view. The MCP Apps specification has no setting against that; the page carries OpenAI's `openai/widgetDescription`, which ChatGPT shows the model when the view loads ("the user sees all values in the view, don't repeat them"), and other hosts ignore. Whether a host's model follows it is up to the host; to be sure, tell the agent, e.g. in its global instructions (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`): *"When an MCP tool result is shown as an app view, don't restate the data it shows."*
+- The agent still gets the whole result as text and may repeat it below the view. The MCP Apps specification has no setting against that; the page carries OpenAI's `openai/widgetDescription`, which ChatGPT shows the model when the view loads (it describes the visible summary and the initial 20-row limit), and other hosts ignore. Whether a host's model follows it is up to the host; to be sure, tell the agent, e.g. in its global instructions (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`): *"When an MCP tool result is shown as an app view, don't restate the data it shows."*
 - `resources/list` leaves out `ui://` resources, as the MCP Apps specification allows: hosts find the view through the tools, while agents that browse resources (Claude Code and Codex have tools for that) would otherwise read the page, about 1 MB, into their context.
 
 ## Security
@@ -156,6 +156,6 @@ Hosts that render [MCP Apps](https://modelcontextprotocol.io/docs/extensions/app
 
 ## Behavior
 
-- **Transport:** Streamable HTTP, stateless, with JSON responses: no session ID, no server-sent events, and `GET`/`DELETE` on `/mcp` answer `405`.
+- **Transport:** Streamable HTTP with JSON responses. Requests are stateless except for MCP Apps clients that negotiate the HTML profile through the legacy initialize handshake. These clients receive an `Mcp-Session-Id` and can close it with `DELETE /mcp`. Idle sessions expire after 30 minutes. `GET /mcp` returns `405`.
 - **No request timeout:** MCP requests are exempt from the API's 5-second timeout, so a search over a large database can finish. A request ends when the client cancels it or AI Observer shuts down.
 - **Search speed:** `search_conversations` scans the text of every session log and span in the range. In a benchmark with 2 million log records over 30 days (on a laptop) it took about 0.2 s for 7 days and 0.5–0.7 s for the default 30 days. Additional words cost little when one of them is rare: longer words are checked first, since they usually are rarer, and the others only in the records that contain it. Three words that each appear in many records took about twice as long as one. Narrow `from`/`to` or pass `tool` for faster searches.

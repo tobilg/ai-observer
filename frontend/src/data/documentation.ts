@@ -950,10 +950,10 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
         table: {
           headers: ['Tool', 'View'],
           rows: [
-            { cells: ['usage_summary', 'Total cost and tokens; bars per tool, model or repository, or daily bars stacked by tool. Switch between cost and tokens, and between groupings (this calls the tool again for the same range)'] },
+            { cells: ['usage_summary', 'Total cost and tokens; bars per tool, model or repository, or daily bars stacked by tool. Switch between cost and tokens. Hosts that support tool calls can change the grouping for the same range'] },
             { cells: ['query_metrics', 'The metric over time (bars for counters, lines for other metrics), or bars of the totals with aggregate'] },
             { cells: ['get_trace', 'The trace page\'s waterfall; click a span for its attributes and error'] },
-            { cells: ['list_sessions', 'Sessions per tool, the total cost, and a table of them with their title, repository and branch, and cost; Load more reads the next page'] },
+            { cells: ['list_sessions', 'Counts per tool and recorded cost for the loaded sessions, with title, repository, branch and cost for each row; Load more reads the next page'] },
           ],
         },
       },
@@ -962,9 +962,9 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
         items: [
           'Which agents show it: hosts that support MCP Apps and run on your machine, such as the Codex app (with apps = true and enable_mcp_apps = true under [features] in ~/.codex/config.toml), VS Code with GitHub Copilot (turn on the experimental setting chat.mcp.apps.enabled), Cursor and Goose. The host must reach the endpoint: one that connects from the cloud cannot reach 127.0.0.1. Claude Code, Codex CLI, Gemini CLI and OpenCode don\'t render MCP Apps; they get the same results as before, and nothing of the view enters their context.',
           'Claude Desktop doesn\'t show the view of a local AI Observer. It connects to servers added by URL (Connectors) from Anthropic\'s cloud, which can\'t reach 127.0.0.1. Servers from its configuration file (claude_desktop_config.json, for AI Observer through mcp-remote) work, but their tools answer as text only: in a test with app version 4.23118.0 (November 2026) Claude never loaded the view, and Anthropic\'s own MCP Apps example (@modelcontextprotocol/server-map) showed no view either.',
-          'How it works: the four tools name the view ui://ai-observer/view.html in their _meta.ui.resourceUri. The host reads it, a single page with its scripts and styles inlined, built into the binary, and shows it in a sandboxed frame with the tool\'s arguments and result.',
+          'How it works: clients advertising the MCP Apps HTML profile receive the view ui://ai-observer/view.html in their _meta.ui.resourceUri. The host reads it, a single page with its scripts and styles inlined, built into the binary, and shows it in a sandboxed frame with the tool\'s arguments and result.',
           'The view has no network access. It calls tools through the host (another grouping, the next page), so the endpoint\'s Host, Origin and token checks apply as to any call.',
-          'The agent still gets the whole result as text and may repeat it below the view. The MCP Apps specification has no setting against that; the page carries OpenAI\'s openai/widgetDescription, which tells the model that the user sees all values in the view, and other hosts ignore it. To be sure, tell the agent in its global instructions (~/.codex/AGENTS.md, ~/.claude/CLAUDE.md): "When an MCP tool result is shown as an app view, don\'t restate the data it shows."',
+          'The agent still gets the whole result as text and may repeat it below the view. The MCP Apps specification has no setting against that; the page carries OpenAI\'s openai/widgetDescription, which describes the visible summary and the initial 20-row limit, and other hosts ignore it. To be sure, tell the agent in its global instructions (~/.codex/AGENTS.md, ~/.claude/CLAUDE.md): "When an MCP tool result is shown as an app view, don\'t restate the data it shows."',
           'resources/list leaves out ui:// resources, as the MCP Apps specification allows: hosts find the view through the tools, while agents that browse resources (Claude Code and Codex have tools for that) would otherwise read the page, about 1 MB, into their context.',
         ],
       },
@@ -989,7 +989,7 @@ export const DOCUMENTATION_SECTIONS: DocSection[] = [
       {
         type: 'list',
         items: [
-          'Transport: Streamable HTTP, stateless, with JSON responses: no session ID, no server-sent events, and GET/DELETE on /mcp answer 405.',
+          'Transport: Streamable HTTP with JSON responses. Legacy MCP Apps clients receive an Mcp-Session-Id during initialization and can close it with DELETE /mcp. Idle sessions expire after 30 minutes. Other requests are stateless. GET /mcp returns 405.',
           'No request timeout: MCP requests are exempt from the API\'s 5-second timeout, so a search over a large database can finish. A request ends when the client cancels it or AI Observer shuts down.',
           'Search speed: search_conversations scans the text of every session log and span in the range. In a benchmark with 2 million log records over 30 days (on a laptop) it took about 0.2 s for 7 days and 0.5–0.7 s for the default 30 days. Additional words cost little when one of them is rare: longer words are checked first, since they usually are rarer, and the others only in the records that contain it. Three words that each appear in many records took about twice as long as one. Narrow from/to or pass tool for faster searches.',
         ],

@@ -202,10 +202,13 @@ func Routes() apigen.Spec {
 			Responses: []apigen.Response{ok(api.ReadyResponse{}), {Status: http.StatusServiceUnavailable, Description: "The database does not answer", Body: api.ReadyResponse{}}}},
 		{Method: http.MethodGet, Path: "/metrics", Tag: "status", Summary: "AI Observer's own metrics in the Prometheus text format",
 			Responses: []apigen.Response{{Status: http.StatusOK, Media: "text/plain; version=0.0.4", Description: "Prometheus text exposition"}, errDefault}},
-		{Method: "*", Methods: []string{http.MethodPost}, Path: "/mcp", Tag: "mcp", Summary: "MCP endpoint (Streamable HTTP, stateless, JSON responses)",
-			Description: "Only with AI_OBSERVER_MCP=true or --mcp (otherwise 404); GET and DELETE answer 405. JSON-RPC 2.0 messages of the Model Context Protocol.",
+		{Method: "*", Methods: []string{http.MethodPost}, Path: "/mcp", Tag: "mcp", Summary: "MCP endpoint (Streamable HTTP, JSON responses)",
+			Description: "Enabled with AI_OBSERVER_MCP=true or --mcp. Legacy MCP Apps clients receive a session ID for capability negotiation. GET answers 405.",
 			BodyMedia:   []string{"application/json"},
 			Responses:   []apigen.Response{{Status: http.StatusOK, Media: "application/json", Description: "JSON-RPC response"}, errNotFound, errDefault}},
+		{Method: http.MethodDelete, Path: "/mcp", Tag: "mcp", Summary: "Close a legacy MCP Apps session",
+			Description: "Supply the Mcp-Session-Id returned during initialization. Sessionless requests receive 405.",
+			Responses:   []apigen.Response{{Status: http.StatusNoContent, Description: "Session closed"}, errNotFound, errDefault}},
 		{Method: "*", Path: "/*", Hidden: true, Summary: "The dashboard (static files)"},
 
 		// OTLP/HTTP

@@ -62,6 +62,8 @@ export interface MetricSeries {
 export interface MetricPoint {
   time?: string
   value: number
+  /** gap_start is the first empty bucket between this point and the preceding point. */
+  gap_start?: string
 }
 
 export interface TraceResult {

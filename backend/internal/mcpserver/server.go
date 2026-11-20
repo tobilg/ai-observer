@@ -97,23 +97,26 @@ func New(store Store, version string, opts ...Option) *mcp.Server {
 		MIMEType:    "text/markdown",
 	}, h.readTranscriptResource)
 	addAppResource(server)
-	server.AddReceivingMiddleware(hideAppResources)
+	server.AddReceivingMiddleware(hideAppResources, negotiateAppTools)
 	return server
 }
 
 // NewHandler returns the HTTP handler of the MCP endpoint (streamable HTTP).
-// It is stateless with JSON responses: the tools need no session and no
-// server-sent events. The API router's Host and Origin checks and token
-// authentication apply before it, so the SDK's own localhost check, which
-// would reject the host names allowed with AI_OBSERVER_ALLOWED_HOSTS, is off.
+// The API router applies Host, Origin and token checks before this handler.
 func NewHandler(store Store, version string, opts ...Option) http.Handler {
 	server := New(store, version, opts...)
-	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
+	getServer := func(*http.Request) *mcp.Server { return server }
+	options := mcp.StreamableHTTPOptions{
 		Stateless:                  true,
 		JSONResponse:               true,
 		DisableLocalhostProtection: true,
 		Logger:                     logger.Logger(),
-	})
+	}
+	stateless := mcp.NewStreamableHTTPHandler(getServer, &options)
+	options.Stateless = false
+	options.SessionTimeout = 30 * time.Minute
+	legacyApps := mcp.NewStreamableHTTPHandler(getServer, &options)
+	return appHTTPHandler(stateless, legacyApps)
 }
 
 const transcriptURIPrefix = "ai-observer://sessions/"

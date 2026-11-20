@@ -35,14 +35,15 @@ export interface ChartData {
 }
 
 // Turns time series into bar chart rows. Series with the same key are added
-// up; a series without a point in a bucket counts 0 there, while a null
+// up; a series without a point uses missingValue (zero for counts), while a null
 // value (no average or percentile without values) stays null unless another
 // series of the key has a value there.
 export function buildChartData(
   timeSeries: TimeSeries[],
   keyOf: (labels?: Record<string, string>) => string,
   labelOf: (labels?: Record<string, string>) => string,
-  formatTime: (timestamp: number) => string
+  formatTime: (timestamp: number) => string,
+  missingValue: 0 | null = 0
 ): ChartData {
   const labels = new Map<string, string>()
   const values = new Map<string, Map<number, number | null>>()
@@ -68,7 +69,7 @@ export function buildChartData(
       const row: Record<string, number | string | null> = { timestamp, time: formatTime(timestamp) }
       for (const key of keys) {
         const byTime = values.get(key)!
-        row[key] = byTime.has(timestamp) ? (byTime.get(timestamp) ?? null) : 0
+        row[key] = byTime.has(timestamp) ? (byTime.get(timestamp) ?? null) : missingValue
       }
       return row
     })

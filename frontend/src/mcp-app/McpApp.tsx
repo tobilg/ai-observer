@@ -18,6 +18,9 @@ function content(host: ReturnType<typeof useHost>) {
   if (host.status === 'failed') {
     return <Notice title="Not connected to the host" text={host.error} />
   }
+  if (host.cancelReason !== undefined) {
+    return <Notice title="Tool call cancelled" text={host.cancelReason} />
+  }
   if (!host.result) {
     return <Notice text={host.status === 'connecting' ? 'Connecting…' : 'Waiting for the result…'} />
   }

@@ -20,13 +20,14 @@ function formatTokens(value: number): string {
 // usage_summary: totals, then bars per tool, model or repository, or daily
 // bars stacked by tool. Another grouping calls the tool again for the same
 // range.
-export function UsageView({ data, args, callTool }: { data: UsageSummary; args: Record<string, unknown>; callTool: CallTool }) {
+export function UsageView({ data, args, callTool }: { data: UsageSummary; args: Record<string, unknown>; callTool?: CallTool }) {
   const [summary, setSummary] = useState(data)
   const [measure, setMeasure] = useState<UsageMeasure>('cost')
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string>()
 
   const regroup = async (groupBy: UsageGroup) => {
+    if (!callTool) return
     setPending(true)
     setError(undefined)
     try {
@@ -62,7 +63,7 @@ export function UsageView({ data, args, callTool }: { data: UsageSummary; args: 
       <Tabs value={summary.group_by} onValueChange={(value) => void regroup(value as UsageGroup)}>
         <TabsList aria-label="Group by">
           {GROUPS.map((group) => (
-            <TabsTrigger key={group.value} value={group.value} disabled={pending}>
+            <TabsTrigger key={group.value} value={group.value} disabled={pending || (!callTool && group.value !== summary.group_by)}>
               {group.label}
             </TabsTrigger>
           ))}
@@ -71,7 +72,9 @@ export function UsageView({ data, args, callTool }: { data: UsageSummary; args: 
       <ErrorText text={error} />
 
       <div className={pending ? 'opacity-50 transition-opacity' : undefined} aria-busy={pending}>
-        {daily ? (
+        {measure === 'cost' && totalTokens > 0 && summary.total_cost_usd === 0 ? (
+          <Notice text="Token usage was recorded with no associated cost in this range." />
+        ) : daily ? (
           daily.data.length === 0 ? (
             <Notice text="Nothing recorded in this range." />
           ) : (

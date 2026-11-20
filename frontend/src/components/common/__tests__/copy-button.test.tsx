@@ -33,7 +33,7 @@ describe('CopyButton', () => {
     expect(screen.getByRole('button', { name: 'Copy trace ID' })).toBeInTheDocument()
   })
 
-  it('stays quiet without clipboard access', async () => {
+  it('shows manual copy instructions when the host denies clipboard access', async () => {
     writeText.mockRejectedValue(new Error('denied'))
     render(<CopyButton value="x" />)
 
@@ -41,5 +41,6 @@ describe('CopyButton', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
     })
     expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Select and copy the text manually')
   })
 })

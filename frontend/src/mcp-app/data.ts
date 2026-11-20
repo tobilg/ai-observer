@@ -2,7 +2,7 @@
 // chart and table rows drawn from it
 
 import { buildChartData, formatTickLabel, type ChartData } from '@/components/charts'
-import { getServiceDisplayName } from '@/lib/metricMetadata'
+import { getMetricMetadata, getServiceDisplayName } from '@/lib/metricMetadata'
 import type { Span } from '@/types/traces'
 import type { TimeSeries } from '@/types/metrics'
 import type { MetricsResult, SessionRow, TraceResult, UsageRow, UsageSummary } from './types'
@@ -177,21 +177,30 @@ function seriesKey(labels: Record<string, string> | undefined): string {
   return JSON.stringify(Object.entries(labels ?? {}).sort(([a], [b]) => a.localeCompare(b)))
 }
 
+export function isCounter(result: MetricsResult): boolean {
+  if (result.metric_type) return result.metric_type === 'sum'
+  return !result.stat && getMetricMetadata(result.name).metricType === 'counter'
+}
+
 // The time series chart of a bucketed query_metrics result
 export function metricChart(result: MetricsResult): ChartData {
   const series: TimeSeries[] = result.series.map((s) => ({
     name: result.name,
     labels: s.labels,
-    datapoints: s.points.filter((p) => p.time).map((p) => [Date.parse(p.time!), p.value] as [number, number]),
+    datapoints: s.points.flatMap((p): TimeSeries['datapoints'] => {
+      if (!p.time) return []
+      const point: [number, number] = [Date.parse(p.time), p.value]
+      return p.gap_start ? [[Date.parse(p.gap_start), null], point] : [point]
+    }),
   }))
   const durationSeconds = (Date.parse(result.to) - Date.parse(result.from)) / 1000
   const intervalSeconds = goDurationSeconds(result.interval) ?? durationSeconds / 50
-  return buildChartData(series, seriesKey, metricLabel, (timestamp) =>
-    // Buckets of whole days start at midnight in the result's zone: their
-    // date there only
-    intervalSeconds % DAY_SECONDS === 0
+  return buildChartData(
+    series, seriesKey, metricLabel,
+    (timestamp) => intervalSeconds % DAY_SECONDS === 0
       ? formatDay(timestamp, result.timezone)
-      : formatTickLabel(timestamp, durationSeconds, intervalSeconds)
+      : formatTickLabel(timestamp, durationSeconds, intervalSeconds),
+    isCounter(result) || result.stat === 'count' || result.stat === 'sum' ? 0 : null,
   )
 }
 
@@ -207,6 +216,7 @@ function formatDay(timestamp: number, timeZone = 'UTC'): string {
 // The totals of an aggregated query_metrics result, largest first
 export function metricTotals(result: MetricsResult): BarRow[] {
   return result.series
+    .filter((s) => s.points.length > 0)
     .map((s) => ({
       key: seriesKey(s.labels),
       label: metricLabel(s.labels),
@@ -217,7 +227,7 @@ export function metricTotals(result: MetricsResult): BarRow[] {
 
 // Whether a query_metrics result has time buckets (not aggregated)
 export function isBucketed(result: MetricsResult): boolean {
-  return result.series.some((s) => s.points.some((p) => p.time))
+  return !!result.interval || result.series.some((s) => s.points.some((p) => p.time))
 }
 
 // The spans of a get_trace result in the dashboard's span type, so the

@@ -1,4 +1,5 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { CHART_COLORS } from '@/components/charts'
 import type { BarRow } from '../data'
@@ -45,14 +46,15 @@ export function ErrorText({ text }: { text?: string }) {
 
 // Bars are ranked values of one measure, so they share one color; the
 // values are written out, so no axis is needed
-const MAX_BARS = 20
+const BARS_PER_PAGE = 20
 
 export function BarList({ rows, format, label }: { rows: BarRow[]; format: (value: number) => string; label: string }) {
+  const [limit, setLimit] = useState(BARS_PER_PAGE)
   if (rows.length === 0) {
     return <Notice text="Nothing recorded in this range." />
   }
   const max = Math.max(...rows.map((r) => r.value))
-  const shown = rows.slice(0, MAX_BARS)
+  const shown = rows.slice(0, limit)
   return (
     <div className="space-y-1.5">
       <ul className="space-y-1.5" aria-label={label}>
@@ -77,7 +79,9 @@ export function BarList({ rows, format, label }: { rows: BarRow[]; format: (valu
         ))}
       </ul>
       {rows.length > shown.length && (
-        <p className="px-1 text-xs text-muted-foreground">and {rows.length - shown.length} more</p>
+        <Button variant="outline" size="sm" onClick={() => setLimit(limit + BARS_PER_PAGE)}>
+          Show {Math.min(rows.length - shown.length, BARS_PER_PAGE)} more
+        </Button>
       )}
     </div>
   )

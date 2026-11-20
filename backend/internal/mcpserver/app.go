@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"strings"
 
@@ -20,8 +21,9 @@ import (
 // Origin and token checks still apply. Clients without MCP Apps support
 // ignore the field and use the text result as before.
 const (
-	appURI      = "ui://ai-observer/view.html"
-	appMIMEType = "text/html;profile=mcp-app"
+	appURI       = "ui://ai-observer/view.html"
+	appMIMEType  = "text/html;profile=mcp-app"
+	appExtension = "io.modelcontextprotocol/ui"
 )
 
 // appModelDescription tells the model what the user sees in the view, so it
@@ -29,9 +31,45 @@ const (
 // field for this; "openai/widgetDescription" is OpenAI's (ChatGPT, Codex),
 // "surfaced to the model when the component loads", and other hosts ignore
 // it.
-const appModelDescription = "The user sees this tool's result in an interactive view with all of its values: " +
-	"cost and tokens per tool, model, repository or day; a metric over time; a trace waterfall; or a table of sessions. " +
-	"Don't repeat these values in your reply. Answer the user's question, or point out what stands out, in a sentence or two."
+const appModelDescription = "The view summarizes usage, charts metric series, shows a trace waterfall, or lists loaded sessions. " +
+	"Ranked lists initially show up to 20 rows. Answer the user's question using the tool result and avoid repeating values already visible."
+
+func supportsApp(caps *mcp.ClientCapabilities) bool {
+	if caps == nil {
+		return false
+	}
+	settings, _ := caps.Extensions[appExtension].(map[string]any)
+	types, _ := settings["mimeTypes"].([]any)
+	for _, mime := range types {
+		if mime == appMIMEType {
+			return true
+		}
+	}
+	return false
+}
+
+// Only advertise the HTML view to clients that negotiated its MIME profile.
+// The server's registered tools are shared by concurrent sessions.
+func negotiateAppTools(next mcp.MethodHandler) mcp.MethodHandler {
+	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		res, err := next(ctx, method, req)
+		if method != "tools/list" || err != nil || supportsApp(req.(*mcp.ListToolsRequest).ClientCapabilities()) {
+			return res, err
+		}
+		list := *res.(*mcp.ListToolsResult)
+		list.Tools = slices.Clone(list.Tools)
+		for i, tool := range list.Tools {
+			if tool.Meta["ui/resourceUri"] == appURI {
+				plain := *tool
+				plain.Meta = maps.Clone(tool.Meta)
+				delete(plain.Meta, "ui")
+				delete(plain.Meta, "ui/resourceUri")
+				list.Tools[i] = &plain
+			}
+		}
+		return &list, nil
+	}
+}
 
 // withApp marks a tool as shown by the view. The legacy flat key is set
 // too, as the official SDK's registerAppTool does, for hosts that read only
@@ -61,7 +99,7 @@ func addAppResource(server *mcp.Server) {
 			MIMEType: appMIMEType,
 			Text:     html,
 			Meta: mcp.Meta{
-				"ui":                       map[string]any{"prefersBorder": true},
+				"ui":                       map[string]any{"prefersBorder": true, "permissions": map[string]any{"clipboardWrite": map[string]any{}}},
 				"openai/widgetDescription": appModelDescription,
 			},
 		}}}, nil

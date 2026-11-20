@@ -13,12 +13,13 @@ function formatTime(value: string): string {
 
 // list_sessions: sessions per tool and the session table; more pages are
 // read with the same arguments and the next cursor
-export function SessionsView({ data, args, callTool }: { data: SessionsResult; args: Record<string, unknown>; callTool: CallTool }) {
+export function SessionsView({ data, args, callTool }: { data: SessionsResult; args: Record<string, unknown>; callTool?: CallTool }) {
   const [page, setPage] = useState(data)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string>()
 
   const loadMore = async () => {
+    if (!callTool) return
     setPending(true)
     setError(undefined)
     try {
@@ -39,12 +40,13 @@ export function SessionsView({ data, args, callTool }: { data: SessionsResult; a
         title="Sessions"
         subtitle={`${page.sessions.length} of ${page.total} · ${formatRange(page.from, page.to)}`}
       >
+        {page.sessions.length > 0 && <span className="text-xs text-muted-foreground">Loaded sessions</span>}
         {sessionCounts(page.sessions).map(({ tool, count }) => (
           <Badge key={tool} variant="secondary">
             {toolDisplayName(tool)}: {count}
           </Badge>
         ))}
-        {cost != null && <Badge variant="outline">Cost: {formatCost(cost)}</Badge>}
+        {cost != null && <Badge variant="outline">Recorded cost of loaded sessions: {formatCost(cost)}</Badge>}
       </ViewHeader>
 
       {page.sessions.length === 0 ? (
@@ -92,7 +94,7 @@ export function SessionsView({ data, args, callTool }: { data: SessionsResult; a
       )}
 
       <ErrorText text={error} />
-      {page.next_cursor && (
+      {page.next_cursor && callTool && (
         <Button variant="outline" size="sm" disabled={pending} onClick={() => void loadMore()}>
           {pending ? 'Loading…' : 'Load more'}
         </Button>

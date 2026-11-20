@@ -47,10 +47,11 @@ func TestQueryMetrics_GroupFilterStatZone(t *testing.T) {
 	// Histograms: avg by default; empty buckets have no point
 	delta := int32(1)
 	count, sum, lo, hi := uint64(2), 300.0, 100.0, 200.0
-	if err := store.InsertMetrics(context.Background(), []api.MetricDataPoint{{
+	sample := api.MetricDataPoint{
 		Timestamp: now.Add(-90 * time.Minute), ServiceName: "gemini_cli", MetricName: "gemini_cli.api.request.latency", MetricType: "histogram",
 		AggregationTemporality: &delta, Count: &count, Sum: &sum, Min: &lo, Max: &hi, ExplicitBounds: []float64{0, 1000}, BucketCounts: []uint64{0, 2, 0},
-	}}); err != nil {
+	}
+	if err := store.InsertMetrics(context.Background(), []api.MetricDataPoint{sample}); err != nil {
 		t.Fatal(err)
 	}
 	call(t, cs, "query_metrics", map[string]any{"name": "gemini_cli.api.request.latency", "from": "3h", "interval": "1h"}, &out)
@@ -61,6 +62,17 @@ func TestQueryMetrics_GroupFilterStatZone(t *testing.T) {
 	call(t, cs, "query_metrics", map[string]any{"name": "gemini_cli.api.request.latency", "from": "3h", "aggregate": true, "stat": "max"}, &out)
 	if out.Stat != "max" || out.Series[0].Points[0].Value != 200 {
 		t.Errorf("latency max = %+v", out)
+	}
+	// A single sparse series still needs a line break when no other series
+	// supplies the absent bucket's timestamp.
+	sample.Timestamp = sample.Timestamp.Add(-2 * time.Hour)
+	if err := store.InsertMetrics(t.Context(), []api.MetricDataPoint{sample}); err != nil {
+		t.Fatal(err)
+	}
+	call(t, cs, "query_metrics", map[string]any{"name": sample.MetricName, "from": "5h", "interval": "1h", "timezone": "UTC", "stat": "p95"}, &out)
+	wantGap := sample.Timestamp.UTC().Truncate(time.Hour).Add(time.Hour).Format(time.RFC3339)
+	if len(out.Series) != 1 || len(out.Series[0].Points) != 2 || out.Series[0].Points[0].GapStart != "" || out.Series[0].Points[1].GapStart != wantGap {
+		t.Fatalf("sparse percentile = %+v, want a gap at %s", out.Series, wantGap)
 	}
 
 	for args, want := range map[string]struct {

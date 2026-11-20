@@ -1,7 +1,7 @@
 import { MetricBarChart, MetricLineChart } from '@/components/charts'
 import { HISTOGRAM_STATS, formatMetricValue, getMetricMetadata, statUnit } from '@/lib/metricMetadata'
 import { formatIntervalSeconds } from '@/lib/utils'
-import { formatRange, goDurationSeconds, isBucketed, metricChart, metricTotals } from '../data'
+import { formatRange, goDurationSeconds, isBucketed, isCounter, metricChart, metricTotals } from '../data'
 import type { MetricsResult } from '../types'
 import { BarList, Notice, ViewHeader } from './parts'
 
@@ -33,7 +33,7 @@ export function MetricsView({ data }: { data: MetricsResult }) {
   }
 
   const chart = metricChart(data)
-  const Chart = metadata.metricType === 'counter' ? MetricBarChart : MetricLineChart
+  const Chart = isCounter(data) ? MetricBarChart : MetricLineChart
   return (
     <div className="space-y-4">
       <ViewHeader title={title} subtitle={subtitle} />

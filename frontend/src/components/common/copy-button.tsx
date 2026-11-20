@@ -17,38 +17,41 @@ const COPIED_MS = 1500
 
 // Copies value to the clipboard and confirms with a check mark
 export function CopyButton({ value, label = 'Copy', className, size = 'icon-sm' }: CopyButtonProps) {
-  const [copied, setCopied] = useState(false)
+  const [status, setStatus] = useState<'idle' | 'copied' | 'denied'>('idle')
 
   useEffect(() => {
-    if (!copied) {
+    if (status === 'idle') {
       return
     }
-    const timer = setTimeout(() => setCopied(false), COPIED_MS)
+    const timer = setTimeout(() => setStatus('idle'), status === 'copied' ? COPIED_MS : 6000)
     return () => clearTimeout(timer)
-  }, [copied])
+  }, [status])
 
   const copy = async (event: React.MouseEvent) => {
     // Copy buttons often sit in clickable rows
     event.stopPropagation()
     try {
       await navigator.clipboard.writeText(value)
-      setCopied(true)
+      setStatus('copied')
     } catch {
-      // No clipboard access (insecure context, denied permission)
+      setStatus('denied')
     }
   }
 
   return (
-    <Button
-      type="button"
-      variant="ghost"
-      size={size}
-      className={cn('text-muted-foreground', className)}
-      onClick={copy}
-      aria-label={copied ? 'Copied' : label}
-      title={copied ? 'Copied' : label}
-    >
-      {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-    </Button>
+    <>
+      <Button
+        type="button"
+        variant="ghost"
+        size={size}
+        className={cn('text-muted-foreground', className)}
+        onClick={copy}
+        aria-label={status === 'copied' ? 'Copied' : label}
+        title={status === 'copied' ? 'Copied' : label}
+      >
+        {status === 'copied' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+      </Button>
+      {status === 'denied' && <span role="status" className="text-xs">Clipboard unavailable. Select and copy the text manually.</span>}
+    </>
   )
 }

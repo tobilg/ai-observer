@@ -6,6 +6,8 @@ import type { CallTool } from './types'
 export interface HostState {
   status: 'connecting' | 'connected' | 'failed'
   error?: string
+  cancelReason?: string
+  canCallTools: boolean
   // The tool whose result the host shows, when the host tells it
   toolName?: string
   args: Record<string, unknown>
@@ -23,16 +25,17 @@ function applyTheme(theme: McpUiHostContext['theme']) {
 
 // Connects to the MCP Apps host (postMessage to the parent window), keeps
 // the latest tool arguments and result it pushes, and calls tools through it
-export function useHost(): HostState & { callTool: CallTool } {
+export function useHost(): HostState & { callTool?: CallTool } {
   const appRef = useRef<App | null>(null)
-  const [state, setState] = useState<HostState>({ status: 'connecting', args: {}, version: 0 })
+  const [state, setState] = useState<HostState>({ status: 'connecting', canCallTools: false, args: {}, version: 0 })
 
   useEffect(() => {
-    const app = new App({ name: 'AI Observer', version: '1.0.0' }, {}, { autoResize: true })
+    const app = new App({ name: 'AI Observer', version: '1.0.0' }, { availableDisplayModes: ['inline'] }, { autoResize: true })
     appRef.current = app
     // Handlers before connecting, so no notification is missed
     app.ontoolinput = (params) => setState((s) => ({ ...s, args: params.arguments ?? {} }))
-    app.ontoolresult = (result) => setState((s) => ({ ...s, result, version: s.version + 1 }))
+    app.ontoolresult = (result) => setState((s) => ({ ...s, result, cancelReason: undefined, version: s.version + 1 }))
+    app.ontoolcancelled = ({ reason }) => setState((s) => ({ ...s, result: undefined, cancelReason: reason ?? '' }))
     app.onhostcontextchanged = (context) => {
       if (context.theme) applyTheme(context.theme)
     }
@@ -42,11 +45,13 @@ export function useHost(): HostState & { callTool: CallTool } {
     app
       .connect()
       .then(() => {
+        if (appRef.current !== app) return
         const context = app.getHostContext()
         applyTheme(context?.theme)
-        setState((s) => ({ ...s, status: 'connected', toolName: context?.toolInfo?.tool.name }))
+        setState((s) => ({ ...s, status: 'connected', toolName: context?.toolInfo?.tool.name, canCallTools: !!app.getHostCapabilities()?.serverTools }))
       })
       .catch((err: unknown) => {
+        if (appRef.current !== app) return
         setState((s) => ({ ...s, status: 'failed', error: err instanceof Error ? err.message : String(err) }))
       })
     return () => {
@@ -68,5 +73,5 @@ export function useHost(): HostState & { callTool: CallTool } {
     return structuredOf(result)
   }, [])
 
-  return { ...state, callTool }
+  return { ...state, callTool: state.canCallTools ? callTool : undefined }
 }

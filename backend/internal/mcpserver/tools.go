@@ -590,6 +590,8 @@ type queryMetricsIn struct {
 type pointOut struct {
 	Time  string  `json:"time,omitempty"`
 	Value float64 `json:"value"`
+	// GapStart is the first empty bucket between this point and the preceding point.
+	GapStart string `json:"gap_start,omitempty"`
 }
 
 type seriesOut struct {
@@ -650,13 +652,18 @@ func (h *handlers) queryMetrics(ctx context.Context, _ *mcp.CallToolRequest, in 
 	points := 0
 	for _, s := range resp.Series {
 		series := seriesOut{Labels: h.redactor.Map(s.Labels), Points: []pointOut{}}
+		var gapStart string
 		for _, dp := range s.DataPoints {
 			// Empty buckets of averages, extremes and percentiles have no value
 			if math.IsNaN(dp[1]) {
 				out.Note = histogramNote
+				if !in.Aggregate && len(series.Points) > 0 && gapStart == "" {
+					gapStart = time.UnixMilli(int64(dp[0])).In(loc).Format(time.RFC3339)
+				}
 				continue
 			}
-			p := pointOut{Value: dp[1]}
+			p := pointOut{Value: dp[1], GapStart: gapStart}
+			gapStart = ""
 			if !in.Aggregate {
 				p.Time = time.UnixMilli(int64(dp[0])).In(loc).Format(time.RFC3339)
 			}

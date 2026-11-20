@@ -225,8 +225,8 @@ func (s *Server) setupMiddleware() {
 	s.apiRouter.Use(cors.Handler(cors.Options{
 		AllowedOrigins: s.corsOrigins(),
 		AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "Content-Encoding", "X-Requested-With"},
-		ExposedHeaders: []string{"Link"},
+		AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "Content-Encoding", "X-Requested-With", "Mcp-Session-Id", "Mcp-Protocol-Version", "Mcp-Method", "Mcp-Name"},
+		ExposedHeaders: []string{"Link", "Mcp-Session-Id"},
 		MaxAge:         300,
 	}))
 
