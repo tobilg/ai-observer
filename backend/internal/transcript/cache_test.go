@@ -3,11 +3,13 @@ package transcript
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+	"weak"
 
 	"github.com/tobilg/ai-observer/internal/api"
 	"github.com/tobilg/ai-observer/internal/storage"
@@ -214,4 +216,24 @@ func TestCacheCancelsBuildWithoutCallers(t *testing.T) {
 	if n, _ := c.Len(); n != 0 {
 		t.Errorf("a failed build was cached")
 	}
+}
+
+func TestCacheReleasesRemovedTranscriptsBeforeTTL(t *testing.T) {
+	c, store, _ := testCache(1, 1<<20, time.Hour, nil)
+	load := func(id string) weak.Pointer[api.TranscriptResponse] {
+		resp, err := c.Load(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return weak.Make(resp)
+	}
+	replaced := load("a")
+	store.generation.Add(1)
+	evicted := load("a")
+	load("b")
+	runtime.GC()
+	if replaced.Value() != nil || evicted.Value() != nil {
+		t.Fatal("removed transcripts remained reachable before their TTL")
+	}
+	runtime.KeepAlive(c)
 }

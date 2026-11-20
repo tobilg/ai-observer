@@ -34,8 +34,10 @@ func (conflictStore) CountRestoreConflicts(context.Context, *storage.RestoreInve
 // --replace before anything is written, also without a confirmation
 func TestRunRefusesConflictWithoutReplace(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, exporter.LogsFile), nil, 0o644); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{exporter.TracesFile, exporter.LogsFile, exporter.MetricsFile} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var out bytes.Buffer
 	err := Run(context.Background(), conflictStore{}, Options{Path: dir, SkipConfirm: true, Out: &out})

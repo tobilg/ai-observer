@@ -140,7 +140,7 @@ func (s *DuckDBStore) InspectRestore(ctx context.Context, files RestoreFiles) (*
 		if t.file == "" {
 			continue
 		}
-		if _, computed, err := s.restoreSelect(ctx, t, restoreOptions{}); err != nil {
+		if _, computed, err := s.restoreSelect(ctx, t, restoreOptions{legacyLayout: files.ImportState == ""}); err != nil {
 			return nil, err
 		} else if len(computed) > 0 {
 			inv.Computed[t.table] = computed
@@ -180,7 +180,13 @@ func (s *DuckDBStore) InspectRestore(ctx context.Context, files RestoreFiles) (*
 		}
 		inv.FileState = true
 		inv.SessionFiles = paths
-		inv.Rows["import_state"] = int64(len(paths))
+		// Mappings may join multiple file paths. The manifest counts the
+		// source rows, before filenames are mapped.
+		var n int64
+		if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM read_parquet(?)", files.ImportState).Scan(&n); err != nil {
+			return nil, err
+		}
+		inv.Rows["import_state"] = n
 	}
 	inv.From, inv.To = from.Time.UTC(), to.Time.UTC()
 	for name := range services {
@@ -231,21 +237,10 @@ func (s *DuckDBStore) distinctServices(ctx context.Context, file string) ([]stri
 // restoring an export of that range would store its logs and metric points
 // a second time (spans are skipped when stored)
 func (s *DuckDBStore) CountRestoreConflicts(ctx context.Context, inv *RestoreInventory) (*DeleteSummary, error) {
-	total := &DeleteSummary{}
-	if inv.Empty() {
-		return total, nil
+	if len(inv.Services) == 0 {
+		return &DeleteSummary{}, nil
 	}
-	for _, service := range inv.Services {
-		counts, err := s.CountAllInRange(ctx, inv.From, inv.To, service)
-		if err != nil {
-			return nil, err
-		}
-		total.LogCount += counts.LogCount
-		total.MetricCount += counts.MetricCount
-		total.TraceCount += counts.TraceCount
-		total.SpanCount += counts.SpanCount
-	}
-	return total, nil
+	return s.countAllInRange(ctx, telemetryRange(inv.From, inv.To, inv.Services))
 }
 
 // RestoreResult counts what a restore deleted and stored
@@ -305,16 +300,12 @@ func (s *DuckDBStore) Restore(ctx context.Context, files RestoreFiles, inv *Rest
 			SELECT * FROM metric_baselines`); err != nil {
 			return fmt.Errorf("reading metric baselines: %w", err)
 		}
-		if replace && !inv.Empty() {
-			for _, service := range inv.Services {
-				deleted, err := deleteAllInRange(ctx, w, inv.From, inv.To, service)
-				if err != nil {
-					return err
-				}
-				result.Deleted.LogCount += deleted.LogCount
-				result.Deleted.MetricCount += deleted.MetricCount
-				result.Deleted.SpanCount += deleted.SpanCount
+		if replace && len(inv.Services) > 0 {
+			deleted, err := deleteSelectedRange(ctx, w, inv.From, inv.To, telemetryRange(inv.From, inv.To, inv.Services))
+			if err != nil {
+				return err
 			}
+			result.Deleted = *deleted
 		}
 		for _, t := range files.restoreTables() {
 			if t.file == "" {
@@ -366,8 +357,9 @@ func (s *DuckDBStore) Restore(ctx context.Context, files RestoreFiles, inv *Rest
 // redacted (the redaction functions are registered), and their session
 // file paths mapped
 type restoreOptions struct {
-	redact bool
-	paths  []PathMapping
+	legacyLayout bool // exports before format 2 omitted SourceFile
+	redact       bool
+	paths        []PathMapping
 }
 
 // restoreTable inserts the rows of a table's file and returns their number
@@ -405,6 +397,10 @@ func (s *DuckDBStore) restoreSelect(ctx context.Context, t restoreTable, opts re
 		return "", nil, err
 	}
 
+	if opts.legacyLayout && fileColumns["SourceFile"] {
+		return "", nil, fmt.Errorf("%s includes SourceFile: a format 2 export requires manifest.json and import_state.parquet", t.file)
+	}
+
 	var names, values []string
 	sessionIDs := false
 	for _, col := range tableColumns {
@@ -414,6 +410,8 @@ func (s *DuckDBStore) restoreSelect(ctx context.Context, t restoreTable, opts re
 			values = append(values, "NULL")
 		case col.name == "SourceFile" && fileColumns[col.name]:
 			values = append(values, mapPathExpr("p.SourceFile", opts.paths))
+		case col.name == "CodexMatch" && fileColumns[col.name] && len(opts.paths) > 0:
+			values = append(values, "CASE WHEN p.CodexMatch IS NOT NULL THEN struct_update(p.CodexMatch, file_path := "+mapPathExpr("p.CodexMatch.file_path", opts.paths)+") END")
 		case fileColumns[col.name]:
 			value := "p." + quoteIdent(col.name)
 			if opts.redact {

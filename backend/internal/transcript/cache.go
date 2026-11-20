@@ -69,6 +69,7 @@ type cacheEntry struct {
 	size       int64
 	lastUsed   time.Time
 	elem       *list.Element
+	timer      *time.Timer
 }
 
 type buildKey struct {
@@ -195,7 +196,7 @@ func (c *Cache) leave(b *build) {
 
 // expireLater removes e once it has not been used for the TTL
 func (c *Cache) expireLater(e *cacheEntry, after time.Duration) {
-	time.AfterFunc(after, func() {
+	e.timer = time.AfterFunc(after, func() {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		if c.entries[e.sessionID] != e {
@@ -213,6 +214,7 @@ func (c *Cache) removeLocked(e *cacheEntry) {
 	if c.entries[e.sessionID] == e {
 		delete(c.entries, e.sessionID)
 	}
+	e.timer.Stop()
 	c.lru.Remove(e.elem)
 	c.bytes -= e.size
 }

@@ -665,3 +665,38 @@ func TestQuerySeries_Merge(t *testing.T) {
 	_, err := store.QuerySeries(context.Background(), api.MetricQuery{Name: "tokens", Merge: true, GroupBy: []string{"type"}}, r)
 	wantCode(t, err, api.MetricErrorInvalidGroupBy)
 }
+
+func TestQuerySeriesRepeatedHour(t *testing.T) {
+	s, cleanup := setupTestStore(t)
+	defer cleanup()
+	first := time.Date(2026, 10, 25, 0, 15, 0, 0, time.UTC)
+	second := first.Add(time.Hour)
+	insertPoints(t, s, sumPoint("events", first, 1, false, nil), sumPoint("events", second, 2, false, nil))
+	resp := querySeries(t, s, api.MetricQuery{Name: "events"}, SeriesRange{From: first.Truncate(time.Hour), To: second, Interval: 3600, TimeZone: "Europe/Berlin"})
+	points := resp.Series[0].DataPoints
+	if len(points) != 2 || int64(points[0][0]) != first.Truncate(time.Hour).UnixMilli() || int64(points[1][0]) != second.Truncate(time.Hour).UnixMilli() ||
+		points[0][1] != 1 || points[1][1] != 2 {
+		t.Errorf("repeated local hour: got %v, want separate UTC hours with values 1 and 2", points)
+	}
+}
+
+func TestQuerySeriesSubdayLocalAlignment(t *testing.T) {
+	s, cleanup := setupTestStore(t)
+	defer cleanup()
+	ts := time.Date(2026, 7, 1, 4, 47, 0, 0, time.UTC)
+	insertPoints(t, s, sumPoint("events", ts, 1, false, nil))
+	for _, tc := range []struct {
+		zone    string
+		seconds int64
+		start   time.Time
+	}{
+		{"Europe/Berlin", 6 * 3600, ts.Truncate(time.Hour)}, // 06:00 in summer
+		{"Asia/Kolkata", 3600, ts.Truncate(time.Hour).Add(30 * time.Minute)},
+	} {
+		resp := querySeries(t, s, api.MetricQuery{Name: "events"}, SeriesRange{From: ts, To: ts, Interval: tc.seconds, TimeZone: tc.zone})
+		points := resp.Series[0].DataPoints
+		if len(points) != 1 || int64(points[0][0]) != tc.start.UnixMilli() || points[0][1] != 1 {
+			t.Errorf("%s grid: got %v, want one event at %v", tc.zone, points, tc.start)
+		}
+	}
+}

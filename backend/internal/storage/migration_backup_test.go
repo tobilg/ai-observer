@@ -45,6 +45,16 @@ func TestMigrationBackupBeforeMigratingData(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	backup := MigrationBackupPath(path, 0)
+	for _, path := range []string{older + ".wal", older + ".saved", backup + ".partial", backup + ".partial.wal"} {
+		if err := os.WriteFile(path, []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	store, err := NewDuckDBStore(path)
 	if err != nil {
 		t.Fatalf("opening legacy database: %v", err)
@@ -55,11 +65,13 @@ func TestMigrationBackupBeforeMigratingData(t *testing.T) {
 		t.Fatalf("migrated to %d (%v), want %d", version, err, LatestSchemaVersion())
 	}
 
-	backup := MigrationBackupPath(path, 0)
-	if _, err := os.Stat(older); !os.IsNotExist(err) {
-		t.Errorf("older backup %s was kept", older)
+	checkPrivateBackup(t, backup)
+	for _, path := range []string{older + ".saved", backup + ".partial", backup + ".partial.wal"} {
+		if data, err := os.ReadFile(path); err != nil || string(data) != "keep" {
+			t.Errorf("unrelated file %s changed: %q, %v", path, data, err)
+		}
 	}
-	for _, leftover := range []string{backup + ".partial", backup + ".wal"} {
+	for _, leftover := range []string{older, older + ".wal", backup + ".wal"} {
 		if _, err := os.Stat(leftover); err == nil {
 			t.Errorf("%s left behind", leftover)
 		}

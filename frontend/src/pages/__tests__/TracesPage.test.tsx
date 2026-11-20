@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Route, Routes, useLocation } from 'react-router-dom'
 import { TracesPage } from '../TracesPage'
@@ -125,10 +125,12 @@ function rowOf(rootSpan: string) {
 }
 
 async function announceNewSpans(n: number) {
-  await new Promise((resolve) => setTimeout(resolve, 5))
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  await act(() => vi.advanceTimersByTimeAsync(1))
   act(() => {
     useTelemetryStore.getState().addSpans({ count: n, services: ['claude-code'], timestamps: Array.from({ length: n }, () => Date.now()) })
   })
+  await act(() => vi.advanceTimersByTimeAsync(250))
 }
 
 describe('TracesPage', () => {
@@ -304,13 +306,16 @@ describe('TracesPage', () => {
   })
 
   it('searches with the debounced input', async () => {
-    const user = userEvent.setup()
     renderPage()
     await screen.findByText('llm/chat', { selector: 'span' })
-    await user.type(screen.getByRole('searchbox', { name: 'Search traces' }), 'error')
-    await waitFor(() => expect(listCalls().at(-1)).toMatchObject({ search: 'error' }))
-    // One request for the whole word, not one per key
-    expect(listCalls().filter((p) => p.search)).toHaveLength(1)
+    vi.useFakeTimers()
+    const input = screen.getByRole('searchbox', { name: 'Search traces' })
+    for (const value of ['e', 'er', 'err', 'erro', 'error']) {
+      fireEvent.change(input, { target: { value } })
+    }
+    expect(listCalls().filter((p) => p.search)).toHaveLength(0)
+    await act(() => vi.advanceTimersByTimeAsync(200))
+    expect(listCalls().filter((p) => p.search).map((p) => p.search)).toEqual(['error'])
   })
 
   it('loads the new traces of the filtered list when "N new traces" is clicked', async () => {

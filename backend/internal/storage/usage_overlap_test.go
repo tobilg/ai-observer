@@ -439,3 +439,40 @@ func TestCodexUsageNoFalseMatches(t *testing.T) {
 		t.Errorf("file usage = %d points, want 0 for OTLP usage without session", got)
 	}
 }
+
+func TestCodexUsageMatchesRepeatedCountsOnce(t *testing.T) {
+	e := newOverlapEnv(t)
+	a, b := overlapBase, overlapBase.Add(10*time.Second)
+	file := "/codex/c1.jsonl"
+	first := codexResponse(true, "c1", a, 100, 0, 10, 0)
+	second := codexResponse(true, "c1", b, 100, 0, 10, 0)
+	both := append(first, second...)
+	e.importFile("codex", file, nil, both, false)
+	e.otlpLogs(nil, codexResponse(false, "c1", a.Add(time.Millisecond), 100, 0, 10, 0))
+	check := func(want int) {
+		t.Helper()
+		if got := e.count("otel_metrics"); got != want {
+			t.Fatalf("metric points = %d, want %d", got, want)
+		}
+	}
+	check(6)
+	if got := e.fileUsageAt(codexFileService, b); got != 3 {
+		t.Fatalf("later file response has %d points, want 3", got)
+	}
+
+	third := codexResponse(true, "c1", b.Add(time.Second), 100, 0, 10, 0)
+	e.watchFile("codex", file, nil, third)
+	check(9)
+	e.importFile("codex", file, nil, append(both, third...), true)
+	check(9)
+
+	// Two OTLP responses prefer the same remaining file response. Each
+	// may replace one of the two remaining responses.
+	otlp := append(codexResponse(false, "c1", b.Add(time.Millisecond), 100, 0, 10, 0),
+		codexResponse(false, "c1", b.Add(2*time.Millisecond), 100, 0, 10, 0)...)
+	e.otlpLogs(nil, otlp)
+	check(9)
+	if got := e.fileUsage(codexFileService); len(got) != 0 {
+		t.Errorf("unmatched file points: %v", got)
+	}
+}

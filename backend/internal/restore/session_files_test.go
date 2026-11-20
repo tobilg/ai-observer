@@ -472,3 +472,37 @@ func TestSessionFilesRangedExport(t *testing.T) {
 		}
 	}
 }
+
+func TestRestoreRemapsCodexUsageMatch(t *testing.T) {
+	ctx := context.Background()
+	src := openStore(t, "source.duckdb")
+	value := 100.0
+	metric := api.MetricDataPoint{Timestamp: base, ServiceName: "codex_cli_rs", MetricName: "codex_cli_rs.token.usage",
+		MetricType: "sum", Value: &value, Attributes: map[string]string{"type": "input", "import_source": "local_jsonl", "session.id": "s"}}
+	state := &storage.ImportState{Source: "codex", FilePath: "/old/s.jsonl", ImportedAt: base, SourceTracked: true}
+	if err := src.InsertImportedFile(ctx, nil, []api.MetricDataPoint{metric}, nil, state, nil); err != nil {
+		t.Fatal(err)
+	}
+	otlp := metric
+	otlp.ServiceName = "codex-app-server"
+	otlp.Attributes = map[string]string{"type": "input", "session.id": "s"}
+	if err := src.InsertMetrics(ctx, []api.MetricDataPoint{otlp}); err != nil {
+		t.Fatal(err)
+	}
+	dir := export(t, src, exporter.Options{})
+	dst := openStore(t, "target.duckdb")
+	if err := Run(ctx, dst, Options{Path: dir, SkipConfirm: true, Out: &bytes.Buffer{}, PathMap: []storage.PathMapping{{From: "/old", To: "/new"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if n := countRows(t, dst, "SELECT COUNT(*) FROM otel_metrics WHERE CodexMatch.file_path = '/new/s.jsonl'"); n != 1 {
+		t.Fatalf("restored %d remapped matches, want 1", n)
+	}
+	state.FilePath = "/new/s.jsonl"
+	metric.Timestamp = base.Add(time.Second)
+	if err := dst.InsertWatcherBatch(ctx, nil, []api.MetricDataPoint{metric}, nil, state, false); err != nil {
+		t.Fatal(err)
+	}
+	if n := countRows(t, dst, "SELECT COUNT(*) FROM otel_metrics"); n != 2 {
+		t.Fatalf("stored %d responses after new file event, want 2", n)
+	}
+}

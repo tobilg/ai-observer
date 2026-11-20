@@ -80,8 +80,8 @@ type SeriesRange struct {
 	Interval int64
 	// TimeZone is the IANA zone buckets are aligned to; "" is UTC.
 	// Buckets follow the zone's clock: a day bucket runs from midnight to
-	// midnight (23 or 25 hours when the clocks change), the hour the clocks
-	// go back is one bucket of two hours, and the hour they skip has none.
+	// midnight (23 or 25 hours when the clocks change). Each occurrence
+	// of a repeated hour has its own bucket.
 	TimeZone string
 }
 
@@ -317,19 +317,19 @@ func (s *DuckDBStore) LocalTimeZone() string {
 	return localZone.name
 }
 
-// bucketing computes the buckets of a series in a time zone. Bucket keys are
-// TIMESTAMPs of the zone's clock (UTC: the stored times), so buckets of a
-// day start at the zone's midnight; output is the bucket start in UTC.
+// Sub-day bucket keys use UTC instants for local clock boundaries, so
+// repeated hours stay distinct. Longer intervals follow the local calendar.
 type bucketing struct {
-	interval string // INTERVAL literal
-	zone     string // validated zone name; "" for UTC
+	interval    string // INTERVAL literal
+	zone        string // validated zone name; "" for UTC
+	zonedSubday bool   // sub-day keys are absolute instants, including both sides of a clock change
 }
 
 func newBucketing(seconds int64, zone string) bucketing {
 	if zone == "UTC" {
 		zone = ""
 	}
-	return bucketing{interval: fmt.Sprintf("INTERVAL '%d seconds'", seconds), zone: zone}
+	return bucketing{interval: fmt.Sprintf("INTERVAL '%d seconds'", seconds), zone: zone, zonedSubday: zone != "" && seconds > 0 && seconds < 86400}
 }
 
 // local converts a stored (UTC) TIMESTAMP to the zone's clock
@@ -347,7 +347,7 @@ func (b bucketing) key(col string) string {
 
 // instant converts a bucket key to its start in UTC
 func (b bucketing) instant(col string) string {
-	if b.zone == "" {
+	if b.zone == "" || b.zonedSubday {
 		return col
 	}
 	return "timezone('UTC', timezone('" + b.zone + "', " + col + "))"
@@ -357,6 +357,23 @@ func (b bucketing) instant(col string) string {
 // of the second. Keys of the zone's clock that do not last (the hour the
 // clocks skip) are left out.
 func (b bucketing) grid() string {
+	if b.zonedSubday {
+		// Generate the local clock boundaries once per UTC offset in the
+		// range. Only keep a boundary if that offset actually applied there.
+		// This gives a repeated boundary two instants and a skipped one none.
+		// Include one earlier boundary for a range starting at a clock change.
+		return `WITH bounds AS (SELECT ?::TIMESTAMP AS lo, ?::TIMESTAMP AS hi),
+			offsets AS (
+				SELECT DISTINCT ` + b.local("t") + ` - t AS shift FROM bounds,
+					generate_series(lo - INTERVAL '1 day', hi + INTERVAL '1 day', INTERVAL '1 day') AS days(t)
+			), starts AS (
+				SELECT bucket, lo FROM bounds, offsets,
+					generate_series(time_bucket(` + b.interval + `, lo + shift) - shift - ` + b.interval + `,
+						time_bucket(` + b.interval + `, hi + shift) - shift, ` + b.interval + `) AS grid(bucket)
+				WHERE ` + b.local("bucket") + ` = bucket + shift
+			)
+			SELECT bucket FROM starts QUALIFY bucket >= max(bucket) FILTER (WHERE bucket <= lo) OVER ()`
+	}
 	series := "SELECT UNNEST(generate_series(" + b.key("?::TIMESTAMP") + ", " + b.key("?::TIMESTAMP") + ", " + b.interval + ")) AS bucket"
 	if b.zone == "" {
 		return series
@@ -676,6 +693,12 @@ func (q *seriesQuery) selectSeries(pointsCTE string, args []any, aggs []aggColum
 	for i := range q.groups {
 		join += fmt.Sprintf(" AND s.g%d = d.g%d", i, i)
 	}
+	// For zoned sub-day intervals the grid holds actual UTC boundaries.
+	// Assign each point to the last boundary at or before it.
+	key, source := b.key("Timestamp"), "points"
+	if b.zonedSubday {
+		key, source = "buckets.bucket", "points ASOF JOIN buckets ON points.Timestamp >= buckets.bucket"
+	}
 	query := `WITH ` + pointsCTE + `,
 		buckets AS (` + b.grid() + `),
 		series_labels AS (
@@ -684,8 +707,8 @@ func (q *seriesQuery) selectSeries(pointsCTE string, args []any, aggs []aggColum
 			LIMIT ` + fmt.Sprint(MaxSeries+1) + `
 		),
 		data AS (
-			SELECT ` + b.key("Timestamp") + ` AS bucket, ServiceName` + groups + extraCols + `, ` + strings.Join(aggCols, ", ") + `
-			FROM points
+			SELECT ` + key + ` AS bucket, ServiceName` + groups + extraCols + `, ` + strings.Join(aggCols, ", ") + `
+			FROM ` + source + `
 			GROUP BY ALL
 		)
 		SELECT ` + b.instant("b.bucket") + `, s.ServiceName` + q.groupColumns("s.") + dataCols + `

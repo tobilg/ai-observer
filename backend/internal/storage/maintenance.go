@@ -192,7 +192,7 @@ func CopySpaceNeeded(size DatabaseSize) uint64 {
 // one transaction, so it can run while telemetry is stored. The copy is
 // checked against the database before it is kept: the same tables with the
 // same definitions and row counts, the same indexes and schema version. It
-// is written to target + ".partial" and renamed when complete, so target
+// is built in a private staging directory and published when complete, so target
 // never holds a partial copy. target must not exist; the copy fails before
 // it starts when the disk lacks the space (CopySpaceNeeded).
 func (s *DuckDBStore) CopyDatabase(ctx context.Context, target string) (*CopyResult, error) {
@@ -204,8 +204,12 @@ func (s *DuckDBStore) CopyDatabase(ctx context.Context, target string) (*CopyRes
 	if err != nil {
 		return nil, fmt.Errorf("resolving %s: %w", target, err)
 	}
-	if _, err := os.Lstat(target); err == nil {
-		return nil, fmt.Errorf("%s already exists", target)
+	for _, path := range []string{target, target + ".wal"} {
+		if _, err := os.Lstat(path); err == nil {
+			return nil, fmt.Errorf("%s already exists", path)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
 	}
 	size, err := s.DatabaseSize(ctx)
 	if err != nil {
@@ -222,25 +226,48 @@ func (s *DuckDBStore) CopyDatabase(ctx context.Context, target string) (*CopyRes
 		return nil, err
 	}
 
-	partial := target + ".partial"
-	removeDatabaseFiles(partial)
+	stage, err := os.MkdirTemp(dir, ".ai-observer-backup-*")
+	if err != nil {
+		return nil, fmt.Errorf("creating backup staging directory: %w", err)
+	}
+	defer os.RemoveAll(stage)
+	partial := filepath.Join(stage, "copy.duckdb")
 	result, err := s.copyInto(ctx, partial)
 	if err != nil {
-		removeDatabaseFiles(partial)
 		return nil, err
 	}
-	if _, err := os.Stat(partial + ".wal"); err == nil {
-		removeDatabaseFiles(partial)
-		return nil, fmt.Errorf("the copy kept a write-ahead log after it was closed")
+	if _, err := os.Lstat(partial + ".wal"); !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("cannot publish a database copy with an outstanding write-ahead log")
 	}
-	if err := os.Rename(partial, target); err != nil {
-		removeDatabaseFiles(partial)
-		return nil, fmt.Errorf("renaming the copy to %s: %w", target, err)
+	if err := os.Chmod(partial, 0o600); err != nil {
+		return nil, err
+	}
+	if err := publishDatabaseCopy(partial, target); err != nil {
+		return nil, fmt.Errorf("publishing the copy at %s: %w", target, err)
 	}
 	result.Path = target
 	result.Bytes = diskspace.FileSize(target)
 	result.Duration = time.Since(start)
 	return result, nil
+}
+
+// publishDatabaseCopy links the finished file under a new name atomically.
+// On filesystems without hard links, reserve the name before renaming.
+func publishDatabaseCopy(staged, target string) error {
+	if err := os.Link(staged, target); err == nil || errors.Is(err, os.ErrExist) {
+		return err
+	}
+	f, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if err = f.Close(); err == nil {
+		err = os.Rename(staged, target)
+	}
+	if err != nil {
+		os.Remove(target)
+	}
+	return err
 }
 
 // copyInto copies the database into a new database file at path, attached
@@ -392,12 +419,6 @@ func readPairs(ctx context.Context, q queryer, query, arg string, m map[string]s
 		m[key] = value.String
 	}
 	return rows.Err()
-}
-
-// removeDatabaseFiles removes a database file and its write-ahead log
-func removeDatabaseFiles(path string) {
-	os.Remove(path)
-	os.Remove(path + ".wal")
 }
 
 // sameFile reports whether a and b name the same file (a must exist)

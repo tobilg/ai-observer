@@ -97,8 +97,11 @@ function announceLogs(timestamps: number[]) {
 
 // Logs stored after the shown list was fetched (and before the user looks)
 async function announceNewLogs(n: number) {
-  await new Promise((resolve) => setTimeout(resolve, 5))
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  await act(() => vi.advanceTimersByTimeAsync(1))
   announceLogs(Array.from({ length: n }, () => Date.now()))
+  // Let the new-items debounce finish before making assertions on the count.
+  await act(() => vi.advanceTimersByTimeAsync(250))
 }
 
 describe('LogsPage', () => {

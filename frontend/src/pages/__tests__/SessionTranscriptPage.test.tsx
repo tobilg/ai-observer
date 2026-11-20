@@ -186,34 +186,44 @@ describe('SessionTranscriptPage', () => {
     expect(screen.queryByRole('button', { name: 'Load more messages' })).not.toBeInTheDocument()
   })
 
-  it('appends the messages that arrive while a session is open, without loading the others again', async () => {
+  it('refreshes edited messages, earlier insertions and search positions across loaded pages', async () => {
+    const user = userEvent.setup()
+    let messages = transcript.messages.slice(0, 3)
+    vi.mocked(api.getSessionTranscript).mockImplementation(async (_id, _options, cursor, params) => {
+      const search = params?.search
+      const start = Number(cursor ?? 0)
+      const end = start + 2
+      return {
+        ...transcript, messages: messages.slice(start, end), total: messages.length,
+        hasMore: end < messages.length, nextCursor: end < messages.length ? String(end) : undefined,
+        search: search ? { terms: [search], matches: messages.flatMap((m, i) => m.content.includes(search) ? [i] : []) } : undefined,
+      }
+    })
+    renderPage()
+    await screen.findByText('Looking into it')
+    await user.click(screen.getByRole('button', { name: 'Load more messages' }))
+    await screen.findByText('ReadFile')
+    await user.type(screen.getByRole('searchbox'), 'corrected')
+    await screen.findByText('No matches')
+
     vi.useFakeTimers({ shouldAdvanceTime: true })
     try {
-      const newMessage = { timestamp: '2026-01-02T10:06:00Z', role: 'user' as const, content: 'One more thing', index: 5 }
-      vi.mocked(api.getSessionTranscript).mockImplementation(async (_id, _options, cursor) =>
-        cursor === '5'
-          ? { ...transcript, lastTime: newMessage.timestamp, messages: [newMessage], total: 6, hasMore: false }
-          : { ...transcript, total: 5, hasMore: false }
-      )
-      const { queryClient } = renderPage()
-      await screen.findByText('Please fix the bug')
-
+      messages = messages.map((m, i) => i === 1 ? { ...m, content: 'corrected response' } : m)
       act(() => useTelemetryStore.setState({ logsUpdateCount: useTelemetryStore.getState().logsUpdateCount + 1 }))
+      await act(() => vi.advanceTimersByTimeAsync(2000))
+      await screen.findByText('Match 1 of 1')
+      expect(screen.queryByText('Looking into it')).not.toBeInTheDocument()
+      expect(screen.getByText('3 messages')).toBeInTheDocument()
+
+      const earlier = { ...messages[0], index: 10, content: 'Earlier request' }
+      const latest = { ...messages[0], index: 11, content: 'One more thing' }
+      messages = [earlier, ...messages, latest]
+      act(() => useTelemetryStore.setState({ spansUpdateCount: useTelemetryStore.getState().spansUpdateCount + 1 }))
       await act(() => vi.advanceTimersByTimeAsync(2000))
       expect(await screen.findByText('One more thing')).toBeInTheDocument()
-      expect(api.getSessionTranscript).toHaveBeenCalledTimes(2)
-      expect(api.getSessionTranscript).toHaveBeenLastCalledWith('s1', expect.objectContaining({ signal: expect.any(AbortSignal) }), '5')
-      expect(screen.getByText('6 messages')).toBeInTheDocument()
-      expect(screen.getByText('Please fix the bug')).toBeInTheDocument()
-      // The new messages are a page of the transcript query
-      expect(queryClient.getQueryData<{ pageParams: unknown[] }>(['sessions', 'transcript', 's1'])?.pageParams).toEqual([undefined, '5'])
-
-      // Nothing new: nothing appended
-      act(() => useTelemetryStore.setState({ logsUpdateCount: useTelemetryStore.getState().logsUpdateCount + 1 }))
-      vi.mocked(api.getSessionTranscript).mockResolvedValue({ ...transcript, messages: [], total: 6, hasMore: false })
-      await act(() => vi.advanceTimersByTimeAsync(2000))
-      expect(api.getSessionTranscript).toHaveBeenLastCalledWith('s1', expect.anything(), '6')
-      expect(screen.getAllByText('One more thing')).toHaveLength(1)
+      expect(screen.getByText('Earlier request')).toBeInTheDocument()
+      expect(screen.getAllByText('Please fix the bug')).toHaveLength(1)
+      expect(screen.getByText('5 messages')).toBeInTheDocument()
     } finally {
       vi.useRealTimers()
     }

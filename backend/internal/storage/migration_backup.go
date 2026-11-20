@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -66,10 +67,21 @@ func (s *DuckDBStore) backupBeforeMigration(ctx context.Context, dbPath string) 
 	if err := copyDatabaseFiles(dbPath, backup); err != nil {
 		// The file could not be read while open (Windows locks it): let
 		// DuckDB write the copy instead
-		removeDatabaseFiles(backup)
 		logger.Warn("Copying the database file failed, writing the backup with DuckDB instead", "error", err)
-		if _, copyErr := s.CopyDatabase(ctx, backup); copyErr != nil {
+		stage, stageErr := os.MkdirTemp(filepath.Dir(backup), ".ai-observer-migration-*")
+		if stageErr != nil {
+			return "", stageErr
+		}
+		defer os.RemoveAll(stage)
+		staged := filepath.Join(stage, "backup.duckdb")
+		if _, copyErr := s.CopyDatabase(ctx, staged); copyErr != nil {
 			return "", fmt.Errorf("backing up the database before migrating it: %w", errors.Join(err, copyErr))
+		}
+		if err := os.Rename(staged, backup); err != nil {
+			return "", err
+		}
+		if err := os.Remove(backup + ".wal"); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", err
 		}
 		how = "DuckDB copy"
 	}
@@ -133,17 +145,21 @@ func (s *DuckDBStore) holdsData(ctx context.Context) (bool, error) {
 }
 
 // copyDatabaseFiles copies the database file and its write-ahead log, if
-// any, to target (target.wal), each through a ".partial" file renamed when
+// any, to target (target.wal), each through a private temporary file renamed when
 // complete
 func copyDatabaseFiles(dbPath, target string) error {
 	if err := copyFileAtomic(dbPath, target); err != nil {
 		return err
 	}
-	os.Remove(target + ".wal")
-	if fi, err := os.Stat(dbPath + ".wal"); err == nil && fi.Size() > 0 {
-		if err := copyFileAtomic(dbPath+".wal", target+".wal"); err != nil {
-			return err
-		}
+	fi, err := os.Stat(dbPath + ".wal")
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err == nil && fi.Size() > 0 {
+		return copyFileAtomic(dbPath+".wal", target+".wal")
+	}
+	if err := os.Remove(target + ".wal"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	return nil
 }
@@ -156,11 +172,11 @@ func copyFileAtomic(src, dst string) error {
 		return err
 	}
 	defer in.Close()
-	partial := dst + ".partial"
-	out, err := os.OpenFile(partial, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	out, err := os.CreateTemp(filepath.Dir(dst), ".ai-observer-migration-*")
 	if err != nil {
 		return err
 	}
+	partial := out.Name()
 	_, err = io.Copy(out, in)
 	if err == nil {
 		err = out.Sync()
@@ -193,7 +209,9 @@ func removeOlderMigrationBackups(dbPath, keep string) {
 	keep = filepath.Clean(keep)
 	for _, e := range entries {
 		name := e.Name()
-		if !strings.HasPrefix(name, prefix) || e.IsDir() {
+		version, ok := strings.CutPrefix(strings.TrimSuffix(name, ".wal"), prefix)
+		n, err := strconv.ParseUint(version, 10, 64)
+		if !ok || err != nil || strconv.FormatUint(n, 10) != version || !e.Type().IsRegular() {
 			continue
 		}
 		path := filepath.Join(dir, name)

@@ -52,7 +52,8 @@ import (
 //     counts, written within milliseconds of each other. A file response
 //     counts as recorded by OTLP when an OTLP response of the same session
 //     (when both carry session.id) has the same counts of every token type
-//     within codexMatchWindow. There is no shared request ID.
+//     within codexMatchWindow. Each OTLP response matches at most one file
+//     response. There is no shared request ID.
 //   - Gemini CLI: by the session and the response's token counts. Gemini
 //     CLI writes the token counts of every response (input, output, cached,
 //     thoughts, tool) to its session file and sends them in its
@@ -335,41 +336,73 @@ func reconcileCodexUsage(ctx context.Context, w *writeTx, from, to time.Time) (i
 	window := fmt.Sprintf("INTERVAL %d MILLISECOND", codexMatchWindow.Milliseconds())
 	args := []any{formatTimeForDB(from.Add(-codexMatchWindow)), formatTimeForDB(to.Add(codexMatchWindow)), codexTokenMetric}
 	args = append(args, stringArgs(services)...)
-	args = append(args, formatTimeForDB(from), formatTimeForDB(to), codexFileService, codexTokenMetric, codexCostMetric)
-	query := `DELETE FROM otel_metrics USING (
-			WITH points AS (
-				SELECT SourceFile, Timestamp, ServiceName,
-					json_extract_string(Attributes, '$.import_source') IS NOT NULL AS from_file,
-					json_extract_string(Attributes, '$."session.id"') AS session_id,
-					json_extract_string(Attributes, '$.type') AS token_type,
-					Value
-				FROM otel_metrics
-				WHERE Timestamp BETWEEN ?::TIMESTAMP AND ?::TIMESTAMP AND MetricName = ?
-					AND ServiceName IN (` + placeholderList(len(services)) + `)
-			), responses AS (
-				SELECT SourceFile, Timestamp, ServiceName, from_file, session_id,
-					string_agg(token_type || '=' || CAST(CAST(Value AS BIGINT) AS VARCHAR), ',' ORDER BY token_type) AS fingerprint
-				FROM points
-				GROUP BY SourceFile, Timestamp, ServiceName, from_file, session_id
-			)
-			SELECT DISTINCT f.SourceFile, f.Timestamp
+	args = append(args, formatTimeForDB(from), formatTimeForDB(to), codexFileService)
+	// Remember matches on the OTLP token points themselves. The file points
+	// disappear after this transaction, so later writes cannot infer a match
+	// from their presence. rowid is used only within this transaction.
+	query := `CREATE TEMP TABLE codex_usage_matches AS
+		WITH responses AS (
+			SELECT min(rowid) AS id, SourceFile, Timestamp, ServiceName,
+				json_extract_string(Attributes, '$.import_source') IS NOT NULL AS from_file,
+				json_extract_string(Attributes, '$."session.id"') AS session_id,
+				any_value(CodexMatch) AS prior_match,
+				string_agg(json_extract_string(Attributes, '$.type') || '=' || CAST(CAST(Value AS BIGINT) AS VARCHAR),
+					',' ORDER BY json_extract_string(Attributes, '$.type')) AS fingerprint
+			FROM otel_metrics
+			WHERE Timestamp BETWEEN ?::TIMESTAMP AND ?::TIMESTAMP AND MetricName = ?
+				AND ServiceName IN (` + placeholderList(len(services)) + `)
+			GROUP BY ALL
+		), candidates AS (
+			SELECT o.id AS otlp_id, f.id AS file_id,
+				struct_pack(file_path := f.SourceFile, recorded_at := f.Timestamp, session_id := f.session_id) AS file_response,
+				o.prior_match IS NOT NULL AS already_matched,
+				o.session_id = f.session_id AS same_session,
+				abs(epoch_us(o.Timestamp) - epoch_us(f.Timestamp)) AS distance
 			FROM responses f JOIN responses o
 				ON o.fingerprint = f.fingerprint
 				AND o.Timestamp BETWEEN f.Timestamp - ` + window + ` AND f.Timestamp + ` + window + `
 				AND (o.session_id IS NULL OR f.session_id IS NULL OR o.session_id = f.session_id)
-			WHERE f.from_file AND f.Timestamp BETWEEN ?::TIMESTAMP AND ?::TIMESTAMP
+			WHERE f.from_file AND f.Timestamp BETWEEN ?::TIMESTAMP AND ?::TIMESTAMP AND f.ServiceName = ?
 				AND NOT o.from_file AND o.SourceFile IS NULL
-		) AS covered
-		WHERE otel_metrics.ServiceName = ?
-			AND otel_metrics.MetricName IN (?, ?)
-			AND otel_metrics.SourceFile IS NOT DISTINCT FROM covered.SourceFile
-			AND otel_metrics.Timestamp = covered.Timestamp
-			AND json_extract_string(otel_metrics.Attributes, '$.import_source') IS NOT NULL`
-	res, err := w.tx.ExecContext(ctx, query, args...)
-	if err != nil {
-		return 0, fmt.Errorf("removing Codex file usage recorded over OTLP: %w", err)
+				AND (o.prior_match IS NULL OR o.prior_match = file_response)
+		), choices AS (
+			SELECT * FROM candidates
+			QUALIFY row_number() OVER (PARTITION BY otlp_id ORDER BY same_session DESC NULLS LAST, distance, file_id) = 1
+		)
+		SELECT otlp_id, file_response FROM choices
+		QUALIFY row_number() OVER (PARTITION BY file_id ORDER BY already_matched DESC, same_session DESC NULLS LAST, distance, otlp_id) = 1`
+	var removed int64
+	for {
+		if _, err := w.tx.ExecContext(ctx, query, args...); err != nil {
+			return 0, fmt.Errorf("matching Codex file usage to OTLP: %w", err)
+		}
+		if _, err := w.tx.ExecContext(ctx, `UPDATE otel_metrics SET CodexMatch = m.file_response
+			FROM codex_usage_matches m WHERE otel_metrics.rowid = m.otlp_id`); err != nil {
+			return 0, fmt.Errorf("recording Codex usage matches: %w", err)
+		}
+		res, err := w.tx.ExecContext(ctx, `DELETE FROM otel_metrics USING codex_usage_matches m
+			WHERE ServiceName = ? AND MetricName IN (?, ?)
+				AND Timestamp = m.file_response.recorded_at
+				AND SourceFile IS NOT DISTINCT FROM m.file_response.file_path
+				AND json_extract_string(Attributes, '$."session.id"') IS NOT DISTINCT FROM m.file_response.session_id
+				AND json_extract_string(Attributes, '$.import_source') IS NOT NULL`, codexFileService, codexTokenMetric, codexCostMetric)
+		if err != nil {
+			return 0, fmt.Errorf("removing matched Codex file usage: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		if _, err := w.tx.ExecContext(ctx, "DROP TABLE temp.main.codex_usage_matches"); err != nil {
+			return 0, err
+		}
+		if n == 0 {
+			return removed, nil
+		}
+		// If two OTLP responses chose the same file response, the remaining
+		// one can now match another file response.
+		removed += n
 	}
-	return res.RowsAffected()
 }
 
 // reconcileGeminiUsage removes the usage points of the Gemini CLI responses

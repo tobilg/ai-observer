@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/tobilg/ai-observer/internal/tools"
 )
 
 // DeleteSummary contains counts of records that would be or were deleted
@@ -15,79 +17,46 @@ type DeleteSummary struct {
 	SpanCount   int64
 }
 
-// CountLogsInRange returns the number of logs in the given time range
+// telemetryRange selects literal stored service names. CLI filters are
+// expanded at the caller; an inventory from an export already contains names.
+func telemetryRange(from, to time.Time, services []string) conditions {
+	var where conditions
+	where.add("Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP", formatTimeForDB(from), formatTimeForDB(to))
+	if len(services) > 0 {
+		where.add("ServiceName IN ("+placeholderList(len(services))+")", stringArgs(services)...)
+	}
+	return where
+}
+
+func (s *DuckDBStore) countRowsInRange(ctx context.Context, table string, where conditions) (int64, error) {
+	var count int64
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table+where.clause("WHERE"), where.args...).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("counting %s: %w", table, err)
+	}
+	return count, nil
+}
+
+// CountLogsInRange counts logs matching the CLI service filter in the time range.
 func (s *DuckDBStore) CountLogsInRange(ctx context.Context, from, to time.Time, service string) (int64, error) {
-	fromStr := formatTimeForDB(from)
-	toStr := formatTimeForDB(to)
-
-	query := `SELECT COUNT(*) FROM otel_logs WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP`
-	args := []interface{}{fromStr, toStr}
-
-	if cond, serviceArgs := serviceCondition(service); cond != "" {
-		query += " AND " + cond
-		args = append(args, serviceArgs...)
-	}
-
-	var count int64
-	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
-		return 0, fmt.Errorf("counting logs: %w", err)
-	}
-
-	return count, nil
+	return s.countRowsInRange(ctx, "otel_logs", telemetryRange(from, to, tools.FilterServices(service)))
 }
 
-// CountMetricsInRange returns the number of metrics in the given time range
+// CountMetricsInRange counts metric points matching the CLI service filter in the time range.
 func (s *DuckDBStore) CountMetricsInRange(ctx context.Context, from, to time.Time, service string) (int64, error) {
-	fromStr := formatTimeForDB(from)
-	toStr := formatTimeForDB(to)
-
-	query := `SELECT COUNT(*) FROM otel_metrics WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP`
-	args := []interface{}{fromStr, toStr}
-
-	if cond, serviceArgs := serviceCondition(service); cond != "" {
-		query += " AND " + cond
-		args = append(args, serviceArgs...)
-	}
-
-	var count int64
-	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
-		return 0, fmt.Errorf("counting metrics: %w", err)
-	}
-
-	return count, nil
+	return s.countRowsInRange(ctx, "otel_metrics", telemetryRange(from, to, tools.FilterServices(service)))
 }
 
-// CountTracesInRange returns the number of traces and spans in the given time range
-func (s *DuckDBStore) CountTracesInRange(ctx context.Context, from, to time.Time, service string) (traces int64, spans int64, err error) {
-	fromStr := formatTimeForDB(from)
-	toStr := formatTimeForDB(to)
+// CountTracesInRange counts distinct traces and spans matching the CLI service filter in the time range.
+func (s *DuckDBStore) CountTracesInRange(ctx context.Context, from, to time.Time, service string) (traces, spans int64, err error) {
+	return s.countTraces(ctx, telemetryRange(from, to, tools.FilterServices(service)))
+}
 
-	// Count total spans
-	spanQuery := `SELECT COUNT(*) FROM otel_traces WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP`
-	args := []interface{}{fromStr, toStr}
-
-	if cond, serviceArgs := serviceCondition(service); cond != "" {
-		spanQuery += " AND " + cond
-		args = append(args, serviceArgs...)
-	}
-
-	if err := s.db.QueryRowContext(ctx, spanQuery, args...).Scan(&spans); err != nil {
-		return 0, 0, fmt.Errorf("counting spans: %w", err)
-	}
-
-	// Count distinct traces
-	traceQuery := `SELECT COUNT(DISTINCT TraceId) FROM otel_traces WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP`
-	traceArgs := []interface{}{fromStr, toStr}
-
-	if cond, serviceArgs := serviceCondition(service); cond != "" {
-		traceQuery += " AND " + cond
-		traceArgs = append(traceArgs, serviceArgs...)
-	}
-
-	if err := s.db.QueryRowContext(ctx, traceQuery, traceArgs...).Scan(&traces); err != nil {
+func (s *DuckDBStore) countTraces(ctx context.Context, where conditions) (traces, spans int64, err error) {
+	err = s.db.QueryRowContext(ctx, "SELECT COUNT(DISTINCT TraceId), COUNT(*) FROM otel_traces"+where.clause("WHERE"), where.args...).Scan(&traces, &spans)
+	if err != nil {
 		return 0, 0, fmt.Errorf("counting traces: %w", err)
 	}
-
 	return traces, spans, nil
 }
 
@@ -110,21 +79,15 @@ func (s *DuckDBStore) deleteTableInRange(ctx context.Context, table, what string
 	var count int64
 	err := s.inWriteTx(ctx, func(w *writeTx) error {
 		var err error
-		count, err = deleteInRange(ctx, w.tx, table, what, from, to, service)
+		count, err = deleteInRange(ctx, w.tx, table, what, from, to, telemetryRange(from, to, tools.FilterServices(service)))
 		return err
 	})
 	return count, err
 }
 
-// deleteInRange deletes the rows of table in the time range, optionally of
-// one service filter (serviceCondition)
-func deleteInRange(ctx context.Context, execer execContexter, table, what string, from, to time.Time, service string) (int64, error) {
-	where := ` WHERE Timestamp >= ?::TIMESTAMP AND Timestamp <= ?::TIMESTAMP`
-	args := []interface{}{formatTimeForDB(from), formatTimeForDB(to)}
-	if cond, serviceArgs := serviceCondition(service); cond != "" {
-		where += " AND " + cond
-		args = append(args, serviceArgs...)
-	}
+// deleteInRange keeps the baseline for cumulative metrics before removing rows.
+func deleteInRange(ctx context.Context, execer execContexter, table, what string, from, to time.Time, selection conditions) (int64, error) {
+	where, args := selection.clause("WHERE"), selection.args
 
 	if table == "otel_metrics" {
 		if err := keepCumulativeBaselines(ctx, execer, where, args, from, to); err != nil {
@@ -206,17 +169,21 @@ func (s *DuckDBStore) OldestTimestamp(ctx context.Context) (oldest time.Time, ok
 
 // CountAllInRange returns a summary of all record counts in the given time range
 func (s *DuckDBStore) CountAllInRange(ctx context.Context, from, to time.Time, service string) (*DeleteSummary, error) {
-	logCount, err := s.CountLogsInRange(ctx, from, to, service)
+	return s.countAllInRange(ctx, telemetryRange(from, to, tools.FilterServices(service)))
+}
+
+func (s *DuckDBStore) countAllInRange(ctx context.Context, where conditions) (*DeleteSummary, error) {
+	logCount, err := s.countRowsInRange(ctx, "otel_logs", where)
 	if err != nil {
 		return nil, err
 	}
 
-	metricCount, err := s.CountMetricsInRange(ctx, from, to, service)
+	metricCount, err := s.countRowsInRange(ctx, "otel_metrics", where)
 	if err != nil {
 		return nil, err
 	}
 
-	traceCount, spanCount, err := s.CountTracesInRange(ctx, from, to, service)
+	traceCount, spanCount, err := s.countTraces(ctx, where)
 	if err != nil {
 		return nil, err
 	}
@@ -245,15 +212,19 @@ func (s *DuckDBStore) DeleteAllInRange(ctx context.Context, from, to time.Time, 
 }
 
 func deleteAllInRange(ctx context.Context, w *writeTx, from, to time.Time, service string) (*DeleteSummary, error) {
+	return deleteSelectedRange(ctx, w, from, to, telemetryRange(from, to, tools.FilterServices(service)))
+}
+
+func deleteSelectedRange(ctx context.Context, w *writeTx, from, to time.Time, where conditions) (*DeleteSummary, error) {
 	summary := &DeleteSummary{}
 	var err error
-	if summary.LogCount, err = deleteInRange(ctx, w.tx, "otel_logs", "logs", from, to, service); err != nil {
+	if summary.LogCount, err = deleteInRange(ctx, w.tx, "otel_logs", "logs", from, to, where); err != nil {
 		return nil, err
 	}
-	if summary.MetricCount, err = deleteInRange(ctx, w.tx, "otel_metrics", "metrics", from, to, service); err != nil {
+	if summary.MetricCount, err = deleteInRange(ctx, w.tx, "otel_metrics", "metrics", from, to, where); err != nil {
 		return nil, err
 	}
-	if summary.SpanCount, err = deleteInRange(ctx, w.tx, "otel_traces", "traces", from, to, service); err != nil {
+	if summary.SpanCount, err = deleteInRange(ctx, w.tx, "otel_traces", "traces", from, to, where); err != nil {
 		return nil, err
 	}
 	return summary, nil

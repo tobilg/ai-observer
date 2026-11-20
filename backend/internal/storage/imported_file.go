@@ -87,18 +87,23 @@ func insertImportedFileTx(ctx context.Context, w *writeTx, logs []api.LogRecord,
 // deleteFileRecords deletes the selected logs, metrics and spans read from
 // the session file at path
 func deleteFileRecords(ctx context.Context, execer execContexter, path string, sel FileRecords) error {
+	// A rewritten file may give a response another timestamp. Release its
+	// matches in exactly the portion that will be rebuilt.
+	r := TimeRange{}
+	if sel.From != nil {
+		r.From = *sel.From
+	}
+	if sel.To != nil {
+		r.To = *sel.To
+	}
+	bounds, args := r.filter("CodexMatch.recorded_at")
+	if _, err := execer.ExecContext(ctx, "UPDATE otel_metrics SET CodexMatch = NULL WHERE CodexMatch.file_path = ?"+bounds, append([]any{path}, args...)...); err != nil {
+		return fmt.Errorf("clearing Codex usage matches for %s: %w", path, err)
+	}
+	bounds, args = r.filter("Timestamp")
+	args = append([]any{path}, args...)
 	for _, table := range []string{"otel_logs", "otel_metrics", "otel_traces"} {
-		query := "DELETE FROM " + table + " WHERE SourceFile = ?"
-		args := []any{path}
-		if sel.From != nil {
-			query += " AND Timestamp >= ?::TIMESTAMP"
-			args = append(args, formatTimeForDB(*sel.From))
-		}
-		if sel.To != nil {
-			query += " AND Timestamp <= ?::TIMESTAMP"
-			args = append(args, formatTimeForDB(*sel.To))
-		}
-		if _, err := execer.ExecContext(ctx, query, args...); err != nil {
+		if _, err := execer.ExecContext(ctx, "DELETE FROM "+table+" WHERE SourceFile = ?"+bounds, args...); err != nil {
 			return fmt.Errorf("deleting records of %s from %s: %w", path, table, err)
 		}
 	}

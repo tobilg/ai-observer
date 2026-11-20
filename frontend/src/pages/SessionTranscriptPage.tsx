@@ -1,6 +1,5 @@
 import { createElement, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, ChevronDown, ChevronUp, Clock, MessageSquare, RefreshCw, Search } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -17,19 +16,15 @@ import { ListSkeleton } from '@/components/common/list-skeleton'
 import { QueryError } from '@/components/common/query-error'
 import { ChatBubbleView } from '@/components/sessions/ChatBubbleView'
 import { TimelineView } from '@/components/sessions/TimelineView'
-import { api } from '@/lib/api'
-import { errorText, isAbortError, isTimeoutError } from '@/lib/errors'
+import { errorText, isTimeoutError } from '@/lib/errors'
 import { formatCost, formatCount, formatTimeSpan, formatTokens } from '@/lib/format'
 import { queryKeys, useSessionTranscript, useTranscriptSearch } from '@/lib/queries'
 import {
-  appendTranscriptPage,
   countRoles,
   DEFAULT_TRANSCRIPT_FILTERS,
   filterTranscript,
-  loadedMessageCount,
   passesFilters,
   transcriptMessages,
-  type TranscriptData,
   type TranscriptFilters,
 } from '@/lib/transcript'
 import { formatTimestamp, cn } from '@/lib/utils'
@@ -37,7 +32,7 @@ import { getServiceIcon } from '@/lib/metricMetadata'
 import { useBackLink } from '@/hooks/useBackLink'
 import { useDebounce } from '@/hooks/useDebounce'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
-import { useLiveRefresh } from '@/hooks/useLiveRefresh'
+import { useLiveInvalidate } from '@/hooks/useLiveInvalidate'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { useServiceNames } from '@/hooks/useServiceNames'
 import { useTelemetryStore } from '@/stores/telemetryStore'
@@ -106,7 +101,6 @@ interface SessionTranscriptProps {
 }
 
 function SessionTranscript({ sessionId, backButton, viewMode, onViewModeChange }: SessionTranscriptProps) {
-  const queryClient = useQueryClient()
   const { displayName } = useServiceNames()
   const [filters, setFilters] = useLocalStorage<TranscriptFilters>(TRANSCRIPT_FILTERS_STORAGE_KEY, DEFAULT_TRANSCRIPT_FILTERS)
 
@@ -168,49 +162,27 @@ function SessionTranscript({ sessionId, backButton, viewMode, onViewModeChange }
   // list pages before it asks.
   const logsUpdateCount = useTelemetryStore((state) => state.logsUpdateCount)
   const spansUpdateCount = useTelemetryStore((state) => state.spansUpdateCount)
-  const refreshKey = useLiveRefresh({
+  // A late record can change a loaded message or shift its search position.
+  // Refetch the loaded pages in order so their cursors follow the current
+  // transcript. React Query keeps the previous pages visible during refresh.
+  useLiveInvalidate({
+    queryKey: [queryKeys.sessions.transcript(sessionId), queryKeys.sessions.transcriptSearch(sessionId, search)],
     enabled: true,
     intervalMs: 15_000,
+    cancelRefetch: false,
     updateCount: logsUpdateCount + spansUpdateCount,
     debounceMs: 2000,
     maxWaitMs: 10_000,
   })
-  const liveRef = useRef({ data: query.data, hasNextPage, isFetching: query.isFetching, search })
-  useEffect(() => {
-    liveRef.current = { data: query.data, hasNextPage, isFetching: query.isFetching, search }
-  })
 
+  // If the reader was caught up, a live append crossing a page boundary
+  // should appear without another click.
+  const wasCaughtUp = useRef(false)
   useEffect(() => {
-    const { data, hasNextPage: more, isFetching, search: currentSearch } = liveRef.current
-    // With further pages to load, new messages come with the last of them;
-    // a request in flight brings them too
-    if (refreshKey === 0 || !data || more || isFetching) {
-      return
-    }
-    // Ask for the messages after the loaded ones and append them as a page,
-    // instead of refetching every page of a long session
-    const cursor = String(loadedMessageCount(data))
-    const controller = new AbortController()
-    api.getSessionTranscript(sessionId, { signal: controller.signal }, cursor)
-      .then((page) => {
-        if (controller.signal.aborted || page.messages.length === 0) {
-          return
-        }
-        queryClient.setQueryData<TranscriptData>(queryKeys.sessions.transcript(sessionId), (old) =>
-          appendTranscriptPage(old, page, cursor),
-        )
-        if (currentSearch) {
-          // The new messages may match
-          void queryClient.invalidateQueries({ queryKey: queryKeys.sessions.transcriptSearch(sessionId, currentSearch) })
-        }
-      })
-      .catch((err) => {
-        if (!isAbortError(err)) {
-          console.error('Failed to refresh transcript:', err) // the next refresh tries again
-        }
-      })
-    return () => controller.abort()
-  }, [refreshKey, sessionId, queryClient])
+    if (!last) return
+    if (wasCaughtUp.current && hasNextPage) void fetchNextPage({ cancelRefetch: false })
+    wasCaughtUp.current = !hasNextPage
+  }, [last, hasNextPage, fetchNextPage])
 
   // ---- Filters ----
   const loadedCounts = useMemo(() => countRoles(messages), [messages])

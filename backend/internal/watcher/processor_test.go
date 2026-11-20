@@ -227,18 +227,12 @@ func TestWatcherDoesNotProcessSameFileConcurrently(t *testing.T) {
 	w.scheduleProcess(path, w.tools[0])
 	<-parser.started
 
-	// Two more events while the first run is blocked
+	// Two more events while the first run is blocked.
 	w.scheduleProcess(path, w.tools[0])
-	time.Sleep(10 * time.Millisecond)
 	w.scheduleProcess(path, w.tools[0])
-	time.Sleep(10 * time.Millisecond)
-
 	close(parser.release)
-	deadline := time.Now().Add(2 * time.Second)
-	for parser.calls.Load() < 2 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	time.Sleep(20 * time.Millisecond) // no further runs may follow
+	w.processingWg.Wait()
+
 	w.Stop()
 
 	if got := parser.maxSeen.Load(); got != 1 {

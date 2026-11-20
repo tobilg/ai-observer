@@ -283,13 +283,18 @@ func TestRestoreOlderExport(t *testing.T) {
 	source := openStore(t, "source.duckdb")
 	fillSource(t, source)
 	dir := export(t, source, exporter.Options{})
+	manifest, _, err := exporter.ReadManifest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range []string{exporter.ManifestFile, exporter.DashboardsFile, exporter.BaselinesFile, exporter.ImportStateFile} {
-		if err := os.Remove(filepath.Join(dir, name)); err != nil {
+		path := filepath.Join(dir, name)
+		if err := os.Rename(path, path+".saved"); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for name, exclude := range map[string]string{
-		exporter.LogsFile: "SessionId, SessionIds, SourceFile", exporter.TracesFile: "SessionId, SessionIds, SourceFile", exporter.MetricsFile: "SourceFile",
+		exporter.LogsFile: "SessionId, SessionIds, SourceFile", exporter.TracesFile: "SessionId, SessionIds, SourceFile", exporter.MetricsFile: "SourceFile, CodexMatch",
 	} {
 		file := filepath.Join(dir, name)
 		old := file + ".old"
@@ -321,6 +326,30 @@ func TestRestoreOlderExport(t *testing.T) {
 	if got["table dashboards"] != "0 rows" {
 		t.Error("dashboards restored from an export without them")
 	}
+	// Format 1 added the manifest, dashboards and metric baselines.
+	for _, name := range []string{exporter.DashboardsFile, exporter.BaselinesFile} {
+		path := filepath.Join(dir, name)
+		if err := os.Rename(path+".saved", path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifest.Format = 1
+	delete(manifest.Rows, exporter.ImportStateFile)
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, exporter.ManifestFile), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	formatOne := openStore(t, "format1.duckdb")
+	if _, err := restore(t, formatOne, dir, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := tableDigest(t, formatOne, "dashboards"); got != tableDigest(t, source, "dashboards") {
+		t.Fatal("format 1 dashboards differ after restore")
+	}
+
 }
 
 // Restoring into a database that holds records of the export's services in
@@ -416,7 +445,7 @@ func TestRestoreRejectsOtherInput(t *testing.T) {
 	target := openStore(t, "target.duckdb")
 	ctx := context.Background()
 	empty := t.TempDir()
-	if err := Run(ctx, target, Options{Path: empty, SkipConfirm: true, Out: &bytes.Buffer{}}); err == nil || !strings.Contains(err.Error(), "no export") {
+	if err := Run(ctx, target, Options{Path: empty, SkipConfirm: true, Out: &bytes.Buffer{}}); err == nil || !strings.Contains(err.Error(), "incomplete export") {
 		t.Errorf("restore of an empty directory: %v", err)
 	}
 	db := filepath.Join(empty, "backup.duckdb")
@@ -456,5 +485,92 @@ func TestExtractExportIgnoresOtherEntries(t *testing.T) {
 	entries, _ := os.ReadDir(target)
 	if len(entries) != 1 || entries[0].Name() != exporter.LogsFile {
 		t.Errorf("extracted %v", entries)
+	}
+}
+
+func TestReplaceValidatesExportBeforeDeleting(t *testing.T) {
+	src := openStore(t, "source.duckdb")
+	fillSource(t, src)
+	dir := export(t, src, exporter.Options{})
+	dst := openStore(t, "target.duckdb")
+	if _, err := restore(t, dst, dir, false); err != nil {
+		t.Fatal(err)
+	}
+	before := tableDigest(t, dst, "otel_metrics")
+	checkRejected := func(t *testing.T, name string) {
+		t.Helper()
+		if _, err := restore(t, dst, dir, true); err == nil || !strings.Contains(err.Error(), name) {
+			t.Fatalf("incomplete export: got %v, want an error naming %s", err, name)
+		}
+		if got := tableDigest(t, dst, "otel_metrics"); got != before {
+			t.Fatal("replace changed the existing metrics")
+		}
+	}
+	for _, name := range exportFiles {
+		path := filepath.Join(dir, name)
+		t.Run("missing "+name, func(t *testing.T) {
+			if err := os.Rename(path, path+".saved"); err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := os.Rename(path+".saved", path); err != nil {
+					t.Fatal(err)
+				}
+			}()
+			checkRejected(t, name)
+		})
+	}
+	m, _, err := exporter.ReadManifest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Rows[exporter.MetricsFile]++
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, exporter.ManifestFile), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	checkRejected(t, exporter.MetricsFile)
+	// An interrupted format 2 export may look like a legacy directory
+	// if only the three signal files have been written so far.
+	for _, name := range []string{exporter.ManifestFile, exporter.BaselinesFile, exporter.DashboardsFile, exporter.ImportStateFile} {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	checkRejected(t, exporter.ManifestFile)
+
+}
+
+func TestRestoreUsesLiteralServiceNames(t *testing.T) {
+	ctx := context.Background()
+	src := openStore(t, "source.duckdb")
+	if err := src.InsertLogs(ctx, []api.LogRecord{
+		{ServiceName: "codex", Timestamp: base},
+		{ServiceName: "codex", Timestamp: base.Add(time.Minute)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dir := export(t, src, exporter.Options{})
+	dst := openStore(t, "target.duckdb")
+	if err := dst.InsertLogs(ctx, []api.LogRecord{{ServiceName: "codex-app-server", Timestamp: base}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restore(t, dst, dir, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restore(t, dst, dir, false); !errors.Is(err, ErrConflict) {
+		t.Fatalf("repeat restore: got %v, want ErrConflict", err)
+	}
+	if _, err := restore(t, dst, dir, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := countRows(t, dst, "SELECT COUNT(*) FROM otel_logs WHERE ServiceName='codex'"); got != 2 {
+		t.Errorf("codex logs = %d, want 2", got)
+	}
+	if got := countRows(t, dst, "SELECT COUNT(*) FROM otel_logs WHERE ServiceName='codex-app-server'"); got != 1 {
+		t.Errorf("unrelated service logs = %d, want 1", got)
 	}
 }

@@ -80,14 +80,14 @@ func Run(ctx context.Context, store Store, opts Options) error {
 		return err
 	}
 	files.PathMap = opts.PathMap
-	if hasManifest && manifest.Format > exporter.ManifestFormat {
-		return fmt.Errorf("the export was written by a newer AI Observer (%s, export format %d): update AI Observer to restore it",
-			manifest.Version, manifest.Format)
-	}
-
 	inv, err := store.InspectRestore(ctx, files)
 	if err != nil {
 		return err
+	}
+	if hasManifest {
+		if err := validateManifestRows(manifest, inv, len(files.Dashboards)); err != nil {
+			return err
+		}
 	}
 	if inv.Empty() && len(files.Dashboards) == 0 {
 		fmt.Fprintln(out, "The export holds no telemetry and no dashboards: nothing to restore.")
@@ -207,27 +207,82 @@ func extractFile(f *zip.File, target string) error {
 
 // readExport finds the files of the export in dir
 func readExport(dir string) (files storage.RestoreFiles, m exporter.Manifest, hasManifest bool, err error) {
-	present := func(name string) string {
-		p := filepath.Join(dir, name)
-		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
-			return p
-		}
-		return ""
-	}
-	files.Traces = present(exporter.TracesFile)
-	files.Logs = present(exporter.LogsFile)
-	files.Metrics = present(exporter.MetricsFile)
-	files.Baselines = present(exporter.BaselinesFile)
-	files.ImportState = present(exporter.ImportStateFile)
-	if files.Traces == "" && files.Logs == "" && files.Metrics == "" {
-		return files, m, false, fmt.Errorf("no export in %s: expected %s, %s and %s (written by ai-observer export)",
-			dir, exporter.TracesFile, exporter.LogsFile, exporter.MetricsFile)
-	}
-	if files.Dashboards, _, err = exporter.ReadDashboards(dir); err != nil {
-		return files, m, false, err
-	}
 	m, hasManifest, err = exporter.ReadManifest(dir)
-	return files, m, hasManifest, err
+	if err != nil {
+		return
+	}
+	if hasManifest && m.Format > exporter.ManifestFormat {
+		return files, m, true, fmt.Errorf("the export was written by a newer AI Observer (%s, export format %d): update AI Observer to restore it", m.Version, m.Format)
+	}
+	if hasManifest && m.Format < 1 {
+		return files, m, true, fmt.Errorf("invalid export format %d", m.Format)
+	}
+	required := func(name string) (string, error) {
+		p := filepath.Join(dir, name)
+		fi, err := os.Stat(p)
+		if err != nil {
+			return "", fmt.Errorf("incomplete export: reading %s: %w", name, err)
+		}
+		if !fi.Mode().IsRegular() {
+			return "", fmt.Errorf("invalid export file %s", name)
+		}
+		return p, nil
+	}
+	for _, f := range []struct {
+		name string
+		dest *string
+	}{
+		{exporter.TracesFile, &files.Traces}, {exporter.LogsFile, &files.Logs}, {exporter.MetricsFile, &files.Metrics},
+	} {
+		if *f.dest, err = required(f.name); err != nil {
+			return
+		}
+	}
+	if !hasManifest {
+		// A legacy export has only the three signal files and the views database.
+		for _, name := range []string{exporter.BaselinesFile, exporter.ImportStateFile, exporter.DashboardsFile} {
+			if _, statErr := os.Stat(filepath.Join(dir, name)); !errors.Is(statErr, os.ErrNotExist) {
+				return files, m, false, fmt.Errorf("export containing %s requires %s", name, exporter.ManifestFile)
+			}
+		}
+		return
+	}
+	if files.Baselines, err = required(exporter.BaselinesFile); err != nil {
+		return
+	}
+	if m.Format >= 2 {
+		if files.ImportState, err = required(exporter.ImportStateFile); err != nil {
+			return
+		}
+	}
+	var ok bool
+	if files.Dashboards, ok, err = exporter.ReadDashboards(dir); err == nil && !ok {
+		err = fmt.Errorf("incomplete export: missing %s", exporter.DashboardsFile)
+	}
+	return
+}
+
+// validateManifestRows compares the files actually read with the completed
+// export's inventory before replacement is offered.
+func validateManifestRows(m exporter.Manifest, inv *storage.RestoreInventory, dashboards int) error {
+	counts := map[string]int64{
+		exporter.TracesFile: inv.Rows["otel_traces"], exporter.LogsFile: inv.Rows["otel_logs"],
+		exporter.MetricsFile: inv.Rows["otel_metrics"], exporter.BaselinesFile: inv.Rows["metric_baselines"],
+		exporter.DashboardsFile: int64(dashboards),
+	}
+	if m.Format >= 2 {
+		counts[exporter.ImportStateFile] = inv.Rows["import_state"]
+	}
+	for name, got := range counts {
+		want, ok := m.Rows[name]
+		if !ok {
+			return fmt.Errorf("export manifest lacks a row count for %s", name)
+		}
+		if got != want {
+			return fmt.Errorf("incomplete export: %s has %d rows, manifest specifies %d", name, got, want)
+		}
+	}
+	return nil
 }
 
 func printPreview(out io.Writer, opts Options, store Store, inv *storage.RestoreInventory, files storage.RestoreFiles,

@@ -12,27 +12,6 @@ export function transcriptMessages(data: TranscriptData | undefined): Transcript
   return data?.pages.flatMap((page) => page.messages ?? []) ?? []
 }
 
-export function loadedMessageCount(data: TranscriptData | undefined): number {
-  return data?.pages.reduce((n, page) => n + (page.messages?.length ?? 0), 0) ?? 0
-}
-
-/**
- * The transcript with page, the messages after the loaded ones (cursor:
- * their count), appended as a page of its own, so the loaded pages are not
- * requested again. Unchanged when the loaded messages changed meanwhile
- * (another page arrived, or the query was reset).
- */
-export function appendTranscriptPage(
-  data: TranscriptData | undefined,
-  page: TranscriptResponse,
-  cursor: string,
-): TranscriptData | undefined {
-  if (!data || page.messages.length === 0 || String(loadedMessageCount(data)) !== cursor) {
-    return data
-  }
-  return { pages: [...data.pages, page], pageParams: [...data.pageParams, cursor] }
-}
-
 export interface TranscriptFilters {
   showUser: boolean
   showAssistant: boolean

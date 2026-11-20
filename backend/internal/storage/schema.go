@@ -480,6 +480,13 @@ var migrations = []migration{
 		name:    "message keys",
 		stmts:   []string{`ALTER TABLE otel_logs ADD COLUMN IF NOT EXISTS MessageKey VARCHAR`},
 	},
+	{
+		// A matched OTLP response can replace one file response, including
+		// across later watcher batches and process restarts.
+		version: 14,
+		name:    "Codex usage matches",
+		stmts:   []string{`ALTER TABLE otel_metrics ADD COLUMN IF NOT EXISTS CodexMatch STRUCT(file_path VARCHAR, recorded_at TIMESTAMP, session_id VARCHAR)`},
+	},
 }
 
 // migration9SentID is the ID that was sent for an ID expr of size bytes,

@@ -1,11 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
-  appendTranscriptPage,
   countRoles,
   DEFAULT_TRANSCRIPT_FILTERS,
   filterTranscript,
   isMetadataOnlyAssistant,
-  loadedMessageCount,
   prettyJSON,
   transcriptMessages,
   type TranscriptData,
@@ -28,21 +26,7 @@ describe('transcript', () => {
 
   it('reads the loaded messages of all pages in order', () => {
     expect(transcriptMessages(data).map((m) => m.index)).toEqual([0, 1, 2])
-    expect(loadedMessageCount(data)).toBe(3)
     expect(transcriptMessages(undefined)).toEqual([])
-  })
-
-  it('appends the messages after the loaded ones as a page', () => {
-    const next = appendTranscriptPage(data, page([msg(3, 'user')]), '3')!
-    expect(next.pages).toHaveLength(3)
-    expect(next.pageParams).toEqual([undefined, '2', '3'])
-    expect(transcriptMessages(next).map((m) => m.index)).toEqual([0, 1, 2, 3])
-  })
-
-  it('appends nothing when nothing is new, or the loaded messages changed meanwhile', () => {
-    expect(appendTranscriptPage(data, page([]), '3')).toBe(data)
-    expect(appendTranscriptPage(data, page([msg(3, 'user')]), '2')).toBe(data)
-    expect(appendTranscriptPage(undefined, page([msg(3, 'user')]), '0')).toBeUndefined()
   })
 
   it('filters by role and keeps the positions in the transcript', () => {

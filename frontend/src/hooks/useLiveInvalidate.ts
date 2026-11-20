@@ -11,6 +11,8 @@ interface UseLiveInvalidateOptions {
   intervalMs: number
   // Counter of real-time notifications for the shown data (telemetryStore)
   updateCount: number
+  // Let long multi-page refetches finish while new notifications arrive.
+  cancelRefetch?: boolean
   debounceMs?: number
   maxWaitMs?: number
 }
@@ -34,7 +36,7 @@ function keyList(queryKey: QueryKey | QueryKey[]): QueryKey[] {
  *     updateCount: useTelemetryStore((s) => s.logsUpdateCount),
  *   })
  */
-export function useLiveInvalidate({ queryKey, enabled, intervalMs, updateCount, debounceMs, maxWaitMs }: UseLiveInvalidateOptions): void {
+export function useLiveInvalidate({ queryKey, enabled, intervalMs, updateCount, debounceMs, maxWaitMs, cancelRefetch = true }: UseLiveInvalidateOptions): void {
   const queryClient = useQueryClient()
   const refreshKey = useLiveRefresh({ enabled, intervalMs, updateCount, debounceMs, maxWaitMs })
 
@@ -49,7 +51,7 @@ export function useLiveInvalidate({ queryKey, enabled, intervalMs, updateCount, 
       return // nothing to catch up on yet
     }
     for (const key of keysRef.current) {
-      void queryClient.invalidateQueries({ queryKey: key })
+      void queryClient.invalidateQueries({ queryKey: key }, { cancelRefetch })
     }
-  }, [refreshKey, queryClient])
+  }, [refreshKey, queryClient, cancelRefetch])
 }

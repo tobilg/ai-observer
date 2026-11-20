@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -327,5 +328,38 @@ func TestGrowthPerDay(t *testing.T) {
 	}
 	if got := GrowthPerDay(700e6, time.Time{}, start); got != 0 {
 		t.Errorf("GrowthPerDay without records = %d, want 0", got)
+	}
+}
+
+func TestCopyDatabasePreservesUnrelatedFiles(t *testing.T) {
+	store, _ := fileStore(t, "source.duckdb")
+	target := filepath.Join(t.TempDir(), "copy.duckdb")
+	for _, suffix := range []string{".partial", ".partial.wal"} {
+		if err := os.WriteFile(target+suffix, []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.CopyDatabase(context.Background(), target); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{".partial", ".partial.wal"} {
+		if data, err := os.ReadFile(target + suffix); err != nil || string(data) != "keep" {
+			t.Errorf("file %s changed: %q, %v", suffix, data, err)
+		}
+	}
+	checkPrivateBackup(t, target)
+}
+
+func checkPrivateBackup(t *testing.T, path string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		t.Errorf("backup %s has permissions %o", path, perm)
 	}
 }

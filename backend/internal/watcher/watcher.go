@@ -239,6 +239,13 @@ func (w *Watcher) scheduleProcess(filePath string, tw *ToolWatcher) {
 		return
 	}
 
+	// The active reader will recheck its offset once when it finishes.
+	// Record the event now so a delayed timer cannot trigger a third read.
+	if _, active := w.running[filePath]; active {
+		w.running[filePath] = true
+		return
+	}
+
 	// Cancel existing timer for this file
 	if timer, ok := w.timers[filePath]; ok {
 		timer.Stop()
@@ -248,9 +255,11 @@ func (w *Watcher) scheduleProcess(filePath string, tw *ToolWatcher) {
 	var timer *time.Timer
 	timer = time.AfterFunc(time.Duration(tw.debounceMs)*time.Millisecond, func() {
 		w.timersMu.Lock()
-		if w.timers[filePath] == timer {
-			delete(w.timers, filePath)
+		if w.timers[filePath] != timer {
+			w.timersMu.Unlock()
+			return
 		}
+		delete(w.timers, filePath)
 		w.timersMu.Unlock()
 		w.processExclusive(filePath)
 	})
