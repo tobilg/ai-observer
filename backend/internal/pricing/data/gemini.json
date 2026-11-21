@@ -1,7 +1,7 @@
 {
   "provider": "google",
   "source": "https://models.dev (models.dev contributors, MIT License)",
-  "lastUpdated": "2026-11-05T00:00:00Z",
+  "lastUpdated": "2026-11-21T00:00:00Z",
   "models": {
     "gemini-4-argon": {
       "inputCostPerMTok": 2,
@@ -205,6 +205,21 @@
         "outputCostPerMTok": 18,
         "cacheReadCostPerMTok": 0.4
       }
+    },
+    "gemini-4-carbon": {
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 10,
+      "cacheReadCostPerMTok": 0.1
+    },
+    "gemini-4-hydrogen": {
+      "inputCostPerMTok": 1.5,
+      "outputCostPerMTok": 7.5,
+      "cacheReadCostPerMTok": 0.075
+    },
+    "gemini-4-neon": {
+      "inputCostPerMTok": 3,
+      "outputCostPerMTok": 15,
+      "cacheReadCostPerMTok": 0.15
     }
   }
 }

@@ -546,7 +546,7 @@ func mergeRestoredBaselines(ctx context.Context, w *writeTx, file string, redact
 	}
 	var n int64
 	if file != "" {
-		// Exports of versions before migration 12 have no histogram columns
+		// Exports of versions before migration 9 have no histogram columns
 		cols, err := parquetColumnsTx(ctx, w, file)
 		if err != nil {
 			return 0, err

@@ -1,7 +1,7 @@
 {
   "provider": "openai",
   "source": "https://models.dev (models.dev contributors, MIT License)",
-  "lastUpdated": "2026-11-05T00:00:00Z",
+  "lastUpdated": "2026-11-21T00:00:00Z",
   "models": {
     "gpt-6-astra": {
       "inputCostPerMTok": 10,
@@ -529,6 +529,32 @@
       "outputCostPerMTok": 75,
       "cacheReadCostPerMTok": 1.25,
       "cacheWriteCostPerMTok": 15.625
+    },
+    "gpt-6.2-astra": {
+      "inputCostPerMTok": 8,
+      "outputCostPerMTok": 40,
+      "cacheReadCostPerMTok": 0.4,
+      "cacheWriteCostPerMTok": 10,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 16,
+        "outputCostPerMTok": 60,
+        "cacheReadCostPerMTok": 0.8,
+        "cacheWriteCostPerMTok": 20
+      }
+    },
+    "gpt-6.2-sol": {
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 10,
+      "cacheReadCostPerMTok": 0.1,
+      "cacheWriteCostPerMTok": 2.5,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 4,
+        "outputCostPerMTok": 15,
+        "cacheReadCostPerMTok": 0.2,
+        "cacheWriteCostPerMTok": 5
+      }
     }
   }
 }

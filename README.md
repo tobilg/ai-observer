@@ -1485,9 +1485,9 @@ GitHub Actions automatically:
 4. Merge to `main`, then tag it:
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
-make release-notes TAG=v1.0.0   # after the release exists: adds generated notes
+git tag v0.8.0
+git push origin v0.8.0
+make release-notes TAG=v0.8.0   # after the release exists: adds generated notes
 ```
 
 ## Troubleshooting

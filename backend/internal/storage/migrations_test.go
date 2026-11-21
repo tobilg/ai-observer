@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"maps"
 	"path/filepath"
 	"slices"
@@ -311,7 +312,7 @@ func TestHexIDMigration(t *testing.T) {
 	}
 }
 
-// Migration 10 drops the "tool" tokens (Codex's total), names the imported
+// Migration 9 drops the "tool" tokens (Codex's total), names the imported
 // cache types like OTLP, and derives the usage of the codex.sse_event logs
 // stored for codex-app-server, which it deletes.
 func TestCodexTokenTypesMigration(t *testing.T) {
@@ -411,5 +412,74 @@ func TestCodexTokenTypesMigration(t *testing.T) {
 	}
 	if names, err := store.GetMetricNames(ctx, "codex-app-server"); err != nil || strings.Join(names, ",") != "codex_cli_rs.cost.usage,codex_cli_rs.token.usage" {
 		t.Errorf("metric names of codex-app-server = %v (%v)", names, err)
+	}
+}
+
+// The development builds between 0.7.0 and 0.8.0 wrote a different entry
+// for version 9, followed by up to five more entries.
+func TestReleaseMigrationFromPreview(t *testing.T) {
+	ctx := context.Background()
+	for preview := 9; preview <= 14; preview++ {
+		t.Run(fmt.Sprintf("v%d", preview), func(t *testing.T) {
+			path := legacyDatabase(t)
+			db, err := sql.Open("duckdb", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			for _, stmt := range []string{schemaMetrics, schemaMetricNames, schemaImportState} {
+				if _, err := db.Exec(stmt); err != nil {
+					t.Fatal(err)
+				}
+			}
+			store := &DuckDBStore{db: db}
+			if err := store.migrate(ctx, migrations[:8]); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(`INSERT INTO schema_migrations
+				SELECT n, CASE WHEN n = 9 THEN 'hex trace and span ids' ELSE 'preview' END, now()
+				FROM range(9, ?) AS t(n)`, preview+1); err != nil {
+				t.Fatal(err)
+			}
+			// A stored event distinguishes a pending Codex repair from one
+			// that already ran. Reopening must never process it a second time.
+			if _, err := db.Exec(`INSERT INTO otel_logs (Timestamp, ServiceName, LogAttributes)
+				VALUES (now(), 'codex-app-server', '{"event.name":"codex.sse_event"}')`); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			store, err = NewDuckDBStore(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			backup, err := sql.Open("duckdb", MigrationBackupPath(path, preview)+"?access_mode=read_only")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer backup.Close()
+			var original int
+			if err := backup.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&original); err != nil || original != preview {
+				t.Fatalf("backup schema = %d (%v), want %d", original, err, preview)
+			}
+			if got := countRows(t, store, `SELECT COUNT(*) FROM schema_migrations`); got != len(migrations) {
+				t.Fatalf("release ledger has %d entries, want %d", got, len(migrations))
+			}
+			if got := countRows(t, store, `SELECT COUNT(*) FROM schema_migrations WHERE version = 9 AND name = '0.8.0 telemetry repairs and schema updates'`); got != 1 {
+				t.Fatal("missing release migration 9")
+			}
+			if got := countRows(t, store, `SELECT COUNT(*) FROM duckdb_columns()
+				WHERE (table_name = 'otel_logs' AND column_name = 'MessageKey')
+					OR (table_name = 'otel_metrics' AND column_name = 'CodexMatch')
+					OR (table_name = 'metric_baselines' AND column_name IN ('Count', 'BucketCounts', 'ExplicitBounds'))`); got != 5 {
+				t.Errorf("found %d of 5 release columns", got)
+			}
+			got := countRows(t, store, `SELECT COUNT(*) FROM otel_logs WHERE ServiceName = 'codex-app-server'`)
+			if (preview == 9 && got != 0) || (preview >= 10 && got != 1) {
+				t.Errorf("preview %d left %d Codex events", preview, got)
+			}
+		})
 	}
 }

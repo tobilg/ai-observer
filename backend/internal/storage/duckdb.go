@@ -221,9 +221,9 @@ func (s *DuckDBStore) migrate(ctx context.Context, migrations []migration) error
 		return fmt.Errorf("creating schema_migrations: %w", err)
 	}
 
-	var current int
-	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&current); err != nil {
-		return fmt.Errorf("reading schema version: %w", err)
+	_, current, err := s.migrationVersions(ctx)
+	if err != nil {
+		return err
 	}
 
 	for _, m := range migrations {

@@ -114,7 +114,7 @@ func deleteInRange(ctx context.Context, execer execContexter, table, what string
 // baselineColumns are the columns of metric_baselines: a series, the time
 // and value (a counter's value or a histogram's sum) of its point, and a
 // histogram's count, bucket counts and bounds (NULL for other metrics and
-// for baselines stored before migration 12)
+// for baselines stored before migration 9)
 const baselineColumns = "ServiceName, MetricName, Attributes, ResourceAttributes, Timestamp, Value, Count, BucketCounts, ExplicitBounds"
 
 // baselineUpdate updates a series' baseline to another point (ON CONFLICT)

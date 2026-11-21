@@ -9,7 +9,7 @@ import (
 	"github.com/tobilg/ai-observer/internal/api"
 )
 
-// Migration 11 repairs Claude Code usage that earlier versions stored twice,
+// Migration 9 repairs Claude Code usage that earlier versions stored twice,
 // from OTLP and from a session file, with the rule of usage_overlap.go
 func TestClaudeUsageOverlapMigration(t *testing.T) {
 	t.Setenv("AI_OBSERVER_SKIP_MIGRATION_BACKUP", "true")
@@ -61,7 +61,7 @@ func TestClaudeUsageOverlapMigration(t *testing.T) {
 				return err
 			}
 		}
-		_, err := w.tx.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version >= 11`)
+		_, err := w.tx.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version >= 9`)
 		return err
 	})
 	if err != nil {

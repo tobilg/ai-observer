@@ -38,7 +38,7 @@ const (
 // series started, as OTLP reports them, not those of the bucket. After a
 // deleted range the last deleted point (metric_baselines) is the previous
 // point; its count and buckets are unknown for baselines stored before
-// migration 12, and the next point then counts for the sum only.
+// migration 9, and the next point then counts for the sum only.
 //
 // avg is the sum over the count; percentiles are estimated from the summed
 // bucket counts (estimateQuantile). Buckets without values have no avg, min,
@@ -75,7 +75,7 @@ func (s *DuckDBStore) histogramQuery(ctx context.Context, q *seriesQuery, r Seri
 	measures := "Sum AS s, CAST(Count AS DOUBLE) AS c, Min AS mn, Max AS mx"
 	// A baseline (the last deleted point of a series) has the point's sum,
 	// count and buckets, not its extremes; baselines stored before
-	// migration 12 have only the sum
+	// migration 9 have only the sum
 	baselineMeasures := "Value, CAST(Count AS DOUBLE), NULL, NULL"
 	if percentile {
 		measures += ", CAST(ExplicitBounds AS VARCHAR) AS bounds, CAST(BucketCounts AS BIGINT[]) AS bc"

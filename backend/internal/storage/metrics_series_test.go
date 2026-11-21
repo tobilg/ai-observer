@@ -583,7 +583,7 @@ func TestSeriesBucketSeconds(t *testing.T) {
 
 // After deleted points the last of them (metric_baselines) is the previous
 // point of a cumulative histogram's next point: its count, sum and buckets
-// count their increase over it. Baselines stored before migration 12 lack
+// count their increase over it. Baselines stored before migration 9 lack
 // the count and buckets: the next point then counts for the sum only.
 func TestQuerySeries_CumulativeHistogramAfterDelete(t *testing.T) {
 	for _, legacy := range []bool{false, true} {

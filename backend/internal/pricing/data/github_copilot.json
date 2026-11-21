@@ -1,7 +1,7 @@
 {
   "provider": "github_copilot",
   "source": "https://models.dev (models.dev contributors, MIT License)",
-  "lastUpdated": "2026-11-05T00:00:00Z",
+  "lastUpdated": "2026-11-21T00:00:00Z",
   "models": {
     "gpt-5-mini": {
       "aliases": ["gpt-5 mini"],
@@ -402,6 +402,63 @@
       "outputCostPerMTok": 4,
       "cacheReadCostPerMTok": 0.19,
       "deprecated": true
+    },
+    "claude-fable-5.2": {
+      "inputCostPerMTok": 8,
+      "outputCostPerMTok": 40,
+      "cacheReadCostPerMTok": 0.2,
+      "cacheWriteCostPerMTok": 10
+    },
+    "gemini-4-carbon": {
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 10,
+      "cacheReadCostPerMTok": 0.1
+    },
+    "gemini-4-hydrogen": {
+      "inputCostPerMTok": 1.5,
+      "outputCostPerMTok": 7.5,
+      "cacheReadCostPerMTok": 0.075
+    },
+    "gemini-4-neon": {
+      "inputCostPerMTok": 3,
+      "outputCostPerMTok": 15,
+      "cacheReadCostPerMTok": 0.15
+    },
+    "gpt-6.2-astra": {
+      "inputCostPerMTok": 8,
+      "outputCostPerMTok": 40,
+      "cacheReadCostPerMTok": 0.4,
+      "cacheWriteCostPerMTok": 10,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 16,
+        "outputCostPerMTok": 60,
+        "cacheReadCostPerMTok": 0.8,
+        "cacheWriteCostPerMTok": 20
+      }
+    },
+    "gpt-6.2-sol": {
+      "inputCostPerMTok": 2,
+      "outputCostPerMTok": 10,
+      "cacheReadCostPerMTok": 0.1,
+      "cacheWriteCostPerMTok": 2.5,
+      "longContext": {
+        "thresholdInputTokens": 272000,
+        "inputCostPerMTok": 4,
+        "outputCostPerMTok": 15,
+        "cacheReadCostPerMTok": 0.2,
+        "cacheWriteCostPerMTok": 5
+      }
+    },
+    "mai-code-2": {
+      "inputCostPerMTok": 0.5,
+      "outputCostPerMTok": 2.5,
+      "cacheReadCostPerMTok": 0.025
+    },
+    "mai-code-2-flash": {
+      "inputCostPerMTok": 0.05,
+      "outputCostPerMTok": 0.25,
+      "cacheReadCostPerMTok": 0.005
     }
   }
 }

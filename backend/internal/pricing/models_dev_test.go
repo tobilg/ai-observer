@@ -21,6 +21,8 @@ const modelsDevCatalog = `{
     "gpt-9-mini": {"id": "gpt-9-mini", "cost": {"input": 0.5, "output": 2, "context_over_200k": {"input": 1, "output": 4}}},
     "gpt-old": {"id": "gpt-old", "status": "deprecated", "cost": {"input": 1, "output": 2}},
     "gpt-image-9": {"id": "gpt-image-9", "modalities": {"output": ["image"]}, "cost": {"input": 5, "output": 30}},
+    "gemini-image": {"id":"gemini-image","family":"nano-banana-pro","modalities":{"output":["text","image"]},"cost":{"input":2,"output":12}},
+    "gpt-image-mixed": {"id":"gpt-image-mixed","family":"gpt-image","modalities":{"output":["text","image"]},"cost":{"input":5,"output":10}},
     "text-embedding-9": {"id": "text-embedding-9", "modalities": {"output": ["text"]}, "cost": {"input": 0.02, "output": 0}},
     "tts-9": {"id": "tts-9", "cost": null},
     "gpt-tiered": {"id": "gpt-tiered", "cost": {"input": 1, "output": 2, "tiers": [
@@ -52,7 +54,7 @@ func TestModelsDevEntry(t *testing.T) {
 	if tiered.LongContext.ThresholdInputTokens != 200000 || !strings.Contains(note, "2 context tiers") {
 		t.Errorf("tiered = %+v, note %q; want the lowest tier and a note", tiered.LongContext, note)
 	}
-	for _, id := range []string{"gpt-image-9", "text-embedding-9", "tts-9"} {
+	for _, id := range []string{"gpt-image-9", "gemini-image", "gpt-image-mixed", "text-embedding-9", "tts-9"} {
 		if _, _, ok := modelsDevEntry(models[id]); ok {
 			t.Errorf("%s is priced; only models with text output prices are", id)
 		}
@@ -87,7 +89,8 @@ const currentCodex = `{
     "gpt-retired": {
       "inputCostPerMTok": 3,
       "outputCostPerMTok": 6,
-      "deprecated": true
+      "deprecated": true,
+      "longContext": {"thresholdInputTokens":200000,"inputCostPerMTok":5,"outputCostPerMTok":10}
     }
   }
 }
@@ -128,6 +131,9 @@ func TestUpdatePricingFile(t *testing.T) {
 	}
 	if !m["gpt-retired"].Deprecated {
 		t.Error("gpt-retired lost its deprecation")
+	}
+	if tier := m["gpt-retired"].LongContext; tier == nil || tier.ThresholdInputTokens != 200000 || tier.OutputCostPerMTok != 10 {
+		t.Errorf("gpt-retired lost its historical context tier: %+v", tier)
 	}
 	if update.Unchanged != 2 {
 		t.Errorf("unchanged = %d, want 2 (gpt-old's prices, gpt-retired)", update.Unchanged)
@@ -191,7 +197,7 @@ func TestFetchModelsDev(t *testing.T) {
 	f := NewModelsDevFetcher()
 	f.url = server.URL + "/api.json"
 	catalog, err := f.Fetch(context.Background())
-	if err != nil || len(catalog["openai"].Models) != 7 {
+	if err != nil || len(catalog["openai"].Models) != 9 {
 		t.Fatalf("catalog = %v, %v", catalog, err)
 	}
 	f.url = server.URL + "/missing"

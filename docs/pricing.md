@@ -228,12 +228,13 @@ ai-observer import claude-code --pricing-mode display
 
 ## Current Pricing (November 2026)
 
-Prices are per million tokens on each provider's standard tier, as reviewed against the official pricing pages on 2026-11-05 (models.dev agreed on every model it lists): [Anthropic](https://platform.claude.com/docs/en/about-claude/pricing), [OpenAI](https://developers.openai.com/api/docs/pricing), [Google](https://ai.google.dev/gemini-api/docs/pricing). Retired models keep their last published prices, marked `deprecated`, so older sessions can still be priced. Cache Write is the 5-minute (Anthropic) or 30-minute (OpenAI) cache write price.
+The bundled prices were refreshed from [models.dev](https://models.dev) on 2026-11-21. The tables show standard-tier prices per million tokens. Provider references are [Anthropic](https://platform.claude.com/docs/en/about-claude/pricing), [OpenAI](https://developers.openai.com/api/docs/pricing) and [Google](https://ai.google.dev/gemini-api/docs/pricing). Retired models keep their last published prices, marked `deprecated`, so older sessions can still be priced. Cache Write is the 5-minute (Anthropic) or 30-minute (OpenAI) cache write price.
 
 ### Claude (Anthropic)
 
 | Model | Input/MTok | Output/MTok | Cache Read | Cache Write |
 |-------|------------|-------------|------------|-------------|
+| claude-fable-5-2 | $8.00 | $40.00 | $0.20 | $10.00 |
 | claude-fable-5-1 / claude-mythos-5-1 | $10.00 | $50.00 | $0.25 | $12.50 |
 | claude-fable-5 / claude-mythos-5 | $10.00 | $50.00 | $1.00 | $12.50 |
 | claude-opus-5-5 | $4.00 | $20.00 | $0.20 | $5.00 |
@@ -253,8 +254,9 @@ Models marked * have higher rates for prompts over 272K tokens (second price).
 
 | Model | Input/MTok | Output/MTok | Cache Read | Cache Write |
 |-------|------------|-------------|------------|-------------|
+| gpt-6.2-astra* | $8.00 / $16.00 | $40.00 / $60.00 | $0.40 / $0.80 | $10.00 / $20.00 |
 | gpt-6-astra* | $10.00 / $20.00 | $50.00 / $75.00 | $1.00 / $2.00 | $12.50 / $25.00 |
-| gpt-6.1-sol* | $2.00 / $4.00 | $10.00 / $15.00 | $0.10 / $0.20 | $2.50 / $5.00 |
+| gpt-6.2-sol* / gpt-6.1-sol* | $2.00 / $4.00 | $10.00 / $15.00 | $0.10 / $0.20 | $2.50 / $5.00 |
 | gpt-6.1-terra* | $1.00 / $2.00 | $5.00 / $7.50 | $0.05 / $0.10 | $1.25 / $2.50 |
 | gpt-6-sol* | $2.00 / $4.00 | $10.00 / $15.00 | $0.20 / $0.40 | $2.50 / $5.00 |
 | gpt-6-luna* | $0.10 / $0.20 | $0.50 / $0.75 | $0.01 / $0.02 | $0.125 / $0.25 |
@@ -288,7 +290,9 @@ Gemini CLI sends cumulative token counters over OTLP. The derived `gemini_cli.co
 
 | Model | Input/MTok | Output/MTok | Cache Read |
 |-------|------------|-------------|------------|
-| gemini-4-argon | $2.00 | $10.00 | $0.10 |
+| gemini-4-hydrogen | $1.50 | $7.50 | $0.075 |
+| gemini-4-neon | $3.00 | $15.00 | $0.15 |
+| gemini-4-carbon / gemini-4-argon | $2.00 | $10.00 | $0.10 |
 | gemini-3.8-flash / gemini-3.6-flash | $0.75 | $3.75 | $0.075 |
 | gemini-3.5-flash-lite | $0.30 | $2.50 | $0.03 |
 | gemini-omni-1.2-flash / gemini-omni-1.1-flash (text output) | $1.50 | $9.00 | — |
@@ -298,6 +302,8 @@ Gemini CLI sends cumulative token counters over OTLP. The derived `gemini_cli.co
 | gemini-2.5-pro (deprecated; prompt ≤ 200K / > 200K) | $1.25 / $2.50 | $10.00 / $15.00 | $0.125 / $0.25 |
 | gemini-2.5-flash (deprecated) | $0.30 | $2.50 | $0.03 |
 | gemini-2.5-flash-lite | $0.10 | $0.40 | $0.01 |
+
+For the Gemini 2.5 Flash Image, 3.1 Flash Image, 3.1 Flash Lite Image and 3 Pro Image models, the bundled image-output rates are $30, $60, $30 and $120 per million tokens respectively. Google prices text output separately. The retired Gemini 2.5 Computer Use Preview keeps its published rates of $2.50 input and $15.00 output for prompts over 200K tokens. [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing) · [Google Cloud pricing](https://cloud.google.com/model-garden/pricing)
 
 **Scheduled increases:** Google lists gemini-4-argon at $2.00 / $10.00 / $0.10 through November 30, 2026 and $4.00 / $20.00 / $0.20 from December 1, 2026; gemini-3.8-flash and gemini-3.6-flash at $0.75 / $3.75 / $0.075 through December 31, 2026 and $1.50 / $7.50 / $0.15 from January 1, 2027. From December 1, 2026, Google routes requests to the deprecated gemini-2.5-pro and gemini-2.5-flash to gemini-3.8-flash and gemini-3.5-flash-lite and bills them at those models' rates (gemini-omni-1.1-flash routes to gemini-omni-1.2-flash from December 3, at the same text rates). The tables hold one price per model, so update them when these take effect; sessions imported afterwards are priced at the new rates, and the 7-day freshness check asks for the review.
 
@@ -329,8 +335,8 @@ The overrides are read once at startup; an invalid file stops startup with an er
 None of the providers publishes its prices through an API: Anthropic's, OpenAI's and Google's model APIs return no prices. `ai-observer pricing update` takes them from [models.dev](https://models.dev) (`https://models.dev/api.json`), an open database of AI models and their per-token prices maintained by the OpenCode developers ([MIT License](https://github.com/anomalyco/models.dev)). It downloads the catalog once and merges the providers `anthropic`, `openai`, `google` and `github-copilot` into `claude.json`, `codex.json`, `gemini.json` and `github_copilot.json`:
 
 - Models matched by key or alias get the models.dev prices (input, output, cache read, cache write, and a context tier as `longContext`); their key and aliases stay.
-- New models are added after the existing ones, sorted by ID. Only models with a text output price are taken; image, speech and embedding models are not. For image models (such as `gemini-3-pro-image`) the output price is the image output price.
-- Models models.dev marks deprecated become `deprecated`; deprecation is never undone. Models models.dev does not list keep their prices, so a model can still be priced by hand.
+- New models are added after the existing ones, sorted by ID. Only models with a text output price are taken; image, speech and embedding models are not. The bundled Gemini image-generation models retain their published image-output prices. The catalog's shared output field for the Nano Banana and GPT Image families contains a text rate.
+- Models models.dev marks deprecated become `deprecated`; deprecation is never undone. A deprecated model keeps its previous long-context tier if the feed omits it. Models models.dev does not list keep their prices, so a model can still be priced by hand.
 - A price change of more than 10x is refused and reported, since it is more likely an error (for example a price per token instead of per million) than a price change; `--allow-large-changes` applies it.
 - `lastUpdated` becomes today. The files keep the built-in layout, so an update only changes the lines of changed prices.
 

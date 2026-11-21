@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -51,6 +52,7 @@ type ModelsDevCatalog map[string]struct {
 // ModelsDevModel is a model of the models.dev catalog
 type ModelsDevModel struct {
 	ID         string `json:"id"`
+	Family     string `json:"family"`
 	Status     string `json:"status"` // "deprecated", "beta", "alpha" or ""
 	Modalities *struct {
 		Output []string `json:"output"`
@@ -136,6 +138,11 @@ func modelsDevEntry(m ModelsDevModel) (ModelEntry, string, bool) {
 	if m.Modalities != nil && !slices.Contains(m.Modalities.Output, "text") {
 		return ModelEntry{}, "", false
 	}
+	// These image-generation families also list text output. Their scalar
+	// output rate prices text, while our bundled image models price images.
+	if strings.HasPrefix(m.Family, "nano-banana") || strings.HasPrefix(m.Family, "gpt-image") {
+		return ModelEntry{}, "", false
+	}
 	c := m.Cost
 	entry := ModelEntry{
 		InputCostPerMTok:      c.Input,
@@ -185,7 +192,7 @@ type PricingUpdate struct {
 	// models models.dev newly marks deprecated
 	Added, Changed, Deprecated []string
 	Unchanged                  int
-	// Kept are the models models.dev does not list; they keep their prices
+	// Kept lists existing models without a usable catalog price.
 	Kept []string
 	// Refused are price changes larger than largeChangeFactor, not applied
 	Refused []string
@@ -267,6 +274,11 @@ func UpdatePricingFile(current []byte, provider Provider, models map[string]Mode
 		fetched.Aliases = existing.Aliases
 		newlyDeprecated := fetched.Deprecated && !existing.Deprecated
 		fetched.Deprecated = fetched.Deprecated || existing.Deprecated
+		// Retired models can lose their published context tier from the feed.
+		// Keep that rate available when importing historical sessions.
+		if fetched.Deprecated && fetched.LongContext == nil {
+			fetched.LongContext = existing.LongContext
+		}
 		changes := priceChanges(existing, fetched)
 		refused := changes != "" && !opts.AllowLargeChanges && largePriceChange(existing, fetched)
 		if refused {

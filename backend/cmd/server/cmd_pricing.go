@@ -23,8 +23,8 @@ Commands:
             and write claude.json, codex.json, gemini.json and
             github_copilot.json to AI_OBSERVER_PRICING_DIR (or --output).
             AI Observer reads them from AI_OBSERVER_PRICING_DIR at startup,
-            over the built-in prices. Models models.dev does not list keep
-            their current prices.
+            over the built-in prices. Models without a usable catalog price
+            keep their current prices.
 `
 
 func cmdPricing(args []string) {
@@ -126,7 +126,7 @@ func runPricingUpdate(ctx context.Context, args []string, out io.Writer, fetcher
 		if err := writeFileAtomic(r.path, pricing.FormatPricingFile(u.Data, u.Order)); err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "Wrote %s: %d added, %d changed, %d unchanged, %d kept (not on models.dev)\n",
+		fmt.Fprintf(out, "Wrote %s: %d added, %d changed, %d unchanged, %d kept (no usable catalog price)\n",
 			r.path, len(u.Added), len(u.Changed), u.Unchanged, len(u.Kept))
 		for _, line := range u.Added {
 			fmt.Fprintf(out, "  + %s\n", line)

@@ -265,7 +265,7 @@ A session can reach AI Observer twice: over OTLP from the running tool, and from
 
 Requests only one side recorded keep their usage: requests before telemetry was enabled or while AI Observer was down are in the file only, and requests such as Claude Code's tool routing and compaction are in OTLP only. Session lists use the transcripts' own matching, so their message counts, usage and titles equal the transcripts'. A response Gemini CLI recorded with other token counts in its file than over OTLP is not recognized and counts twice.
 
-Databases of earlier versions: migration 11 removes the Claude Code file usage that OTLP also recorded when AI Observer opens the database. Codex and Gemini CLI usage is repaired by importing again, once: `ai-observer import codex --force` and `ai-observer import gemini --force` (stop `watch` or `serve --watch` first). `watch` does not repair it, since it continues where it stopped. Transcripts and session lists need no re-import.
+Databases of earlier versions: migration 9 removes the Claude Code file usage that OTLP also recorded when AI Observer opens the database. Codex and Gemini CLI usage is repaired by importing again, once: `ai-observer import codex --force` and `ai-observer import gemini --force` (stop `watch` or `serve --watch` first). `watch` does not repair it, since it continues where it stopped. Transcripts and session lists need no re-import.
 
 ## Replacing Imported Data (`--purge`)
 

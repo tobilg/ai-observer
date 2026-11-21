@@ -116,7 +116,7 @@ describe('MaintenanceCard', () => {
     vi.mocked(api.adminCheckpoint).mockResolvedValue({ database: size, durationMs: 120 })
     vi.mocked(api.adminBackup).mockResolvedValue({
       path: '/data/backups/ai-observer-backup-20261111-120000.duckdb', sizeBytes: 500 * 1024 ** 2,
-      tables: { otel_logs: 10 }, schemaVersion: 11, durationMs: 4100,
+      tables: { otel_logs: 10 }, schemaVersion: 9, durationMs: 4100,
     })
     renderWithProviders(<MaintenanceCard settings={settings()} />)
     expect(screen.getByText('/data/backups')).toBeInTheDocument()

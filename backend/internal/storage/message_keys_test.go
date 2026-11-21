@@ -126,9 +126,9 @@ func TestMessageKeys(t *testing.T) {
 	}
 }
 
-// Migration 13 only adds the column (new databases get it from it too;
+// Migration 9 adds the message key column without filling it.
 // DuckDB cannot drop a column of an indexed table, so the logs here lose
-// their keys instead): lists are right without the keys, and the refill
+// their keys instead. Lists are right without the keys, and the refill
 // sets them
 func TestMessageKeysMigration(t *testing.T) {
 	t.Setenv("AI_OBSERVER_SKIP_MIGRATION_BACKUP", "true")
@@ -141,7 +141,7 @@ func TestMessageKeysMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := storedKeys(t, store)
-	for _, stmt := range []string{`UPDATE otel_logs SET MessageKey = NULL`, `DELETE FROM schema_migrations WHERE version >= 13`} {
+	for _, stmt := range []string{`UPDATE otel_logs SET MessageKey = NULL`, `DELETE FROM schema_migrations WHERE version >= 9`} {
 		if _, err := store.db.Exec(stmt); err != nil {
 			t.Fatal(err)
 		}

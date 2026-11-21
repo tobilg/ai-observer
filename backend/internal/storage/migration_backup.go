@@ -40,12 +40,12 @@ func (s *DuckDBStore) backupBeforeMigration(ctx context.Context, dbPath string) 
 	if dbPath == "" || dbPath == ":memory:" || strings.HasPrefix(dbPath, ":memory:") {
 		return "", nil
 	}
-	current, err := s.storedSchemaVersion(ctx)
+	current, released, err := s.migrationVersions(ctx)
 	if err != nil {
 		return "", err
 	}
 	latest := LatestSchemaVersion()
-	if current >= latest {
+	if released >= latest {
 		return "", nil
 	}
 	hasData, err := s.holdsData(ctx)
@@ -95,19 +95,27 @@ func (s *DuckDBStore) backupBeforeMigration(ctx context.Context, dbPath string) 
 	return backup, nil
 }
 
-// storedSchemaVersion returns the schema version the database was last
-// migrated to, 0 when it has no schema_migrations table (a new database, or
-// one created before migrations existed)
-func (s *DuckDBStore) storedSchemaVersion(ctx context.Context) (int, error) {
+// migrationVersions returns the stored ledger version (used to name backups)
+// and the last released migration it completed (used to decide what to run).
+func (s *DuckDBStore) migrationVersions(ctx context.Context) (stored, released int, err error) {
 	var exists bool
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) > 0 FROM duckdb_tables()
 		WHERE database_name = current_database() AND schema_name = 'main' AND table_name = 'schema_migrations'`).Scan(&exists); err != nil {
-		return 0, fmt.Errorf("reading schema version: %w", err)
+		return 0, 0, fmt.Errorf("reading schema version: %w", err)
 	}
 	if !exists {
-		return 0, nil
+		return 0, 0, nil
 	}
-	return s.SchemaVersion(ctx)
+	var preview bool
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0),
+		COUNT(*) FILTER (WHERE version = 9 AND name = ?) > 0 FROM schema_migrations`,
+		previewMigration9Name).Scan(&stored, &preview); err != nil {
+		return 0, 0, fmt.Errorf("reading schema version: %w", err)
+	}
+	if preview && stored >= 9 && stored <= 14 {
+		return stored, 8, nil
+	}
+	return stored, stored, nil
 }
 
 // holdsData reports whether the database stores telemetry, dashboards or

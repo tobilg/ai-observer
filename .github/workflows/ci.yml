@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       docker_version:
-        description: 'Optional Docker version to publish, e.g. 0.7.0'
+        description: 'Optional Docker version to publish, e.g. 0.8.0'
         required: false
         type: string
 

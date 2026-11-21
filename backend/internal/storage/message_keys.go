@@ -11,14 +11,14 @@ import (
 	"github.com/tobilg/ai-observer/internal/tools"
 )
 
-// Every log stores its message key (otel_logs.MessageKey, migration 13):
+// Every log stores its message key (otel_logs.MessageKey, migration 9):
 // what the transcript merge rules compare of it (msgmerge.Key), or
 // msgmerge.NotMessage() for logs that become no transcript message. Session
 // lists merge a session's records by these keys (fillSessionExtents), as
 // transcripts merge them, without reading the logs' attributes. A key is
 // derived from the stored log (after redaction) by the code of one version
 // (msgmerge.KeyVersion): keys that are NULL (restored records, logs stored
-// before migration 13) or of another version are computed from the
+// before migration 9) or of another version are computed from the
 // attributes by readers, and refilled in the background by servers
 // (StartMessageKeyRefill) and in restore's transaction (fillMessageKeysTx).
 

@@ -9,7 +9,7 @@ func approxEqual(a, b float64) bool {
 	return math.Abs(a-b) < 1e-9
 }
 
-// Spot checks of the October 2026 price tables, per million tokens.
+// Spot checks of the bundled price tables, per million tokens.
 func TestCurrentModelPrices(t *testing.T) {
 	tests := []struct {
 		name                 string
@@ -20,6 +20,11 @@ func TestCurrentModelPrices(t *testing.T) {
 		{"claude", GetClaudePricing, "claude-opus-5-5", 4, 20, 0.2},
 		{"claude", GetClaudePricing, "claude-sonnet-5", 2, 10, 0.2},
 		{"claude", GetClaudePricing, "claude-haiku-5-5", 0.1, 0.5, 0.01},
+		{"claude", GetClaudePricing, "claude-fable-5-2", 8, 40, 0.2},
+		{"openai", GetCodexPricing, "gpt-6.2-astra", 8, 40, 0.4},
+		{"gemini", GetGeminiPricing, "gemini-4-neon", 3, 15, 0.15},
+		{"gemini image output", GetGeminiPricing, "gemini-3-pro-image", 2, 120, 0},
+		{"copilot", GetCopilotPricing, "mai-code-2-flash", 0.05, 0.25, 0.005},
 		{"claude", GetClaudePricing, "claude-fable-5-1", 10, 50, 0.25},
 		{"openai", GetCodexPricing, "gpt-6.1-sol", 2, 10, 0.1},
 		{"openai", GetCodexPricing, "gpt-5.6-terra", 2, 12, 0.2},

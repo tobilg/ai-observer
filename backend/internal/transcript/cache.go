@@ -123,8 +123,9 @@ func (c *Cache) Load(ctx context.Context, sessionID string) (*api.TranscriptResp
 	if e := c.entries[sessionID]; e != nil && e.generation == generation {
 		e.lastUsed = c.now()
 		c.lru.MoveToFront(e.elem)
+		resp := e.resp
 		c.mu.Unlock()
-		return e.resp, nil
+		return resp, nil
 	}
 	b := c.builds[key]
 	if b == nil {
@@ -215,6 +216,8 @@ func (c *Cache) removeLocked(e *cacheEntry) {
 		delete(c.entries, e.sessionID)
 	}
 	e.timer.Stop()
+	// The runtime can still hold the stopped timer and its entry.
+	e.resp = nil
 	c.lru.Remove(e.elem)
 	c.bytes -= e.size
 }
